@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import textwrap
 from pathlib import Path
-from .config import DATA, executable
+from .config import DATA, executable, settings
 from . import store
 
 
@@ -108,7 +108,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 def prepare_voices(job):
     p = job['snapshot']['project']
-    provider = job['snapshot']['options']['tts_provider']
+    provider = job['snapshot'].get('options', {}).get('tts_provider') or settings()['tts_provider']
     prepared = []
     for i, scene in enumerate(p['scenes']):
         store.progress(job['id'], f"Preparing narration {i + 1}/{len(p['scenes'])}")
@@ -125,15 +125,17 @@ def render(job):
     if not p['scenes']:
         raise ValueError('Add at least one scene')
     # Check media before starting external speech calls.
-    for scene in p['scenes']:
-        if not scene['rights_reviewed']:
-            raise ValueError('Review and confirm every scene visual before rendering')
+    for i, scene in enumerate(p['scenes']):
         if scene['visual'] != 'graphic':
+            if not scene.get('video_asset'):
+                raise ValueError(f"Scene {i + 1} has no video assigned. Please upload footage, choose a stock clip, or select 'Simple animated title card'.")
             source = store.asset_path(scene['video_asset'], 'video')
             if scene['trim_start'] >= duration(source):
-                raise ValueError('A scene trim starts after the clip ends')
-        elif not scene['graphic_title'].strip():
-            raise ValueError('An explicit graphic scene needs a title')
+                raise ValueError(f"Scene {i + 1} trim starts after the clip ends")
+        elif not scene.get('graphic_title', '').strip():
+            raise ValueError(f"Scene {i + 1} (graphic) needs a title")
+        if not scene.get('rights_reviewed'):
+            raise ValueError(f"Please check the checkbox 'I reviewed visual relevance...' for Scene {i + 1} before rendering")
     if p['music_asset']:
         store.asset_path(p['music_asset'], 'audio')
         if not p['music_rights_reviewed']:
