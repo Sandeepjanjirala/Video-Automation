@@ -1,0 +1,212 @@
+import json
+import re
+import secrets
+import threading
+import uuid
+from pathlib import Path
+from typing import Literal
+from urllib.parse import urlparse
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from pydantic import BaseModel, Field
+from . import store
+from .config import DATA, ROOT, public_settings, save_settings, settings, executable
+from .models import Project
+
+store.init()
+app = FastAPI(title='Telugu Reel Studio', docs_url=None, redoc_url=None)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=['127.0.0.1', 'localhost'])
+TOKEN = secrets.token_urlsafe(32)
+SETTINGS_LOCK = threading.Lock()
+
+
+@app.middleware('http')
+async def local_guard(request: Request, call_next):
+    if request.method not in ('GET', 'HEAD', 'OPTIONS'):
+        if request.headers.get('x-studio-token') != TOKEN:
+            return JSONResponse({'detail': 'Reload the app before saving'}, status_code=403)
+        origin = request.headers.get('origin')
+        if origin and origin != str(request.base_url).rstrip('/'):
+            return JSONResponse({'detail': 'Cross-origin changes are not allowed'}, status_code=403)
+        limit = 220 * 1024 * 1024 if request.url.path == '/api/assets' else 1024 * 1024
+        try:
+            oversized = int(request.headers.get('content-length', '0')) > limit
+        except ValueError:
+            oversized = True
+        if oversized:
+            return JSONResponse({'detail': 'Request is too large'}, status_code=413)
+    response = await call_next(request)
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Referrer-Policy'] = 'no-referrer'
+    response.headers['X-Frame-Options'] = 'DENY'
+    if request.url.path.startswith('/api/'):
+        response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.exception_handler(ValueError)
+async def value_error(request, exc):
+    return JSONResponse({'detail': str(exc)}, status_code=400)
+
+
+@app.get('/api/bootstrap')
+def bootstrap():
+    return {'token': TOKEN, 'settings': public_settings(), 'projects': store.list_projects()}
+
+
+@app.get('/api/health')
+def health():
+    from .media import run
+    result = {}
+    for binary in ('ffmpeg', 'ffprobe'):
+        try:
+            result[binary] = run([executable(binary), '-version'], timeout=10).splitlines()[0]
+        except ValueError as exc:
+            result[binary] = str(exc)
+    return result
+
+
+@app.post('/api/settings')
+def update_settings(body: dict):
+    with SETTINGS_LOCK:
+        return save_settings(body)
+
+
+@app.post('/api/projects')
+def create(body: Project):
+    return store.save_project(body.model_dump())
+
+
+class SaveBody(BaseModel):
+    revision: int
+    project: Project
+
+
+@app.put('/api/projects/{pid}')
+def save(pid: str, body: SaveBody):
+    return store.save_project(body.project.model_dump(), pid, body.revision)
+
+
+@app.get('/api/projects/{pid}')
+def get(pid: str):
+    return store.get_project(pid)
+
+
+class RevisionBody(BaseModel):
+    revision: int
+
+
+@app.post('/api/projects/{pid}/approve')
+def approve(pid: str, body: RevisionBody):
+    return store.approve(pid, body.revision)
+
+
+@app.get('/api/projects/{pid}/history')
+def history(pid: str):
+    with store.connection() as db:
+        return [{'revision': row['revision'], 'created': row['created'], 'project': json.loads(row['body'])}
+                for row in db.execute('SELECT * FROM revisions WHERE project_id=? ORDER BY revision DESC LIMIT 50', (pid,))]
+
+
+class JobBody(BaseModel):
+    revision: int
+    kind: Literal['research', 'draft', 'voice', 'render', 'stock', 'stock_all']
+    quality: Literal['draft', 'final'] = 'final'
+    script: str = Field(default='', max_length=20000)
+    video_id: int = Field(default=0, ge=0)
+    scene_id: str = Field(default='', max_length=48)
+
+
+@app.post('/api/projects/{pid}/jobs')
+def queue(pid: str, body: JobBody):
+    options = {'tts_provider': settings()['tts_provider'], 'quality': body.quality,
+               'script': body.script, 'video_id': body.video_id, 'scene_id': body.scene_id}
+    return store.enqueue(pid, body.revision, body.kind, options)
+
+
+@app.get('/api/projects/{pid}/jobs')
+def jobs(pid: str):
+    return store.jobs(pid)
+
+
+@app.post('/api/jobs/{jid}/retry')
+def retry(jid: str):
+    return store.retry(jid)
+
+
+@app.get('/api/stock')
+def stock(q: str):
+    from .providers import stock_search
+    return stock_search(q)
+
+
+@app.post('/api/assets')
+async def upload(file: UploadFile = File(...)):
+    from .media import probe
+    extension = Path(file.filename or '').suffix.lower()
+    if extension not in ('.mp4', '.mov', '.mkv', '.webm', '.mp3', '.wav', '.m4a', '.ogg', '.aac'):
+        raise ValueError('Upload MP4/MOV/MKV/WEBM video or MP3/WAV/M4A/OGG/AAC audio')
+    aid = uuid.uuid4().hex
+    path = DATA / 'assets' / (aid + extension)
+    try:
+        size = 0
+        with path.open('wb') as out:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > 200 * 1024 * 1024:
+                    raise ValueError('Upload limit is 200 MB per file')
+                out.write(chunk)
+        info = await __import__('asyncio').to_thread(probe, path)
+        video = any(s['codec_type'] == 'video' and not s.get('disposition', {}).get('attached_pic') for s in info['streams'])
+        audio = any(s['codec_type'] == 'audio' for s in info['streams'])
+        if not video and not audio:
+            raise ValueError('No usable video or audio stream found')
+        return store.add_asset({'id': aid, 'filename': path.name, 'name': Path(file.filename or '').name[:180],
+                                'kind': 'video' if video else 'audio', 'duration': float(info['format']['duration']),
+                                'provider': 'upload', 'retrieved': store.now(), 'source_url': '', 'license_url': 'User supplied; review required'})
+    except Exception:
+        path.unlink(missing_ok=True)
+        raise
+    finally:
+        await file.close()
+
+
+@app.get('/api/assets/{aid}')
+def asset_meta(aid: str):
+    return store.asset(aid)
+
+
+@app.get('/api/assets/{aid}/media')
+def asset_media(aid: str):
+    return FileResponse(store.asset_path(aid))
+
+
+@app.get('/api/jobs/{jid}/audio/{scene_id}')
+def job_audio(jid: str, scene_id: str):
+    job = store.job(jid)
+    if job['state'] != 'succeeded' or job['kind'] != 'voice':
+        raise ValueError('Voice preview is not ready')
+    item = next((v for v in job['result']['voices'] if v['scene_id'] == scene_id), None)
+    if not item:
+        raise ValueError('Scene audio not found')
+    path = Path(item['audio_path']).resolve()
+    if path.parent not in ((DATA / 'cache').resolve(), (DATA / 'assets').resolve()):
+        raise ValueError('Invalid audio path')
+    return FileResponse(path)
+
+
+@app.get('/api/exports/{jid}/{name}')
+def export(jid: str, name: str):
+    if not re.fullmatch('[a-f0-9]{32}', jid) or name not in ('reel.mp4', 'captions.srt', 'source-report.json', 'project.json'):
+        raise HTTPException(404)
+    if store.job(jid)['state'] != 'succeeded':
+        raise ValueError('Export is incomplete')
+    path = DATA / 'exports' / jid / name
+    if not path.is_file():
+        raise HTTPException(404)
+    return FileResponse(path, filename=name if name != 'reel.mp4' else None)
+
+
+app.mount('/', StaticFiles(directory=ROOT / 'studio' / 'static', html=True), name='ui')
