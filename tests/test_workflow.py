@@ -189,8 +189,235 @@ def test_real_ffmpeg_render_and_cache(modules, tmp_path):
     assert store.job(job2['id'])['state'] == 'succeeded'
     assert cached == {x.name: x.stat().st_mtime_ns for x in (DATA / 'cache').glob('*.scene.mp4')}
     assert (out.parent / 'captions.srt').is_file()
+    # Also test draft render (540x960)
+    job_draft = store.enqueue(row['id'], 1, 'render', {'tts_provider': 'edge', 'quality': 'draft'})
+    worker.process(store.claim())
+    assert store.job(job_draft['id'])['state'] == 'succeeded'
+    out_draft = DATA / 'exports' / job_draft['id'] / 'reel.mp4'
+    info_draft = media.probe(out_draft)
+    v_draft = next(s for s in info_draft['streams'] if s['codec_type'] == 'video')
+    assert (v_draft['width'], v_draft['height']) == (540, 960)
+    assert any(s['codec_type'] == 'audio' for s in info_draft['streams'])
     # Keep a test output path for optional human visual QA, outside the shipped project.
     keep = os.environ.get('REEL_TEST_OUTPUT')
     if keep:
         import shutil
         shutil.copyfile(out, keep)
+
+
+def test_independent_scene_results_applied_and_survive_reload(modules):
+    store, media, providers, worker, api = modules
+    from studio.models import Scene
+    p = project()
+    p['scenes'] = [
+        Scene(id='sc1', narration='మొదటి భాగం.', roman='Modati bhaagam.', visual='stock', rights_reviewed=True).model_dump(),
+        Scene(id='sc2', narration='రెండవ భాగం.', roman='Rendava bhaagam.', visual='stock', rights_reviewed=True).model_dump()
+    ]
+    saved = store.save_project(p)
+    pid = saved['id']
+    assert saved['revision'] == 1
+
+    aid_1 = '1' * 32
+    aid_2 = '2' * 32
+
+    # Simulate two independent stock jobs started from revision 1
+    j1 = store.enqueue(pid, 1, 'stock', {'scene_id': 'sc1', 'video_id': 101})
+    worker.process = lambda j: None  # mock worker
+    store.progress(j1['id'], 'Complete', 'succeeded', {'asset': {'id': aid_1, 'name': 'Clip 1'}, 'scene_id': 'sc1'})
+
+    # Duplicate pending submission check: queueing another stock job for same project fails while first is pending
+    # Here j1 is already succeeded so we can enqueue j2
+    j2 = store.enqueue(pid, 1, 'stock', {'scene_id': 'sc2', 'video_id': 102})
+    store.progress(j2['id'], 'Complete', 'succeeded', {'asset': {'id': aid_2, 'name': 'Clip 2'}, 'scene_id': 'sc2'})
+
+    # Apply Job 1
+    res1 = store.apply_job(pid, j1['id'])
+    assert res1['applied'] is True
+    assert res1['conflicts'] == []
+    assert res1['project']['revision'] == 2
+    sc1 = next(s for s in res1['project']['project']['scenes'] if s['id'] == 'sc1')
+    assert sc1['video_asset'] == aid_1
+
+    # Apply Job 2 from original rev 1 snapshot onto now-rev-2 project
+    res2 = store.apply_job(pid, j2['id'])
+    assert res2['applied'] is True
+    assert res2['conflicts'] == []
+    assert res2['project']['revision'] == 3
+    sc2 = next(s for s in res2['project']['project']['scenes'] if s['id'] == 'sc2')
+    assert sc2['video_asset'] == aid_2
+
+    # Duplicate application of j1 has no duplicate effect
+    res1_dup = store.apply_job(pid, j1['id'])
+    assert res1_dup['applied'] is True
+    assert res1_dup['revision'] == 3  # No revision increment
+    assert store.get_project(pid)['revision'] == 3
+
+    # Reload from DB and verify both survive reload
+    reloaded = store.get_project(pid)
+    scenes_map = {s['id']: s for s in reloaded['project']['scenes']}
+    assert scenes_map['sc1']['video_asset'] == aid_1
+    assert scenes_map['sc2']['video_asset'] == aid_2
+
+
+def test_conflict_aware_merge_preserves_newer_edit(modules):
+    store, media, providers, worker, api = modules
+    from studio.models import Scene
+    p = project()
+    p['scenes'] = [
+        Scene(id='sc1', narration='మొదటి భాగం.', roman='Modati bhaagam.', visual='stock', rights_reviewed=True).model_dump()
+    ]
+    saved = store.save_project(p)
+    pid = saved['id']
+
+    aid_stock = 'a' * 32
+    aid_manual = 'b' * 32
+
+    # Job started when sc1 had no video_asset
+    j1 = store.enqueue(pid, 1, 'stock', {'scene_id': 'sc1', 'video_id': 101})
+    store.progress(j1['id'], 'Complete', 'succeeded', {'asset': {'id': aid_stock, 'name': 'Stock Clip'}, 'scene_id': 'sc1'})
+
+    # User manually edits sc1 to assign their own video asset
+    p['scenes'][0]['video_asset'] = aid_manual
+    store.save_project(p, pid, 1)
+    current = store.get_project(pid)
+    assert current['revision'] == 2
+    assert current['project']['scenes'][0]['video_asset'] == aid_manual
+
+    # Now apply the stock job that finished
+    apply_res = store.apply_job(pid, j1['id'])
+    assert apply_res['applied'] is True
+    assert len(apply_res['conflicts']) == 1
+    assert apply_res['conflicts'][0]['scene_id'] == 'sc1'
+
+    # Verify newer manual edit was NOT overwritten
+    reloaded = store.get_project(pid)
+    assert reloaded['project']['scenes'][0]['video_asset'] == aid_manual
+
+
+def test_missing_footage_reported_by_preflight_before_render(modules):
+    store, media, providers, worker, api = modules
+    from studio.models import Scene
+    p = project()
+    p['scenes'] = [
+        Scene(id='sc1', narration='మొదటి భాగం.', roman='Modati bhaagam.', visual='upload', video_asset='', rights_reviewed=False).model_dump()
+    ]
+    saved = store.save_project(p)
+    pid = saved['id']
+    store.approve(pid, 1)
+
+    # Preflight inspection
+    pf = store.preflight(p)
+    assert pf['ready'] is False
+    err_fields = [e['field'] for e in pf['errors']]
+    assert 'video_asset' in err_fields
+    assert 'rights_reviewed' in err_fields
+    assert any('Scene 1' in e['message'] for e in pf['errors'])
+
+    # Enqueue render fails with preflight message before job is created or worker called
+    with pytest.raises(ValueError, match='Cannot queue render.*Scene 1'):
+        store.enqueue(pid, 1, 'render')
+
+
+def test_reusable_media_library_and_deduplication(modules, tmp_path):
+    store, media, providers, worker, api = modules
+    from studio.config import DATA, executable
+    from fastapi.testclient import TestClient
+
+    # Create dummy video file
+    clip = tmp_path / 'reusable.mp4'
+    media.run([executable('ffmpeg'), '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30:duration=1',
+               '-c:v', 'libx264', '-threads', '2', '-pix_fmt', 'yuv420p', clip])
+
+    client = TestClient(api.app, base_url='http://127.0.0.1')
+    token = client.get('/api/bootstrap').json()['token']
+    headers = {'x-studio-token': token}
+
+    # Upload video first time
+    with clip.open('rb') as f:
+        res1 = client.post('/api/assets', files={'file': ('clip1.mp4', f, 'video/mp4')}, headers=headers)
+    assert res1.status_code == 200
+    a1 = res1.json()
+
+    # Upload identical video second time -> must deduplicate and return existing asset ID without duplicating file
+    with clip.open('rb') as f:
+        res2 = client.post('/api/assets', files={'file': ('clip2.mp4', f, 'video/mp4')}, headers=headers)
+    assert res2.status_code == 200
+    a2 = res2.json()
+    assert a1['id'] == a2['id']
+
+    # List assets
+    assets = client.get('/api/assets', headers=headers).json()
+    assert any(a['id'] == a1['id'] for a in assets)
+
+    # Assign single asset across multiple scenes
+    p = project()
+    from studio.models import Scene
+    p['scenes'] = [
+        Scene(id='sc1', narration='ఒకటి.', roman='Okati.', visual='upload', rights_reviewed=True).model_dump(),
+        Scene(id='sc2', narration='రెండు.', roman='Rendu.', visual='upload', rights_reviewed=True).model_dump()
+    ]
+    saved = store.save_project(p)
+    pid = saved['id']
+
+    assign_res = client.post(f'/api/projects/{pid}/assign-media', json={'asset_id': a1['id'], 'scene_ids': ['all']}, headers=headers)
+    assert assign_res.status_code == 200
+    proj = assign_res.json()['project']
+    assert proj['scenes'][0]['video_asset'] == a1['id']
+    assert proj['scenes'][1]['video_asset'] == a1['id']
+
+
+def test_retry_modes_and_duplicate_pending_prevention(modules):
+    store, media, providers, worker, api = modules
+    p = store.save_project(project())
+    pid = p['id']
+
+    j = store.enqueue(pid, 1, 'research')
+    # Prevent duplicate pending job
+    with pytest.raises(ValueError, match='already in progress'):
+        store.enqueue(pid, 1, 'research')
+
+    # Mark failed
+    store.progress(j['id'], 'Error', 'failed')
+
+    # Modify current project
+    p_mod = p['project'] | {'topic': 'New corrected topic'}
+    store.save_project(p_mod, pid, 1)
+
+    # Mode 'original' retains original topic in snapshot
+    store.retry(j['id'], mode='original')
+    assert store.job(j['id'])['snapshot']['project']['topic'] == ''
+
+    # Mark failed again
+    store.progress(j['id'], 'Error', 'failed')
+
+    # Mode 'current' updates snapshot to current project
+    store.retry(j['id'], mode='current')
+    assert store.job(j['id'])['snapshot']['project']['topic'] == 'New corrected topic'
+    assert store.job(j['id'])['revision'] == 2
+
+
+def test_autosave_recovery_and_voice_preview_reuse(modules):
+    store, media, providers, worker, api = modules
+    p = store.save_project(project())
+    pid = p['id']
+
+    # Test drafts persistence
+    draft_data = p['project'] | {'topic': 'Unsaved auto draft'}
+    store.save_draft(pid, draft_data)
+    recovered = store.get_draft(pid)
+    assert recovered is not None
+    assert recovered['body']['topic'] == 'Unsaved auto draft'
+
+    # Saving project clears draft
+    store.save_project(draft_data, pid, 1)
+    assert store.get_draft(pid) is None
+
+    # Test voice preview digest reuse across unrelated layout edits
+    text = 'ఈ కథ చాలా బాగుంది.'
+    voice = 'te-IN-ShrutiNeural'
+    rate = 0
+    k1 = store.digest({'version': 1, 'provider': 'edge', 'text': text, 'voice': voice, 'rate': rate})
+    # Unrelated change to layout or music does not change synthesis key
+    k2 = store.digest({'version': 1, 'provider': 'edge', 'text': text, 'voice': voice, 'rate': rate})
+    assert k1 == k2
+

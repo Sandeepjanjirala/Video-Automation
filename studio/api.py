@@ -1,12 +1,13 @@
+import hashlib
 import json
 import re
 import secrets
 import threading
 import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 from urllib.parse import urlparse
-from fastapi import FastAPI, HTTPException, UploadFile, File, Request
+from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Query
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -131,15 +132,79 @@ def jobs(pid: str):
     return store.jobs(pid)
 
 
+class RetryBody(BaseModel):
+    mode: Literal['original', 'current'] = 'original'
+
+
 @app.post('/api/jobs/{jid}/retry')
-def retry(jid: str):
-    return store.retry(jid)
+def retry(jid: str, mode: str = 'original', body: Optional[RetryBody] = None):
+    actual_mode = body.mode if body else mode
+    return store.retry(jid, mode=actual_mode)
+
+
+@app.post('/api/projects/{pid}/apply-job/{jid}')
+@app.post('/api/projects/{pid}/jobs/{jid}/apply')
+def apply_job(pid: str, jid: str, force: bool = False):
+    return store.apply_job(pid, jid, force=force)
+
+
+@app.get('/api/projects/{pid}/preflight')
+def preflight(pid: str):
+    p_row = store.get_project(pid)
+    return store.preflight(p_row['project'])
+
+
+@app.put('/api/projects/{pid}/draft')
+def save_draft(pid: str, body: dict):
+    return store.save_draft(pid, body)
+
+
+@app.get('/api/projects/{pid}/draft')
+def get_draft(pid: str):
+    d = store.get_draft(pid)
+    return d or {}
+
+
+@app.delete('/api/projects/{pid}/draft')
+def delete_draft(pid: str):
+    store.delete_draft(pid)
+    return {'ok': True}
+
+
+class AssignMediaBody(BaseModel):
+    asset_id: str
+    scene_ids: list[str]
+
+
+@app.post('/api/projects/{pid}/assign-media')
+def assign_media(pid: str, body: AssignMediaBody):
+    proj = store.get_project(pid)
+    p_data = proj['project']
+    asset_meta = store.asset(body.asset_id)
+    scene_id_set = set(body.scene_ids)
+    all_scenes = 'all' in scene_id_set
+    for s in p_data['scenes']:
+        if all_scenes or s['id'] in scene_id_set:
+            if asset_meta['kind'] == 'video':
+                s['video_asset'] = body.asset_id
+                s['visual'] = 'upload'
+                s['trim_start'] = 0
+                s['rights_reviewed'] = True
+            elif asset_meta['kind'] == 'audio':
+                s['audio_asset'] = body.asset_id
+                s['audio_text_hash'] = store.digest(s['narration'])
+    return store.save_project(p_data, pid, proj['revision'])
 
 
 @app.get('/api/stock')
 def stock(q: str):
     from .providers import stock_search
     return stock_search(q)
+
+
+@app.get('/api/assets')
+def list_assets(kind: Optional[str] = None):
+    return store.list_assets(kind=kind)
 
 
 @app.post('/api/assets')
@@ -150,6 +215,7 @@ async def upload(file: UploadFile = File(...)):
         raise ValueError('Upload MP4/MOV/MKV/WEBM video or MP3/WAV/M4A/OGG/AAC audio')
     aid = uuid.uuid4().hex
     path = DATA / 'assets' / (aid + extension)
+    hasher = hashlib.sha256()
     try:
         size = 0
         with path.open('wb') as out:
@@ -158,6 +224,15 @@ async def upload(file: UploadFile = File(...)):
                 if size > 200 * 1024 * 1024:
                     raise ValueError('Upload limit is 200 MB per file')
                 out.write(chunk)
+                hasher.update(chunk)
+        file_hash = hasher.hexdigest()
+
+        # Deduplicate: reuse existing asset if identical content hash exists
+        existing = store.find_asset(sha256=file_hash)
+        if existing:
+            path.unlink(missing_ok=True)
+            return existing
+
         info = await __import__('asyncio').to_thread(probe, path)
         video = any(s['codec_type'] == 'video' and not s.get('disposition', {}).get('attached_pic') for s in info['streams'])
         audio = any(s['codec_type'] == 'audio' for s in info['streams'])
@@ -165,7 +240,8 @@ async def upload(file: UploadFile = File(...)):
             raise ValueError('No usable video or audio stream found')
         return store.add_asset({'id': aid, 'filename': path.name, 'name': Path(file.filename or '').name[:180],
                                 'kind': 'video' if video else 'audio', 'duration': float(info['format']['duration']),
-                                'provider': 'upload', 'retrieved': store.now(), 'source_url': '', 'license_url': 'User supplied; review required'})
+                                'sha256': file_hash, 'provider': 'upload', 'retrieved': store.now(),
+                                'source_url': '', 'license_url': 'User supplied; review required'})
     except Exception:
         path.unlink(missing_ok=True)
         raise
@@ -181,6 +257,27 @@ def asset_meta(aid: str):
 @app.get('/api/assets/{aid}/media')
 def asset_media(aid: str):
     return FileResponse(store.asset_path(aid))
+
+
+@app.get('/api/assets/{aid}/thumbnail')
+def asset_thumbnail(aid: str):
+    meta = store.asset(aid)
+    if meta.get('kind') != 'video':
+        raise HTTPException(status_code=404, detail='Thumbnails only available for video assets')
+    thumb = DATA / 'cache' / f'{aid}.thumb.jpg'
+    if not thumb.exists():
+        from .media import run
+        video_p = store.asset_path(aid, 'video')
+        try:
+            run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y',
+                 '-ss', '0.5', '-i', str(video_p), '-vframes', '1',
+                 '-vf', 'scale=270:480:force_original_aspect_ratio=decrease,pad=270:480:(ow-iw)/2:(oh-ih)/2:color=black',
+                 '-q:v', '3', str(thumb)], timeout=15)
+        except Exception:
+            raise HTTPException(status_code=404, detail='Could not generate thumbnail')
+    if not thumb.exists():
+        raise HTTPException(status_code=404, detail='Thumbnail not found')
+    return FileResponse(thumb, media_type='image/jpeg')
 
 
 @app.get('/api/jobs/{jid}/audio/{scene_id}')

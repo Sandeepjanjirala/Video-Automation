@@ -68,6 +68,8 @@ class Project(StrictModel):
     music_rights_reviewed: bool = False
     caption_size: int = Field(default=56, ge=30, le=90)
     caption_bottom: int = Field(default=300, ge=180, le=600)
+    script_approved_hash: str = Field(default='', max_length=64)
+    draft_script: str = Field(default='', max_length=50000)
 
     @model_validator(mode='after')
     def check(self):

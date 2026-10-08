@@ -1,8 +1,8 @@
 # Telugu Reel Studio — Upgrade Status & Technical Audit
 
 **Last Updated**: 2026-10-08  
-**Current Phase**: Phase 0 — Comprehensive Technical Audit & Baseline Verification  
-**Status**: Audit Complete — Awaiting Approval for Prompt 1  
+**Current Phase**: Phase 1 — Local Integrity, Pre-Flight Readiness, Conflict-Aware Merging & Concurrency Safety  
+**Status**: Phase 1 Complete — All 16 Regression Tests & UI Smoke Tests Passing  
 
 ---
 
@@ -150,54 +150,126 @@ The following isolated tests must be established and verified before each phase:
 
 ---
 
-## 6. Phased Implementation Plan & Rollback Checkpoints
+## 6. Phase 1 Implementation Summary & Verified Changes
 
-```
-[Phase 0: Audit] (Current) 
-    │
-    ▼
-[Phase 1: Local Integrity & Safety] ──(Rollback: Git commit dbdd565)
-    │  - Asset deduplication
-    │  - Pre-flight readiness checks
-    │  - Unique tempfile safety (no WinError 32)
-    │  - Worker watchdog & auto-restart
-    │
-    ▼
-[Phase 2: Database Migration] ────────(Rollback: Verified SQLite backup)
-    │  - SQLAlchemy models & Alembic migrations
-    │  - PostgreSQL support
-    │  - Verified SQLite -> PostgreSQL migration script
-    │
-    ▼
-[Phase 3: Queued Execution] ──────────(Rollback: In-process worker)
-    │  - Celery task definitions
-    │  - Redis broker & result backend
-    │  - Containerized Linux worker support
-    │
-    ▼
-[Phase 4: Storage Interface] ─────────(Rollback: Local filesystem storage)
-    │  - StorageProvider abstraction
-    │  - Pluggable Local / S3 / MinIO backend
-    │
-    ▼
-[Phase 5: Caption & Audio Polish] ────(Rollback: Previous ASS generator)
-       - Syllable/clause-aware alignment
-       - Enhanced typography & vertical layout
-```
+Phase 1 addressed all 8 core defect areas in the local architecture:
+
+1. **Server-Side Idempotent Result Application (`apply_job`)**:
+   - Added `jobs.applied` and `jobs.applied_at` tracking in SQLite database schema.
+   - Transactionally updates selected asset/scene bindings and project drafts.
+   - Idempotent: repeated application produces identical results without duplicating state or corrupting scenes.
+   - Job completion (`state='succeeded'`) and job application (`applied=1`) are separated in both backend and frontend UI.
+   - UI presents clear "Apply to project" buttons on unapplied jobs, with "Applied" status badges once applied.
+
+2. **Conflict-Aware Merging**:
+   - Replaced whole-project rejection with granular scene-ID and fingerprint-based merging.
+   - Preserves concurrent and newer manual edits: if a scene's `video_asset` was modified after the job was enqueued, the job result flags a clear conflict error rather than silently overwriting.
+   - Non-conflicting scene modifications from batch jobs merge safely without discarding user edits.
+   - Project drafts synchronized via dedicated draft endpoints (`/api/projects/{pid}/draft`).
+
+3. **Reusable Media Library & Asset Deduplication**:
+   - Added `GET /api/assets` endpoint returning asset catalog with metadata, SHA-256 digests, and provider provenance.
+   - Added `GET /api/assets/{aid}/thumbnail` for responsive visual clip selection.
+   - Added `POST /api/projects/{pid}/assign-media` allowing a single uploaded or stock MP4 to be assigned across selected or all scenes without copying disk bytes.
+   - Deduplication implemented for both user uploads (streaming SHA-256 verification against existing records) and Pixabay stock clips (`find_asset(provider='pixabay', external_id=video_id)`).
+   - Preserves separate provenance records without automatically deleting user media files.
+
+4. **Multi-Tier Pre-Flight Readiness Validation**:
+   - Added `preflight(project)` engine checking:
+     - Missing or unreadable video footage for each scene.
+     - Empty narration text.
+     - Invalid trims (`trim_start < 0` or `>= duration`).
+     - Unresolved visual review checkboxes.
+     - Incompatible or corrupted audio assets.
+   - UI displays an interactive preflight checklist in the Export tab before rendering can be initiated.
+   - Server validates preflight rules in API endpoints before job queueing.
+   - Worker repeats validation against the worker's immutable input snapshot before spending provider credits or invoking FFmpeg renders.
+
+5. **Retry Separation & Duplicate Enqueue Prevention**:
+   - Distinguishes `Retry original inputs` (`POST /api/jobs/{jid}/retry?mode=original`) from `Start with current project` (`mode=current`).
+   - Prevents duplicate pending submissions: `enqueue()` checks for active pending/running jobs of the same type for the project.
+   - Preserves immutable job snapshots.
+
+6. **Separation of Script Approval, Visual Review & Render Readiness**:
+   - Script/editorial approval attached to content hash `script_approved_hash` (narration + roman text).
+   - Visual review tracked explicitly (`review_visual_relevance` checkbox).
+   - Render readiness governed by preflight checklist.
+   - Review checkbox unambiguously labeled "I reviewed visual relevance", never called factual verification.
+
+7. **Persisted Pasted Scripts & Recoverable Autosave**:
+   - Added `draft_script` field to the Project model and SQLite store.
+   - Added `drafts` table in SQLite with `save_draft()`, `get_draft()`, and `delete_draft()`.
+   - UI provides automatic autosave debounce and recoverable draft prompt on reload.
+   - Voice preview audio caching keyed on `(narration, voice, pitch, rate)` content hashes, preserving voice previews after unrelated layout or music edits.
+
+8. **Actionable Redacted Errors & Explicit States**:
+   - Provider API keys and credentials redacted in error messages.
+   - Real-time save and draft indicators in UI header.
+   - Explicit title-card selection preserved (graphic mode with title/subtitle).
+   - Missing footage is never silently hidden with a fallback; exact missing scenes are reported immediately.
 
 ---
 
-## 7. Known Limitations & Report on Unavailable Tools
+## 7. Regression Test Results (Phase 1)
 
-1. **Hardware / Acceleration**:
-   - Host machine lacks dedicated NVIDIA hardware and CUDA drivers. GPU-accelerated NVENC encoding is unavailable. FFmpeg relies on `libx264` multi-threaded CPU encoding.
-2. **Third-Party Service Boundaries**:
-   - Edge TTS uses an unofficial protocol dependent on Microsoft online service availability.
-   - Pixabay search requires an active internet connection and valid API credentials.
-3. **Containerized Linux Stack**:
-   - Docker Desktop and WSL2 Ubuntu 24.04 are installed and running on the host. PostgreSQL and Redis/Celery can be run inside lightweight Linux containers or natively in WSL2 when approved.
+1. **Automated Pytest Suite**:
+   ```powershell
+   .\.venv\Scripts\python.exe -m pytest tests -v
+   ```
+   *Result*: **16 passed, 1 warning in 4.79s**
+   - `test_revision_approval_and_snapshot`: PASSED
+   - `test_no_automatic_fact_approval`: PASSED
+   - `test_caption_validation_and_stale_audio`: PASSED
+   - `test_network_defaults_and_api_secret_boundary`: PASSED
+   - `test_grounded_research_does_not_invent_evidence`: PASSED
+   - `test_stock_cache_and_download_host`: PASSED
+   - `test_call_limit_and_job_retry`: PASSED
+   - `test_stock_sourcing_preserves_assigned_media_and_reports_missing`: PASSED
+   - `test_excessive_duration_fit_rejected_without_cutting`: PASSED
+   - `test_real_ffmpeg_render_and_cache`: PASSED
+   - `test_independent_scene_results_applied_and_survive_reload`: PASSED
+   - `test_conflict_aware_merge_preserves_newer_edit`: PASSED
+   - `test_missing_footage_reported_by_preflight_before_render`: PASSED
+   - `test_reusable_media_library_and_deduplication`: PASSED
+   - `test_retry_modes_and_duplicate_pending_prevention`: PASSED
+   - `test_autosave_recovery_and_voice_preview_reuse`: PASSED
+
+2. **Frontend UI Smoke Test**:
+   ```powershell
+   npm run test:ui (in frontend/)
+   ```
+   *Result*: **Passed with 0 runtime errors**
+   - Verified: new project creation, script fields, save, approval, visual edit, revision invalidation, queue render, and visible preflight/offline failure handling.
+
+3. **Frontend Bundle Verification**:
+   - `studio/static/app.js` (254.9 kB) rebuilt from `frontend/app.tsx`.
+   - `studio/static/app.css` (9.5 kB) rebuilt from `frontend/style.css`.
+   - Shipped bundle verified with zero compile or bundle warnings.
 
 ---
 
-## 8. Next Phase
-**Awaiting User Approval for Prompt 1 (Phase 1: Local Integrity, Pre-Flight Readiness & Concurrency Safety).**
+## 8. Modified Codebase Files
+
+- [`studio/models.py`](file:///c:/Users/Sandeep.J/Documents/Studio/studio/models.py): Added `script_approved_hash` and `draft_script`.
+- [`studio/store.py`](file:///c:/Users/Sandeep.J/Documents/Studio/studio/store.py): Added migrations for `drafts`, `jobs.applied`, `assets.sha256/provider/external_id`; implemented `find_asset()`, `list_assets()`, `preflight()`, `compute_script_hash()`, `save_draft()`, `get_draft()`, `delete_draft()`, idempotent `apply_job()`, duplicate enqueue check, retry modes.
+- [`studio/providers.py`](file:///c:/Users/Sandeep.J/Documents/Studio/studio/providers.py): Pixabay download deduplication via `find_asset()`; SHA-256 streaming; collision-safe tempfiles for TTS and search cache.
+- [`studio/media.py`](file:///c:/Users/Sandeep.J/Documents/Studio/studio/media.py): Preflight validation before render execution; safe cached file replacement avoiding Windows file locking (`WinError 32`).
+- [`studio/worker.py`](file:///c:/Users/Sandeep.J/Documents/Studio/studio/worker.py): Snapshot validation before starting rendering or voice jobs.
+- [`studio/api.py`](file:///c:/Users/Sandeep.J/Documents/Studio/studio/api.py): Added media library, thumbnail, media assignment, result application, preflight, draft, and retry endpoints; upload SHA-256 deduplication.
+- [`frontend/app.tsx`](file:///c:/Users/Sandeep.J/Documents/Studio/frontend/app.tsx): Media library modal with clip reuse; preflight checklist; two-tier status badges; autosave recovery; separate result application buttons; retry modes.
+- [`frontend/style.css`](file:///c:/Users/Sandeep.J/Documents/Studio/frontend/style.css) & [`studio/static/app.css`](file:///c:/Users/Sandeep.J/Documents/Studio/studio/static/app.css): UI styling for badges, media library cards, checklists, and draft indicators.
+- [`tests/test_workflow.py`](file:///c:/Users/Sandeep.J/Documents/Studio/tests/test_workflow.py): Added 6 regression tests covering Phase 1 capabilities.
+- [`tests/ui_smoke.cjs`](file:///c:/Users/Sandeep.J/Documents/Studio/tests/ui_smoke.cjs): Updated UI smoke test harness with Node 20 polyfills and multi-element matchers.
+
+---
+
+## 9. Known Limitations & Rollback Checkpoint
+
+1. **Local Architecture**: Single-node SQLite + background process architecture maintained for Phase 1. PostgreSQL and Redis/Celery scheduled for Phase 2 and Phase 3.
+2. **GPU Encoding**: CPU `libx264` multi-threaded encoding used (host lacks dedicated NVIDIA GPU).
+3. **Rollback Checkpoint**: Git commit `dbdd565` (baseline before Phase 1 modifications).
+
+---
+
+## 10. Next Phase
+**Ready for Phase 2: Database Migration (SQLAlchemy ORM, Alembic migrations, PostgreSQL support, verified SQLite -> PostgreSQL migration).**

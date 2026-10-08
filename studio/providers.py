@@ -1,5 +1,6 @@
 """Network providers. No provider is called until online access is enabled."""
 import asyncio
+import hashlib
 import json
 import re
 import time
@@ -158,13 +159,18 @@ def stock_search(query='', video_id=None):
         results.append({'id': hit['id'], 'creator': hit.get('user', ''), 'source_url': hit.get('pageURL', ''),
                         'tags': hit.get('tags', ''), 'duration': hit.get('duration'), 'video': selected,
                         'license_url': 'https://pixabay.com/service/license-summary/'})
-    temp = path.with_suffix('.tmp')
+    temp = path.with_suffix(f'.{uuid.uuid4().hex[:8]}.tmp')
     temp.write_text(json.dumps(results), 'utf-8')
     temp.replace(path)
     return results
 
 
 def download_stock(video_id):
+    # Deduplicate: Check if this Pixabay clip was already downloaded
+    existing = store.find_asset(provider='pixabay', external_id=str(video_id))
+    if existing:
+        return existing
+
     hits = stock_search(video_id=video_id)
     hit = next((h for h in hits if h['id'] == int(video_id)), None)
     if not hit:
@@ -174,6 +180,7 @@ def download_stock(video_id):
     try:
         # Redirects are followed only after validating each destination.
         url = hit['video']['url']
+        hasher = hashlib.sha256()
         with httpx.Client(timeout=90, follow_redirects=False) as client:
             for redirect in range(4):
                 if not safe_pixabay_url(url):
@@ -192,15 +199,24 @@ def download_stock(video_id):
                             if size > 180 * 1024 * 1024:
                                 raise ValueError('Stock clip exceeds 180 MB limit')
                             out.write(chunk)
+                            hasher.update(chunk)
                     break
             else:
                 raise ValueError('Too many stock download redirects')
+        file_hash = hasher.hexdigest()
+        # Check if identical content hash already exists
+        existing_by_hash = store.find_asset(sha256=file_hash)
+        if existing_by_hash:
+            path.unlink(missing_ok=True)
+            return existing_by_hash
+
         from .media import probe
         info = probe(path)
         if not any(s['codec_type'] == 'video' for s in info['streams']):
             raise ValueError('Downloaded file contains no video')
         return store.add_asset({'id': aid, 'filename': path.name, 'name': f"Pixabay {video_id}", 'kind': 'video',
-                                'provider': 'pixabay', 'source_url': hit['source_url'], 'creator': hit['creator'],
+                                'provider': 'pixabay', 'external_id': str(video_id), 'sha256': file_hash,
+                                'source_url': hit['source_url'], 'creator': hit['creator'],
                                 'license_url': hit['license_url'], 'retrieved': store.now(), 'duration': float(info['format']['duration'])})
     except Exception as exc:
         path.unlink(missing_ok=True)
@@ -218,7 +234,7 @@ def synthesize(text, voice, rate, provider):
     if audio.exists() and metadata.exists():
         return audio, json.loads(metadata.read_text('utf-8'))
     online()
-    temp = audio.with_suffix('.part.mp3')
+    temp = audio.with_suffix(f'.{uuid.uuid4().hex[:8]}.part.mp3')
     boundaries = []
     try:
         if provider == 'edge':

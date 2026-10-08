@@ -122,24 +122,9 @@ def prepare_voices(job):
 
 def render(job):
     p = job['snapshot']['project']
-    if not p['scenes']:
-        raise ValueError('Add at least one scene')
-    # Check media before starting external speech calls.
-    for i, scene in enumerate(p['scenes']):
-        if scene['visual'] != 'graphic':
-            if not scene.get('video_asset'):
-                raise ValueError(f"Scene {i + 1} has no video assigned. Please upload footage, choose a stock clip, or select 'Simple animated title card'.")
-            source = store.asset_path(scene['video_asset'], 'video')
-            if scene['trim_start'] >= duration(source):
-                raise ValueError(f"Scene {i + 1} trim starts after the clip ends")
-        elif not scene.get('graphic_title', '').strip():
-            raise ValueError(f"Scene {i + 1} (graphic) needs a title")
-        if not scene.get('rights_reviewed'):
-            raise ValueError(f"Please check the checkbox 'I reviewed visual relevance...' for Scene {i + 1} before rendering")
-    if p['music_asset']:
-        store.asset_path(p['music_asset'], 'audio')
-        if not p['music_rights_reviewed']:
-            raise ValueError('Confirm music rights before rendering')
+    pf = store.preflight(p)
+    if not pf['ready']:
+        raise ValueError(f"Preflight validation failed: {pf['errors'][0]['message']}")
     prepared = prepare_voices(job)
     voice_total = sum(v['duration'] for v in prepared)
     holds = sum(s['hold_seconds'] for s in p['scenes'])
@@ -192,7 +177,12 @@ def render(job):
                      '-ar', '48000', '-ac', '2', '-movflags', '+faststart', output]
             run(args, cwd=work)
             probe(output)
-            output.replace(cached)
+            try:
+                output.replace(cached)
+            except OSError:
+                if not cached.exists():
+                    shutil.copyfile(output, cached)
+                output.unlink(missing_ok=True)
         scene_files.append(cached)
         all_cues.extend([{**c, 'start': c['start'] + offset, 'end': c['end'] + offset} for c in cues])
         report_scenes.append({'scene_id': scene['id'], 'duration': length, 'alignment': voice['alignment'],

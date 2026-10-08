@@ -6,10 +6,16 @@ from .config import DATA, settings
 
 def process(job):
     try:
+        p = job['snapshot']['project']
         if job['kind'] == 'render':
+            pf = store.preflight(p)
+            if not pf['ready']:
+                raise ValueError(f"Preflight validation failed: {pf['errors'][0]['message']}")
             from .media import render
             result = render(job)
         elif job['kind'] == 'voice':
+            if not p['scenes'] or any(not s.get('narration', '').strip() for s in p['scenes']):
+                raise ValueError('Cannot prepare voice: every scene needs Telugu narration text')
             from .media import prepare_voices
             result = {'voices': prepare_voices(job)}
         elif job['kind'] == 'research':
