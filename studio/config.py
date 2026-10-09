@@ -61,7 +61,12 @@ def public_settings():
 
 def executable(name):
     configured = settings().get(name)
+    if configured:
+        if os.name != 'nt' and ('.exe' in configured.lower() or '\\' in configured or (len(configured) > 1 and configured[1] == ':')):
+            configured = None
+        elif os.name == 'nt' and ('/' in configured and not Path(configured).exists()):
+            configured = None
     found = configured or shutil.which(name)
     if not found:
-        raise ValueError(f'{name} is missing. Set its full .exe path in Settings.')
+        raise ValueError(f'{name} is missing. Set its full path in Settings.')
     return str(found)

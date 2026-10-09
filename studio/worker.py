@@ -62,6 +62,8 @@ def process(job):
 
 
 def main():
+    if os.environ.get('STUDIO_DISTRIBUTED') == '1' or os.environ.get('STUDIO_WORKER_MODE') == 'celery':
+        raise SystemExit('Legacy worker is disabled in distributed mode. Celery and legacy workers must never own the same stream.')
     store.init()
     lock = (DATA / 'worker.lock').open('a+b')
     lock.seek(0)
@@ -77,8 +79,9 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         raise SystemExit('A worker is already running for this data folder')
-    with store.connection() as db:
-        db.execute("UPDATE jobs SET state='failed',progress='Interrupted by shutdown. Retry to resume cached work.' WHERE state='running'")
+    recovered = store.recover_expired_leases()
+    if recovered:
+        print(f'Recovered {recovered} expired worker leases', flush=True)
     print('Telugu Reel Studio worker ready', flush=True)
     try:
         while True:

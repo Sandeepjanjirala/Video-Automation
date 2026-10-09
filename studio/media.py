@@ -9,18 +9,34 @@ from .config import DATA, executable, settings
 from . import store
 
 
-def run(args, cwd=None, timeout=1800):
+def run(args, cwd=None, timeout=1800, job_id=None):
+    proc = None
     try:
-        result = subprocess.run([str(a) for a in args], cwd=cwd, capture_output=True, text=True,
-                                encoding='utf-8', errors='replace', timeout=timeout,
-                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        proc = subprocess.Popen(
+            [str(a) for a in args],
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding='utf-8',
+            errors='replace',
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        )
+        if job_id:
+            store.register_subprocess(job_id, proc.pid)
+        stdout, stderr = proc.communicate(timeout=timeout)
+        if proc.returncode:
+            raise ValueError('Media processing failed: ' + stderr[-1500:])
+        return stdout
     except subprocess.TimeoutExpired:
+        if proc:
+            proc.kill()
         raise ValueError('Media processing timed out. Shorten the source clip or try a draft render.') from None
     except OSError:
         raise ValueError('Unable to launch FFmpeg/FFprobe. Check executable paths in Settings.') from None
-    if result.returncode:
-        raise ValueError('Media processing failed: ' + result.stderr[-1500:])
-    return result.stdout
+    finally:
+        if job_id:
+            store.unregister_subprocess(job_id)
 
 
 def probe(path):

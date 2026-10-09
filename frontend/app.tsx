@@ -195,8 +195,8 @@ function App() {
   }
 
   // Server-side idempotent result application
-  async function applyJob(j: Any) {
-    const res = await api('/projects/' + row.id + '/apply-job/' + j.id);
+  async function applyJob(j: Any, force = false) {
+    const res = await api('/projects/' + row.id + '/apply-job/' + j.id + (force ? '?force=true' : ''), {}, 'POST');
     sync(res.project);
     if (res.conflicts && res.conflicts.length > 0) {
       setConflicts(res.conflicts);

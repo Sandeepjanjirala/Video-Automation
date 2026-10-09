@@ -1,0 +1,141 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    container_name: studio-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-studio}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-studio}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: studio-redis
+    restart: unless-stopped
+    command: >
+      redis-server
+      --appendonly yes
+      --maxmemory 512mb
+      --maxmemory-policy noeviction
+      --save 60 1
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  api:
+    build: .
+    container_name: studio-api
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      - STUDIO_DISTRIBUTED=1
+      - STUDIO_DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/studio
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - STUDIO_CACHE_REDIS_URL=redis://redis:6379/2
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1024M
+
+  dispatcher:
+    build: .
+    container_name: studio-dispatcher
+    restart: unless-stopped
+    command: ["python", "-m", "studio.dispatcher"]
+    environment:
+      - STUDIO_DISTRIBUTED=1
+      - STUDIO_DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/studio
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - STUDIO_CACHE_REDIS_URL=redis://redis:6379/2
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+
+  worker_network:
+    build: .
+    container_name: studio-worker-network
+    restart: unless-stopped
+    # 2 network-task slots
+    command: ["celery", "-A", "studio.celery_app", "worker", "-Q", "network", "-c", "2", "--loglevel=info", "-n", "worker_network@%h"]
+    environment:
+      - STUDIO_DISTRIBUTED=1
+      - STUDIO_DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/studio
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - STUDIO_CACHE_REDIS_URL=redis://redis:6379/2
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 1536M
+
+  worker_render:
+    build: .
+    container_name: studio-worker-render
+    restart: unless-stopped
+    # 1 render slot
+    command: ["celery", "-A", "studio.celery_app", "worker", "-Q", "render", "-c", "1", "--loglevel=info", "-n", "worker_render@%h"]
+    environment:
+      - STUDIO_DISTRIBUTED=1
+      - STUDIO_DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/studio
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/1
+      - STUDIO_CACHE_REDIS_URL=redis://redis:6379/2
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 2048M
+
+volumes:
+  postgres_data:
+  redis_data:

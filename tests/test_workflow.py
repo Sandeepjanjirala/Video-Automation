@@ -9,9 +9,16 @@ import pytest
 @pytest.fixture()
 def modules(tmp_path, monkeypatch):
     monkeypatch.setenv('REEL_DATA_DIR', str(tmp_path / 'data'))
-    import studio.config, studio.store, studio.media, studio.providers, studio.worker, studio.api
-    for mod in (studio.config, studio.store, studio.media, studio.providers, studio.worker, studio.api):
+    test_db_url = os.environ.get('STUDIO_TEST_DATABASE_URL') or 'postgresql+psycopg2://postgres:postgres@127.0.0.1:5433/studio_test'
+    monkeypatch.setenv('STUDIO_DATABASE_URL', test_db_url)
+    import studio.config, studio.store, studio.media, studio.providers, studio.worker, studio.api, studio.db
+    from sqlalchemy import text
+    for mod in (studio.config, studio.db.session, studio.store, studio.media, studio.providers, studio.worker, studio.api):
         importlib.reload(mod)
+    eng = studio.db.get_engine(test_db_url)
+    with eng.begin() as conn:
+        conn.execute(text('TRUNCATE TABLE application_receipts, job_stages, drafts, jobs, revisions, projects, assets, usage CASCADE;'))
+        conn.execute(text("INSERT INTO workspaces (id, name) VALUES ('default', 'Local Workspace') ON CONFLICT (id) DO NOTHING;"))
     studio.store.init()
     return studio.store, studio.media, studio.providers, studio.worker, studio.api
 
@@ -420,4 +427,113 @@ def test_autosave_recovery_and_voice_preview_reuse(modules):
     # Unrelated change to layout or music does not change synthesis key
     k2 = store.digest({'version': 1, 'provider': 'edge', 'text': text, 'voice': voice, 'rate': rate})
     assert k1 == k2
+
+
+def test_phase2_concurrent_edits_optimistic_locking(modules):
+    store, *_ = modules
+    p = store.save_project(project())
+    pid = p['id']
+    assert p['revision'] == 1
+
+    # User in Tab A makes an edit
+    edit_a = p['project'] | {'title': 'Tab A Title'}
+    saved_a = store.save_project(edit_a, pid, expected=1)
+    assert saved_a['revision'] == 2
+
+    # User in Tab B still has revision 1 and attempts to save
+    edit_b = p['project'] | {'title': 'Tab B Title'}
+    with pytest.raises(ValueError, match='another tab'):
+        store.save_project(edit_b, pid, expected=1)
+
+    # After reloading to revision 2, Tab B can save successfully
+    saved_b = store.save_project(edit_b, pid, expected=2)
+    assert saved_b['revision'] == 3
+    assert saved_b['project']['title'] == 'Tab B Title'
+
+
+def test_phase2_importer_repeatability_and_unicode_fidelity(modules, tmp_path):
+    store, media, providers, worker, api = modules
+    import sqlite3
+    from studio.importer import import_sqlite_to_pg
+
+    # Create dummy SQLite fixture with Telugu content
+    sqlite_file = tmp_path / 'fixture.sqlite3'
+    conn = sqlite3.connect(sqlite_file)
+    cur = conn.cursor()
+    cur.execute('''
+        CREATE TABLE projects(id TEXT PRIMARY KEY, revision INTEGER, body TEXT, approved INTEGER, updated TEXT);
+    ''')
+    cur.execute('''
+        CREATE TABLE revisions(project_id TEXT, revision INTEGER, body TEXT, created TEXT, PRIMARY KEY(project_id, revision));
+    ''')
+    cur.execute('''
+        CREATE TABLE assets(id TEXT PRIMARY KEY, body TEXT, sha256 TEXT, provider TEXT, external_id TEXT);
+    ''')
+    cur.execute('''
+        CREATE TABLE jobs(id TEXT PRIMARY KEY, project_id TEXT, revision INTEGER, kind TEXT, snapshot TEXT, state TEXT, progress TEXT, result TEXT, created TEXT, updated TEXT, applied INTEGER DEFAULT 0, applied_at TEXT);
+    ''')
+
+    telugu_text = 'ఒక చిన్న ఊరిలో, 20 సంవత్సరాలుగా ఒక ఇల్లు లాక్ చేసి ఉండేది.'
+    p_data = {'title': 'తెలుగు కథ', 'evidence_notes': 'పరీక్ష నోట్స్', 'scenes': [{'id': 'sc1', 'narration': telugu_text, 'roman': 'Oka chinna oorilo.'}]}
+    cur.execute("INSERT INTO projects VALUES ('p_telugu', 1, ?, 1, '2026-10-09T00:00:00Z')", (json.dumps(p_data, ensure_ascii=False),))
+    cur.execute("INSERT INTO revisions VALUES ('p_telugu', 1, ?, '2026-10-09T00:00:00Z')", (json.dumps(p_data, ensure_ascii=False),))
+    asset_meta = {'id': 'a_media', 'name': 'Test Clip', 'filename': 'test.mp4', 'kind': 'video'}
+    cur.execute("INSERT INTO assets VALUES ('a_media', ?, 'dummy_hash', 'upload', '')", (json.dumps(asset_meta),))
+    cur.execute("INSERT INTO jobs VALUES ('j_render', 'p_telugu', 1, 'render', ?, 'succeeded', 'Done', '{}', '2026-10-09T00:00:00Z', '2026-10-09T00:00:00Z', 1, '2026-10-09T00:00:00Z')", (json.dumps({'project': p_data, 'options': {}}, ensure_ascii=False),))
+    conn.commit()
+    conn.close()
+
+    pg_url = store.get_database_url()
+
+    # Dry-run check
+    dry_rep = import_sqlite_to_pg(Path(sqlite_file), pg_url=pg_url, dry_run=True).summary()
+    assert dry_rep['projects']['read'] == 1
+    assert dry_rep['revisions']['read'] == 1
+    assert dry_rep['assets']['read'] == 1
+    assert dry_rep['jobs']['read'] == 1
+    assert dry_rep['conflicts_count'] == 0
+
+    # Actual import
+    rep1 = import_sqlite_to_pg(Path(sqlite_file), pg_url=pg_url, dry_run=False).summary()
+    assert rep1['projects']['inserted'] == 1
+    assert rep1['revisions']['inserted'] == 1
+    assert rep1['assets']['inserted'] == 1
+    assert rep1['jobs']['inserted'] == 1
+
+    # Verify Telugu Unicode text in PostgreSQL
+    loaded = store.get_project('p_telugu')
+    assert loaded['project']['title'] == 'తెలుగు కథ'
+    assert loaded['project']['scenes'][0]['narration'] == telugu_text
+
+    # Repeat import (must be idempotent - 0 newly inserted rows)
+    rep2 = import_sqlite_to_pg(Path(sqlite_file), pg_url=pg_url, dry_run=False).summary()
+    assert rep2['projects']['inserted'] == 0
+    assert rep2['revisions']['inserted'] == 0
+    assert rep2['assets']['inserted'] == 0
+    assert rep2['jobs']['inserted'] == 0
+
+
+def test_phase2_foreign_key_and_database_constraints(modules):
+    store, *_ = modules
+    from studio.db.models import Revision, Job
+    from studio.db.session import session_scope
+    from sqlalchemy.exc import IntegrityError
+
+    # Non-existent project foreign key in Revision
+    with pytest.raises(IntegrityError):
+        with session_scope() as session:
+            session.add(Revision(project_id='nonexistent_project', revision=1, body={}, created_at=store.now()))
+
+    # Non-existent workspace foreign key in Job
+    with pytest.raises(IntegrityError):
+        with session_scope() as session:
+            session.add(Job(id='job_bad_ws', workspace_id='nonexistent_ws', project_id='p', revision=1, kind='render', state='queued', snapshot={}))
+
+
+def test_phase2_missing_database_connectivity_actionable_error():
+    from studio.db.session import check_connection, DatabaseConnectionError, get_engine
+    bad_engine = get_engine('postgresql+psycopg2://postgres:postgres@127.0.0.1:5439/nonexistent')
+    with pytest.raises(DatabaseConnectionError, match='Actionable remedy'):
+        check_connection(bad_engine)
+
 

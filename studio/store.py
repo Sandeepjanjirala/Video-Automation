@@ -1,194 +1,311 @@
+"""PostgreSQL primary store implementation using SQLAlchemy (Phase 2)."""
+import copy
 import hashlib
 import json
-import sqlite3
+import os
+import signal
+import subprocess
 import uuid
-from datetime import datetime, timezone
-from contextlib import contextmanager
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from sqlalchemy import select, func, text, update, delete
+from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
+
 from .config import DATA, setup
-from .models import Project
+from .models import Project as PydanticProject
+from .db.models import (
+    Base, Workspace, Project, Revision, Asset, Job, JobStage, Draft,
+    ApplicationReceipt, Outbox
+)
+from .db.session import (
+    get_engine, session_scope, check_connection, get_database_url,
+    DatabaseConnectionError
+)
 
 
-def now():
+def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def digest(value):
+def digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
-@contextmanager
-def connection():
-    setup()
-    db = sqlite3.connect(DATA / 'studio.sqlite3', timeout=30)
-    db.row_factory = sqlite3.Row
-    try:
-        yield db
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
-
-
-def init():
-    with connection() as db:
-        db.executescript('''
-        PRAGMA journal_mode=WAL;
-        CREATE TABLE IF NOT EXISTS projects(id TEXT PRIMARY KEY, revision INTEGER, body TEXT, approved INTEGER, updated TEXT);
-        CREATE TABLE IF NOT EXISTS revisions(project_id TEXT, revision INTEGER, body TEXT, created TEXT, PRIMARY KEY(project_id, revision));
-        CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY, project_id TEXT, revision INTEGER, kind TEXT, snapshot TEXT, state TEXT, progress TEXT, result TEXT, created TEXT, updated TEXT, applied INTEGER DEFAULT 0, applied_at TEXT);
-        CREATE TABLE IF NOT EXISTS assets(id TEXT PRIMARY KEY, body TEXT, sha256 TEXT, provider TEXT, external_id TEXT);
-        CREATE TABLE IF NOT EXISTS usage(day TEXT, provider TEXT, calls INTEGER, PRIMARY KEY(day, provider));
-        CREATE TABLE IF NOT EXISTS drafts(project_id TEXT PRIMARY KEY, body TEXT, updated TEXT);
-        ''')
-        # Backwards compatibility: add columns if table was created in an earlier revision
-        job_cols = {row['name'] for row in db.execute('PRAGMA table_info(jobs)')}
-        if 'applied' not in job_cols:
-            db.execute('ALTER TABLE jobs ADD COLUMN applied INTEGER DEFAULT 0')
-        if 'applied_at' not in job_cols:
-            db.execute('ALTER TABLE jobs ADD COLUMN applied_at TEXT')
-        asset_cols = {row['name'] for row in db.execute('PRAGMA table_info(assets)')}
-        if 'sha256' not in asset_cols:
-            db.execute('ALTER TABLE assets ADD COLUMN sha256 TEXT')
-        if 'provider' not in asset_cols:
-            db.execute('ALTER TABLE assets ADD COLUMN provider TEXT')
-        if 'external_id' not in asset_cols:
-            db.execute('ALTER TABLE assets ADD COLUMN external_id TEXT')
-
-
-def unpack(row):
-    return {'id': row['id'], 'revision': row['revision'], 'approved': row['approved'] == row['revision'],
-            'updated': row['updated'], 'project': json.loads(row['body'])}
-
-
-def compute_script_hash(project_dict):
+def compute_script_hash(project_dict: Dict[str, Any]) -> str:
     scenes = project_dict.get('scenes', [])
     content = [{'narration': s.get('narration', ''), 'roman': s.get('roman', '')} for s in scenes]
     content.append({'notes': project_dict.get('evidence_notes', '')})
     return digest(content)
 
 
-def get_project(pid):
-    with connection() as db:
-        row = db.execute('SELECT * FROM projects WHERE id=?', (pid,)).fetchone()
-        if not row:
+def init() -> None:
+    """Validate PostgreSQL connectivity and ensure default workspace exists."""
+    setup()
+    check_connection()
+    with session_scope() as session:
+        ws = session.get(Workspace, 'default')
+        if not ws:
+            ws = Workspace(id='default', name='Local Workspace')
+            session.add(ws)
+
+
+def unpack(p: Project) -> Dict[str, Any]:
+    """Convert Project ORM model to dictionary expected by API and frontend."""
+    updated_str = p.updated_at.isoformat() if p.updated_at else now()
+    return {
+        'id': p.id,
+        'revision': p.revision,
+        'approved': p.approved_revision == p.revision,
+        'updated': updated_str,
+        'project': p.body
+    }
+
+
+def get_project(pid: str, session: Optional[Session] = None) -> Dict[str, Any]:
+    if session is not None:
+        p = session.get(Project, pid)
+        if not p:
             raise ValueError('Project not found')
-        return unpack(row)
+        return unpack(p)
+
+    with session_scope() as s:
+        p = s.get(Project, pid)
+        if not p:
+            raise ValueError('Project not found')
+        return unpack(p)
 
 
-def list_projects():
-    with connection() as db:
-        return [unpack(r) for r in db.execute('SELECT * FROM projects ORDER BY updated DESC')]
+def list_projects(workspace_id: str = 'default', session: Optional[Session] = None) -> List[Dict[str, Any]]:
+    stmt = (
+        select(Project)
+        .where(Project.workspace_id == workspace_id)
+        .order_by(Project.updated_at.desc())
+    )
+    if session is not None:
+        results = session.execute(stmt).scalars().all()
+        return [unpack(p) for p in results]
+
+    with session_scope() as s:
+        results = s.execute(stmt).scalars().all()
+        return [unpack(p) for p in results]
 
 
-def save_project(project, pid=None, expected=None):
-    data = Project.model_validate(project).model_dump()
+def save_project(project: Dict[str, Any], pid: Optional[str] = None, expected: Optional[int] = None) -> Dict[str, Any]:
+    data = PydanticProject.model_validate(project).model_dump()
     pid = pid or uuid.uuid4().hex
-    with connection() as db:
-        db.execute('BEGIN IMMEDIATE')
-        old = db.execute('SELECT * FROM projects WHERE id=?', (pid,)).fetchone()
-        if old and old['revision'] != expected:
+
+    with session_scope() as session:
+        # Row-level lock on existing project to prevent concurrency lost updates
+        stmt = select(Project).where(Project.id == pid).with_for_update()
+        old = session.execute(stmt).scalar_one_or_none()
+
+        if old and expected is not None and old.revision != expected:
             raise ValueError('This project changed in another tab. Reload before saving.')
+
         if old:
-            old_data = json.loads(old['body'])
+            old_data = old.body
             if compute_script_hash(old_data) == compute_script_hash(data):
                 data['script_approved_hash'] = old_data.get('script_approved_hash', '')
             if old_data == data:
                 return unpack(old)
-        revision = old['revision'] + 1 if old else 1
-        body = json.dumps(data, ensure_ascii=False)
-        db.execute('INSERT OR REPLACE INTO projects VALUES(?,?,?,?,?)', (pid, revision, body, None, now()))
-        db.execute('INSERT INTO revisions VALUES(?,?,?,?)', (pid, revision, body, now()))
-        db.execute('DELETE FROM drafts WHERE project_id=?', (pid,))
-    return get_project(pid)
+            revision = old.revision + 1
+            old.revision = revision
+            old.body = data
+            from sqlalchemy.orm.attributes import flag_modified
+            flag_modified(old, 'body')
+            old.approved_revision = None
+            old.updated_at = datetime.now(timezone.utc)
+            target_p = old
+        else:
+            revision = 1
+            target_p = Project(
+                id=pid,
+                workspace_id='default',
+                revision=revision,
+                approved_revision=None,
+                body=data,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc)
+            )
+            session.add(target_p)
+
+        # Record revision history
+        rev_entry = Revision(
+            project_id=pid,
+            revision=revision,
+            body=data,
+            created_at=datetime.now(timezone.utc)
+        )
+        session.add(rev_entry)
+
+        # Clear autosave draft once project is explicitly saved
+        session.execute(delete(Draft).where(Draft.project_id == pid))
+        session.flush()
+        return unpack(target_p)
 
 
-def save_draft(pid, draft_data):
-    body = json.dumps(draft_data, ensure_ascii=False)
-    ts = now()
-    with connection() as db:
-        db.execute('INSERT OR REPLACE INTO drafts VALUES(?,?,?)', (pid, body, ts))
-    return {'project_id': pid, 'updated': ts}
+def reserve_ai_call(limit: int) -> None:
+    day = now()[:10]
+    with session_scope() as session:
+        from .db.models import Usage
+        stmt = select(Usage).where(Usage.day == day, Usage.provider == 'gemini').with_for_update()
+        row = session.execute(stmt).scalar_one_or_none()
+        count = row.calls if row else 0
+        if count >= limit:
+            raise ValueError('Daily Gemini request limit reached. Change Settings or try tomorrow (UTC).')
+        if row:
+            row.calls = count + 1
+        else:
+            session.add(Usage(day=day, provider='gemini', calls=count + 1))
 
 
-def get_draft(pid):
-    with connection() as db:
-        row = db.execute('SELECT * FROM drafts WHERE project_id=?', (pid,)).fetchone()
-        if not row:
+def save_draft(pid: str, draft_data: Dict[str, Any]) -> Dict[str, Any]:
+    with session_scope() as session:
+        d = session.get(Draft, pid)
+        now_dt = datetime.now(timezone.utc)
+        if not d:
+            d = Draft(project_id=pid, body=draft_data, updated_at=now_dt)
+            session.add(d)
+        else:
+            d.body = draft_data
+            d.updated_at = now_dt
+        return {'project_id': pid, 'updated': now_dt.isoformat()}
+
+
+def get_draft(pid: str) -> Optional[Dict[str, Any]]:
+    with session_scope() as session:
+        d = session.get(Draft, pid)
+        if not d:
             return None
-        return {'project_id': pid, 'body': json.loads(row['body']), 'updated': row['updated']}
+        return {'project_id': pid, 'body': d.body, 'updated': d.updated_at.isoformat()}
 
 
-def delete_draft(pid):
-    with connection() as db:
-        db.execute('DELETE FROM drafts WHERE project_id=?', (pid,))
+def delete_draft(pid: str) -> None:
+    with session_scope() as session:
+        session.execute(delete(Draft).where(Draft.project_id == pid))
 
 
-def approve(pid, revision):
-    with connection() as db:
-        db.execute('BEGIN IMMEDIATE')
-        row = db.execute('SELECT * FROM projects WHERE id=?', (pid,)).fetchone()
-        if not row or row['revision'] != revision:
+def approve(pid: str, revision: int) -> Dict[str, Any]:
+    with session_scope() as session:
+        stmt = select(Project).where(Project.id == pid).with_for_update()
+        p = session.execute(stmt).scalar_one_or_none()
+        if not p or p.revision != revision:
             raise ValueError('Save and reload the current revision before approving')
-        p = Project.model_validate_json(row['body'])
-        if not p.scenes or any(not s.narration.strip() or not s.roman.strip() for s in p.scenes):
+
+        model = PydanticProject.model_validate(p.body)
+        if not model.scenes or any(not s.narration.strip() or not s.roman.strip() for s in model.scenes):
             raise ValueError('Every scene needs Telugu narration text and Roman Telugu captions')
-        if not p.evidence_notes.strip():
+        if not model.evidence_notes.strip():
             raise ValueError('Add your factual review notes, or label fictional content, before approval')
-        p_dict = p.model_dump()
+
+        p_dict = model.model_dump()
         p_dict['script_approved_hash'] = compute_script_hash(p_dict)
-        body = json.dumps(p_dict, ensure_ascii=False)
-        db.execute('UPDATE projects SET approved=?, body=? WHERE id=?', (revision, body, pid))
-    return get_project(pid)
+        p.body = p_dict
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(p, 'body')
+        p.approved_revision = revision
+        p.updated_at = datetime.now(timezone.utc)
+        session.flush()
+        return unpack(p)
 
 
-def asset(aid):
-    with connection() as db:
-        row = db.execute('SELECT body FROM assets WHERE id=?', (aid,)).fetchone()
-    if not row:
-        raise ValueError('Media asset not found')
-    return json.loads(row['body'])
+def revisions(pid: str) -> List[Dict[str, Any]]:
+    with session_scope() as session:
+        stmt = select(Revision).where(Revision.project_id == pid).order_by(Revision.revision.desc())
+        revs = session.execute(stmt).scalars().all()
+        return [{'revision': r.revision, 'project': r.body, 'created': r.created_at.isoformat()} for r in revs]
 
 
-def add_asset(body):
-    sha = body.get('sha256') or ''
-    prov = body.get('provider') or ''
-    ext_id = str(body.get('external_id') or '')
-    with connection() as db:
-        db.execute('INSERT OR REPLACE INTO assets VALUES(?,?,?,?,?)', (body['id'], json.dumps(body), sha, prov, ext_id))
+def asset(aid: str) -> Dict[str, Any]:
+    with session_scope() as session:
+        a = session.get(Asset, aid)
+        if not a:
+            raise ValueError('Media asset not found')
+        meta = dict(a.meta or {})
+        meta.update({
+            'id': a.id,
+            'filename': a.filename,
+            'name': a.name,
+            'kind': a.kind,
+            'duration': a.duration,
+            'sha256': a.sha256,
+            'provider': a.provider,
+            'external_id': a.external_id,
+            'source_url': a.source_url,
+            'license_url': a.license_url,
+            'retrieved': a.created_at.isoformat() if a.created_at else now()
+        })
+        return meta
+
+
+def add_asset(body: Dict[str, Any]) -> Dict[str, Any]:
+    aid = body['id']
+    sha = body.get('sha256')
+    prov = body.get('provider') or 'upload'
+    ext_id = str(body.get('external_id') or '') or None
+
+    with session_scope() as session:
+        existing = session.get(Asset, aid)
+        if existing:
+            existing.filename = body.get('filename') or existing.filename
+            existing.name = body.get('name') or existing.name
+            existing.kind = body.get('kind') or existing.kind
+            existing.duration = float(body.get('duration', 0.0))
+            existing.sha256 = sha
+            existing.provider = prov
+            existing.external_id = ext_id
+            existing.source_url = body.get('source_url', '')
+            existing.license_url = body.get('license_url', '')
+            existing.meta = body
+        else:
+            new_a = Asset(
+                id=aid,
+                workspace_id='default',
+                filename=body.get('filename') or f"{aid}.mp4",
+                name=body.get('name') or aid,
+                kind=body.get('kind', 'video'),
+                duration=float(body.get('duration', 0.0)),
+                sha256=sha,
+                provider=prov,
+                external_id=ext_id,
+                source_url=body.get('source_url', ''),
+                license_url=body.get('license_url', ''),
+                meta=body,
+                created_at=datetime.now(timezone.utc)
+            )
+            session.add(new_a)
     return body
 
 
-def find_asset(sha256=None, provider=None, external_id=None):
-    with connection() as db:
+def find_asset(sha256: Optional[str] = None, provider: Optional[str] = None, external_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    with session_scope() as session:
+        stmt = select(Asset)
         if sha256:
-            row = db.execute('SELECT body FROM assets WHERE sha256=?', (sha256,)).fetchone()
-            if row:
-                res = json.loads(row['body'])
-                if (DATA / 'assets' / res['filename']).is_file():
-                    return res
-        if provider and external_id:
-            row = db.execute('SELECT body FROM assets WHERE provider=? AND external_id=?', (provider, str(external_id))).fetchone()
-            if row:
-                res = json.loads(row['body'])
-                if (DATA / 'assets' / res['filename']).is_file():
-                    return res
-    return None
+            stmt = stmt.where(Asset.sha256 == sha256)
+        elif provider and external_id:
+            stmt = stmt.where(Asset.provider == provider, Asset.external_id == str(external_id))
+        else:
+            return None
+        res = session.execute(stmt.limit(1)).scalar_one_or_none()
+        if not res:
+            return None
+        return asset(res.id)
 
 
-def list_assets(kind=None):
-    with connection() as db:
-        rows = db.execute('SELECT body FROM assets ORDER BY rowid DESC').fetchall()
-    results = []
-    for r in rows:
-        item = json.loads(r['body'])
-        if not kind or item.get('kind') == kind:
-            results.append(item)
-    return results
+def list_assets(kind: Optional[str] = None, workspace_id: str = 'default') -> List[Dict[str, Any]]:
+    with session_scope() as session:
+        stmt = select(Asset).where(Asset.workspace_id == workspace_id)
+        if kind:
+            stmt = stmt.where(Asset.kind == kind)
+        stmt = stmt.order_by(Asset.created_at.desc())
+        assets = session.execute(stmt).scalars().all()
+        return [asset(a.id) for a in assets]
 
 
-def asset_path(aid, kind=None):
+def asset_path(aid: str, kind: Optional[str] = None) -> Path:
     if not aid:
         raise ValueError('No media asset ID specified')
     meta = asset(aid)
@@ -200,7 +317,7 @@ def asset_path(aid, kind=None):
     return path
 
 
-def preflight(project_data):
+def preflight(project_data: Any) -> Dict[str, Any]:
     if isinstance(project_data, str):
         project_data = json.loads(project_data)
     errors = []
@@ -252,7 +369,7 @@ def preflight(project_data):
                                    'message': f'Scene {idx}: Uploaded narration does not match current script text'})
             except Exception as exc:
                 errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'audio_asset',
-                               'message': f'Scene {idx}: Audio narration file error ({exc})'})
+                                   'message': f'Scene {idx}: Audio narration file error ({exc})'})
 
     if project_data.get('music_asset'):
         try:
@@ -264,7 +381,6 @@ def preflight(project_data):
             errors.append({'scene_index': 0, 'scene_id': '', 'field': 'music_asset',
                            'message': f'Background music file error ({exc})'})
 
-    # Script approval check
     expected_hash = compute_script_hash(project_data)
     approved_hash = project_data.get('script_approved_hash', '')
     if approved_hash != expected_hash:
@@ -274,131 +390,433 @@ def preflight(project_data):
     return {'ready': len(errors) == 0, 'errors': errors, 'warnings': warnings}
 
 
-def enqueue(pid, revision, kind, options=None):
-    with connection() as db:
-        db.execute('BEGIN IMMEDIATE')
-        # Check for duplicate pending job of the same kind on this project
-        pending = db.execute("SELECT id FROM jobs WHERE project_id=? AND kind=? AND state IN ('queued', 'running')",
-                             (pid, kind)).fetchone()
-        if pending:
+def job_to_dict(j: Job) -> Dict[str, Any]:
+    return {
+        'id': j.id,
+        'project_id': j.project_id,
+        'revision': j.revision,
+        'kind': j.kind,
+        'snapshot': j.snapshot,
+        'state': j.state,
+        'stage': getattr(j, 'stage', 'queued') or 'queued',
+        'progress': j.progress,
+        'result': j.result or {},
+        'operation_key': getattr(j, 'operation_key', None),
+        'lease_token': getattr(j, 'lease_token', None),
+        'lease_expires_at': j.lease_expires_at.isoformat() if getattr(j, 'lease_expires_at', None) else None,
+        'cancelled': bool(getattr(j, 'cancelled', False)),
+        'created': j.created_at.isoformat() if j.created_at else now(),
+        'updated': j.updated_at.isoformat() if j.updated_at else now(),
+        'applied': bool(j.applied),
+        'applied_at': j.applied_at.isoformat() if j.applied_at else None
+    }
+
+
+def enqueue(
+    pid: str,
+    revision: int,
+    kind: str,
+    options: Optional[Dict[str, Any]] = None,
+    operation_key: Optional[str] = None
+) -> Dict[str, Any]:
+    """Enqueue a job and write outbox dispatch message in the same PostgreSQL transaction."""
+    with session_scope() as session:
+        # 1. Operation key idempotency check
+        if operation_key:
+            stmt_op = select(Job).where(Job.operation_key == operation_key).limit(1)
+            existing_job = session.execute(stmt_op).scalar_one_or_none()
+            if existing_job:
+                return job_to_dict(existing_job)
+
+        # 2. Check for duplicate pending job of same kind on this project
+        stmt = (
+            select(Job.id)
+            .where(Job.project_id == pid, Job.kind == kind, Job.state.in_(['queued', 'running']))
+            .limit(1)
+        )
+        if session.execute(stmt).scalar_one_or_none():
             raise ValueError(f'A {kind} job is already in progress for this project')
 
-        row = db.execute('SELECT * FROM projects WHERE id=?', (pid,)).fetchone()
-        if not row or row['revision'] != revision:
+        p = session.get(Project, pid)
+        if not p or p.revision != revision:
             raise ValueError('Save the current revision first')
-        if kind in ('voice', 'render') and row['approved'] != revision:
+        if kind in ('voice', 'render') and p.approved_revision != revision:
             raise ValueError('Approve this exact script revision first')
 
-        proj = json.loads(row['body'])
+        proj = p.body
         if kind == 'render':
             pf = preflight(proj)
             if not pf['ready']:
                 msg = pf['errors'][0]['message'] if pf['errors'] else 'Preflight checks failed'
                 raise ValueError(f'Cannot queue render: {msg}')
 
-        body = {'project': proj, 'options': options or {}}
         jid = uuid.uuid4().hex
-        db.execute('INSERT INTO jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
-                   (jid, pid, revision, kind, json.dumps(body), 'queued', 'Waiting for worker', '{}', now(), now(), 0, None))
-    return job(jid)
+        body = {'project': proj, 'options': options or {}}
+        now_dt = datetime.now(timezone.utc)
+        new_job = Job(
+            id=jid,
+            workspace_id=p.workspace_id,
+            project_id=pid,
+            revision=revision,
+            kind=kind,
+            state='queued',
+            stage='queued',
+            progress='Waiting for worker',
+            snapshot=body,
+            result={},
+            applied=False,
+            operation_key=operation_key,
+            created_at=now_dt,
+            updated_at=now_dt
+        )
+        session.add(new_job)
+
+        stage = JobStage(
+            job_id=jid,
+            attempt=1,
+            stage='queued',
+            state='queued',
+            details=options or {},
+            created_at=now_dt,
+            updated_at=now_dt
+        )
+        session.add(stage)
+
+        # Transactional outbox event creation in the same transaction
+        outbox_entry = Outbox(
+            event_type='job.enqueued',
+            payload={
+                'job_id': jid,
+                'project_id': pid,
+                'revision': revision,
+                'kind': kind,
+                'options': options or {},
+                'operation_key': operation_key
+            },
+            processed=False,
+            attempts=0,
+            created_at=now_dt
+        )
+        session.add(outbox_entry)
+
+        session.flush()
+        return job_to_dict(new_job)
 
 
-def job(jid):
-    with connection() as db:
-        row = db.execute('SELECT * FROM jobs WHERE id=?', (jid,)).fetchone()
-    if not row:
-        raise ValueError('Job not found')
-    result = dict(row)
-    result['snapshot'] = json.loads(result['snapshot'])
-    result['result'] = json.loads(result['result'])
-    result['applied'] = bool(row['applied']) if 'applied' in row.keys() else False
-    result['applied_at'] = row['applied_at'] if 'applied_at' in row.keys() else None
-    return result
-
-
-def jobs(pid):
-    with connection() as db:
-        ids = [r['id'] for r in db.execute('SELECT id FROM jobs WHERE project_id=? ORDER BY created DESC LIMIT 30', (pid,))]
-    return [job(i) for i in ids]
-
-
-def progress(jid, message, state=None, result=None):
-    with connection() as db:
-        db.execute('UPDATE jobs SET progress=?,updated=? WHERE id=?', (message, now(), jid))
-        if state:
-            db.execute('UPDATE jobs SET state=?,result=? WHERE id=?', (state, json.dumps(result or {}), jid))
-
-
-def claim():
-    with connection() as db:
-        db.execute('BEGIN IMMEDIATE')
-        row = db.execute("SELECT id FROM jobs WHERE state='queued' ORDER BY created LIMIT 1").fetchone()
-        if not row:
-            return None
-        db.execute("UPDATE jobs SET state='running',updated=? WHERE id=?", (now(), row['id']))
-    return job(row['id'])
-
-
-def retry(jid, mode='original'):
-    with connection() as db:
-        db.execute('BEGIN IMMEDIATE')
-        row = db.execute("SELECT * FROM jobs WHERE id=?", (jid,)).fetchone()
-        if not row:
+def job(jid: str) -> Dict[str, Any]:
+    with session_scope() as session:
+        j = session.get(Job, jid)
+        if not j:
             raise ValueError('Job not found')
-        if row['state'] != 'failed':
+        return job_to_dict(j)
+
+
+def jobs(pid: str) -> List[Dict[str, Any]]:
+    with session_scope() as session:
+        stmt = select(Job).where(Job.project_id == pid).order_by(Job.created_at.desc()).limit(30)
+        job_objs = session.execute(stmt).scalars().all()
+        return [job_to_dict(j) for j in job_objs]
+
+
+def progress(
+    jid: str,
+    message: str,
+    state: Optional[str] = None,
+    result: Optional[Dict[str, Any]] = None,
+    stage_name: Optional[str] = None,
+    billable_units: int = 0,
+    ambiguous: bool = False
+) -> None:
+    with session_scope() as session:
+        j = session.get(Job, jid)
+        if not j:
+            return
+        now_dt = datetime.now(timezone.utc)
+        j.progress = message
+        j.updated_at = now_dt
+        if stage_name:
+            j.stage = stage_name
+        if state:
+            j.state = state
+            if result is not None:
+                j.result = result
+            stage = JobStage(
+                job_id=jid,
+                attempt=j.attempt_count or 1,
+                stage=stage_name or ('complete' if state in ('succeeded', 'failed') else 'running'),
+                state=state,
+                details=result or {},
+                billable_units=billable_units,
+                ambiguous_outcome=ambiguous,
+                created_at=now_dt,
+                updated_at=now_dt
+            )
+            session.add(stage)
+
+
+def claim() -> Optional[Dict[str, Any]]:
+    """Claim a queued job using PostgreSQL SKIP LOCKED to prevent concurrency contention."""
+    with session_scope() as session:
+        stmt = (
+            select(Job)
+            .where(Job.state == 'queued')
+            .order_by(Job.created_at.asc())
+            .with_for_update(skip_locked=True)
+            .limit(1)
+        )
+        j = session.execute(stmt).scalar_one_or_none()
+        if not j:
+            return None
+        now_dt = datetime.now(timezone.utc)
+        j.state = 'running'
+        j.stage = 'running'
+        j.updated_at = now_dt
+        j.attempt_count = (j.attempt_count or 0) + 1
+        session.flush()
+        return job_to_dict(j)
+
+
+def retry(jid: str, mode: str = 'original') -> Dict[str, Any]:
+    with session_scope() as session:
+        stmt = select(Job).where(Job.id == jid).with_for_update()
+        j = session.execute(stmt).scalar_one_or_none()
+        if not j:
+            raise ValueError('Job not found')
+        if j.state != 'failed':
             raise ValueError('Only failed jobs can be retried')
 
+        now_dt = datetime.now(timezone.utc)
         if mode == 'current':
-            p_row = db.execute("SELECT * FROM projects WHERE id=?", (row['project_id'],)).fetchone()
-            if not p_row:
+            p = session.get(Project, j.project_id)
+            if not p:
                 raise ValueError('Project not found')
-            current_proj = json.loads(p_row['body'])
-            current_rev = p_row['revision']
-            snap = json.loads(row['snapshot'])
-            snap['project'] = current_proj
-            db.execute("UPDATE jobs SET snapshot=?, revision=?, state='queued', progress='Retry queued (current project)', result='{}', updated=? WHERE id=?",
-                       (json.dumps(snap), current_rev, now(), jid))
+            snap = dict(j.snapshot)
+            snap['project'] = p.body
+            j.snapshot = snap
+            j.revision = p.revision
+            j.progress = 'Retry queued (current project)'
         else:
-            db.execute("UPDATE jobs SET state='queued', progress='Retry queued (original inputs)', result='{}', updated=? WHERE id=?",
-                       (now(), jid))
-    return job(jid)
+            j.progress = 'Retry queued (original inputs)'
+
+        j.state = 'queued'
+        j.stage = 'queued'
+        j.result = {}
+        j.cancelled = False
+        j.cancelled_at = None
+        j.lease_token = None
+        j.lease_expires_at = None
+        j.updated_at = now_dt
+        j.attempt_count = (j.attempt_count or 1) + 1
+
+        stage = JobStage(
+            job_id=jid,
+            attempt=j.attempt_count,
+            stage=f'retry_{mode}',
+            state='queued',
+            details={'mode': mode},
+            created_at=now_dt,
+            updated_at=now_dt
+        )
+        session.add(stage)
+
+        # Enqueue to outbox for distributed dispatcher
+        outbox_msg = Outbox(
+            event_type='job.enqueued',
+            payload={
+                'job_id': jid,
+                'project_id': j.project_id,
+                'revision': j.revision,
+                'kind': j.kind,
+                'options': j.snapshot.get('options', {}),
+            },
+            processed=False,
+            attempts=0,
+            created_at=now_dt
+        )
+        session.add(outbox_msg)
+
+        session.flush()
+        return job_to_dict(j)
 
 
-def apply_job(pid, jid, force=False):
-    with connection() as db:
-        db.execute('BEGIN IMMEDIATE')
-        j_row = db.execute('SELECT * FROM jobs WHERE id=? AND project_id=?', (jid, pid)).fetchone()
-        if not j_row:
+def acquire_lease(jid: str, worker_id: str, duration_seconds: int = 60) -> Optional[str]:
+    """Acquire or extend execution lease for a job."""
+    with session_scope() as session:
+        stmt = select(Job).where(Job.id == jid).with_for_update()
+        j = session.execute(stmt).scalar_one_or_none()
+        if not j:
+            return None
+        now_dt = datetime.now(timezone.utc)
+        if j.cancelled:
+            return None
+        # Check existing lease
+        if j.state == 'running' and j.lease_token and j.lease_token != worker_id:
+            if j.lease_expires_at and j.lease_expires_at > now_dt:
+                return None  # Still owned by an active worker
+        j.state = 'running'
+        j.lease_token = worker_id
+        j.lease_expires_at = now_dt + timedelta(seconds=duration_seconds)
+        j.heartbeat_at = now_dt
+        j.updated_at = now_dt
+        session.flush()
+        return worker_id
+
+
+def renew_lease(jid: str, lease_token: str, extension_seconds: int = 60) -> bool:
+    """Heartbeat lease renewal during long-running worker tasks."""
+    with session_scope() as session:
+        stmt = select(Job).where(Job.id == jid).with_for_update()
+        j = session.execute(stmt).scalar_one_or_none()
+        if not j or j.cancelled or j.lease_token != lease_token:
+            return False
+        now_dt = datetime.now(timezone.utc)
+        j.lease_expires_at = now_dt + timedelta(seconds=extension_seconds)
+        j.heartbeat_at = now_dt
+        j.updated_at = now_dt
+        session.flush()
+        return True
+
+
+def verify_lease_and_not_cancelled(jid: str, lease_token: str) -> bool:
+    """Verify that caller holds the active unexpired lease and job is not cancelled."""
+    with session_scope() as session:
+        j = session.get(Job, jid)
+        if not j or j.cancelled or j.lease_token != lease_token:
+            return False
+        now_dt = datetime.now(timezone.utc)
+        if j.lease_expires_at and j.lease_expires_at < now_dt:
+            return False
+        return True
+
+
+def register_subprocess(jid: str, pid: int) -> None:
+    """Associate active OS subprocess PID with the job."""
+    with session_scope() as session:
+        j = session.get(Job, jid)
+        if j:
+            j.subprocess_pid = pid
+
+
+def unregister_subprocess(jid: str) -> None:
+    """Clear subprocess PID when process finishes."""
+    with session_scope() as session:
+        j = session.get(Job, jid)
+        if j:
+            j.subprocess_pid = None
+
+
+def terminate_subprocess_tree(pid: int) -> None:
+    """Terminate only the specific job's subprocess tree."""
+    if not pid:
+        return
+    try:
+        if os.name == 'nt':
+            subprocess.run(['taskkill', '/F', '/T', '/PID', str(pid)], capture_output=True, timeout=5)
+        else:
+            try:
+                import psutil
+                parent = psutil.Process(pid)
+                for child in parent.children(recursive=True):
+                    child.kill()
+                parent.kill()
+            except Exception:
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                except Exception:
+                    os.kill(pid, signal.SIGKILL)
+    except Exception:
+        pass
+
+
+def cancel(jid: str) -> Dict[str, Any]:
+    """Persist job cancellation and stop only the job's active subprocess tree."""
+    with session_scope() as session:
+        stmt = select(Job).where(Job.id == jid).with_for_update()
+        j = session.execute(stmt).scalar_one_or_none()
+        if not j:
+            raise ValueError('Job not found')
+        if j.state in ('succeeded', 'cancelled'):
+            return job_to_dict(j)
+        now_dt = datetime.now(timezone.utc)
+        j.cancelled = True
+        j.cancelled_at = now_dt
+        j.state = 'cancelled'
+        j.progress = 'Cancelled by user'
+        j.updated_at = now_dt
+        sub_pid = j.subprocess_pid
+        j.subprocess_pid = None
+        session.flush()
+
+        if sub_pid:
+            terminate_subprocess_tree(sub_pid)
+
+        return job_to_dict(j)
+
+
+def recover_expired_leases() -> int:
+    """Recover ONLY expired ownerships; never reset running jobs with active leases."""
+    with session_scope() as session:
+        now_dt = datetime.now(timezone.utc)
+        stmt = (
+            select(Job)
+            .where(
+                Job.state == 'running',
+                Job.lease_expires_at.is_not(None),
+                Job.lease_expires_at < now_dt
+            )
+            .with_for_update()
+        )
+        expired_jobs = session.execute(stmt).scalars().all()
+        count = 0
+        for j in expired_jobs:
+            j.state = 'failed'
+            j.error_message = 'Worker execution lease expired without renewal'
+            j.progress = 'Worker lost ownership or crashed. Retry to resume.'
+            j.lease_token = None
+            j.lease_expires_at = None
+            j.updated_at = now_dt
+            count += 1
+        session.flush()
+        return count
+
+
+def apply_job(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
+    with session_scope() as session:
+        stmt_j = select(Job).where(Job.id == jid, Job.project_id == pid).with_for_update()
+        j = session.execute(stmt_j).scalar_one_or_none()
+        if not j:
             raise ValueError('Job not found for this project')
-        j = dict(j_row)
-        j['snapshot'] = json.loads(j['snapshot'])
-        j['result'] = json.loads(j['result'])
-        applied = bool(j_row['applied']) if 'applied' in j_row.keys() else False
 
-        p_row = db.execute('SELECT * FROM projects WHERE id=?', (pid,)).fetchone()
-        if not p_row:
+        stmt_p = select(Project).where(Project.id == pid).with_for_update()
+        p = session.execute(stmt_p).scalar_one_or_none()
+        if not p:
             raise ValueError('Project not found')
-        current_project = json.loads(p_row['body'])
-        current_rev = p_row['revision']
 
-        if applied:
-            return {'project': unpack(p_row), 'applied': True, 'conflicts': [],
-                    'revision': current_rev,
-                    'message': 'Job results were already applied.'}
+        current_project = copy.deepcopy(p.body)
+        current_rev = p.revision
 
-        if j['state'] != 'succeeded':
-            raise ValueError(f"Job is in state '{j['state']}'; only succeeded jobs can be applied")
+        if j.applied:
+            return {
+                'project': unpack(p),
+                'applied': True,
+                'conflicts': [],
+                'revision': current_rev,
+                'message': 'Job results were already applied.'
+            }
 
-        kind = j['kind']
+        if j.state != 'succeeded':
+            raise ValueError(f"Job is in state '{j.state}'; only succeeded jobs can be applied")
+
+        kind = j.kind
         conflicts = []
         modified = False
-        snap_project = j['snapshot']['project']
+        snap_project = j.snapshot.get('project', {})
         base_scenes = {s['id']: s for s in snap_project.get('scenes', [])}
         curr_scenes = {s['id']: s for s in current_project.get('scenes', [])}
 
         if kind == 'stock':
-            target_scene_id = j['snapshot']['options'].get('scene_id')
-            asset_info = j['result'].get('asset')
+            target_scene_id = j.snapshot.get('options', {}).get('scene_id')
+            asset_info = j.result.get('asset')
             if not target_scene_id or not asset_info:
                 raise ValueError('Invalid stock job result')
             if target_scene_id not in curr_scenes:
@@ -419,7 +837,7 @@ def apply_job(pid, jid, force=False):
                     modified = True
 
         elif kind == 'stock_all':
-            selections = j['result'].get('selections', [])
+            selections = j.result.get('selections', [])
             for sel in selections:
                 sid = sel.get('scene_id')
                 asset_info = sel.get('asset')
@@ -443,16 +861,15 @@ def apply_job(pid, jid, force=False):
                     modified = True
 
         elif kind == 'research':
-            current_project['research_report'] = j['result'].get('text', '')
-            current_project['research_sources'] = j['result'].get('sources', [])
-            current_project['research_grounding'] = j['result'].get('grounding', {})
+            current_project['research_report'] = j.result.get('text', '')
+            current_project['research_sources'] = j.result.get('sources', [])
+            current_project['research_grounding'] = j.result.get('grounding', {})
             modified = True
 
         elif kind == 'draft':
-            draft_scenes = j['result'].get('scenes', [])
+            draft_scenes = j.result.get('scenes', [])
             if not draft_scenes:
                 raise ValueError('Draft result contains no scenes')
-            # Check if user made custom scene edits since base snapshot
             custom_edits = False
             for sid, s in curr_scenes.items():
                 if sid not in base_scenes or s.get('narration') != base_scenes[sid].get('narration'):
@@ -469,27 +886,42 @@ def apply_job(pid, jid, force=False):
             raise ValueError(f"Job kind '{kind}' does not produce an applicable storyboard result")
 
         new_rev = current_rev
+        now_dt = datetime.now(timezone.utc)
         if modified:
             new_rev = current_rev + 1
-            validated_project = Project.model_validate(current_project).model_dump()
-            body_str = json.dumps(validated_project, ensure_ascii=False)
-            db.execute('UPDATE projects SET revision=?, body=?, approved=NULL, updated=? WHERE id=?',
-                       (new_rev, body_str, now(), pid))
-            db.execute('INSERT INTO revisions VALUES(?,?,?,?)', (pid, new_rev, body_str, now()))
-            db.execute('DELETE FROM drafts WHERE project_id=?', (pid,))
+            validated_project = PydanticProject.model_validate(current_project).model_dump()
+            p.revision = new_rev
+            p.body = validated_project
+            flag_modified(p, 'body')
+            p.approved_revision = None
+            p.updated_at = now_dt
 
-        db.execute('UPDATE jobs SET applied=1, applied_at=? WHERE id=?', (now(), jid))
-    return {'project': get_project(pid), 'applied': True, 'conflicts': conflicts,
-            'revision': new_rev}
+            rev_entry = Revision(
+                project_id=pid,
+                revision=new_rev,
+                body=validated_project,
+                created_at=now_dt
+            )
+            session.add(rev_entry)
+            session.execute(delete(Draft).where(Draft.project_id == pid))
 
+        j.applied = True
+        j.applied_at = now_dt
 
-def reserve_ai_call(limit):
-    day = now()[:10]
-    with connection() as db:
-        db.execute('BEGIN IMMEDIATE')
-        row = db.execute('SELECT calls FROM usage WHERE day=? AND provider=?', (day, 'gemini')).fetchone()
-        count = row['calls'] if row else 0
-        if count >= limit:
-            raise ValueError('Daily Gemini request limit reached. Change Settings or try tomorrow (UTC).')
-        db.execute('INSERT OR REPLACE INTO usage VALUES(?,?,?)', (day, 'gemini', count + 1))
+        # Record receipt
+        receipt = ApplicationReceipt(
+            job_id=jid,
+            project_id=pid,
+            applied_revision=new_rev,
+            conflicts=conflicts,
+            applied_at=now_dt
+        )
+        session.add(receipt)
+        session.flush()
 
+        return {
+            'project': unpack(p),
+            'applied': True,
+            'conflicts': conflicts,
+            'revision': new_rev
+        }

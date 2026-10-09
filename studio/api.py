@@ -118,13 +118,14 @@ class JobBody(BaseModel):
     script: str = Field(default='', max_length=20000)
     video_id: int = Field(default=0, ge=0)
     scene_id: str = Field(default='', max_length=48)
+    operation_key: Optional[str] = Field(default=None, max_length=128)
 
 
 @app.post('/api/projects/{pid}/jobs')
 def queue(pid: str, body: JobBody):
     options = {'tts_provider': settings()['tts_provider'], 'quality': body.quality,
                'script': body.script, 'video_id': body.video_id, 'scene_id': body.scene_id}
-    return store.enqueue(pid, body.revision, body.kind, options)
+    return store.enqueue(pid, body.revision, body.kind, options, operation_key=body.operation_key)
 
 
 @app.get('/api/projects/{pid}/jobs')
@@ -142,8 +143,15 @@ def retry(jid: str, mode: str = 'original', body: Optional[RetryBody] = None):
     return store.retry(jid, mode=actual_mode)
 
 
+@app.post('/api/jobs/{jid}/cancel')
+def cancel_job(jid: str):
+    return store.cancel(jid)
+
+
 @app.post('/api/projects/{pid}/apply-job/{jid}')
+@app.get('/api/projects/{pid}/apply-job/{jid}')
 @app.post('/api/projects/{pid}/jobs/{jid}/apply')
+@app.get('/api/projects/{pid}/jobs/{jid}/apply')
 def apply_job(pid: str, jid: str, force: bool = False):
     return store.apply_job(pid, jid, force=force)
 
