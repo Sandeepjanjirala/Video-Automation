@@ -1,0 +1,62 @@
+{
+  "options": {
+    "quality": "final",
+    "tts_provider": "edge"
+  },
+  "project": {
+    "title": "Home Laptop Phase 3 Reel Verification",
+    "topic": "",
+    "voice": "te-IN-ShrutiNeural",
+    "scenes": [
+      {
+        "id": "scene_home_1",
+        "fit": "crop",
+        "cues": [],
+        "roman": "Namaskaram! Telugu Reel Studio mee home laptop lo vijayavanthamga run avuthondi. Anni configurations siddhamga unnayi.",
+        "crop_x": 0.5,
+        "visual": "upload",
+        "keywords": "",
+        "narration": "నమస్కారం! తెలుగు రీల్ స్టూడియో మీ హోమ్ లాప్‌టాప్‌లో విజయవంతంగా రన్ అవుతోంది. అన్ని కాన్ఫిగరేషన్లు సిద్ధంగా ఉన్నాయి.",
+        "trim_start": 0.0,
+        "audio_asset": "",
+        "video_asset": "77ee26ea90654ae3985b1f1cc6ee49fd",
+        "hold_seconds": 0.5,
+        "graphic_title": "",
+        "audio_text_hash": "",
+        "rights_reviewed": true
+      },
+      {
+        "id": "scene_home_2",
+        "fit": "crop",
+        "cues": [],
+        "roman": "PostgreSQL mariyu Redis architecture aadharamga Celery workerlu background lo videolanu render chesthunnayi.",
+        "crop_x": 0.5,
+        "visual": "upload",
+        "keywords": "",
+        "narration": "పోస్ట్‌గ్రేస్‌క్యూఎల్ మరియు రెడ్డిస్ ఆర్కిటెక్చర్ ఆధారంగా సెలరీ వర్కర్లు బ్యాక్‌గ్రౌండ్‌లో వీడియోలను రెండర్ చేస్తున్నాయి.",
+        "trim_start": 0.0,
+        "audio_asset": "",
+        "video_asset": "a257a20e79534de3a903286f708b5f41",
+        "hold_seconds": 0.5,
+        "graphic_title": "",
+        "audio_text_hash": "",
+        "rights_reviewed": true
+      }
+    ],
+    "category": "Storytelling",
+    "music_gain": 0.12,
+    "music_asset": "a8bf9d890428481096fd7befafdca724",
+    "speech_rate": 0,
+    "caption_size": 56,
+    "draft_script": "",
+    "duration_mode": "natural",
+    "caption_bottom": 300,
+    "evidence_notes": "Phase 3 end-to-end integration and render verification on home laptop.",
+    "target_seconds": 60,
+    "research_report": "",
+    "research_sources": [],
+    "research_grounding": {},
+    "script_approved_hash": "0f8e70605e0571b632a498f0f0850c7ec1ab752a8342b612c3b64201005df2cd",
+    "music_rights_reviewed": true
+  }
+}

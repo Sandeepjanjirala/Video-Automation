@@ -24,6 +24,7 @@ class Cue(StrictModel):
 class Scene(StrictModel):
     id: str = Field(pattern=r'^[a-zA-Z0-9_-]{1,48}$')
     narration: str = Field(default='', max_length=3000)
+    spoken_text: str = Field(default='', max_length=3000)
     roman: str = Field(default='', max_length=3000)
     keywords: str = Field(default='', max_length=100)
     visual: Literal['upload', 'stock', 'graphic'] = 'upload'
@@ -36,6 +37,9 @@ class Scene(StrictModel):
     hold_seconds: float = Field(default=0, ge=0, le=30)
     graphic_title: str = Field(default='', max_length=150)
     rights_reviewed: bool = False
+    narration_block_id: str = Field(default='', max_length=48)
+    take_id: str = Field(default='', max_length=64)
+    delivery_preset: str = Field(default='conversational', max_length=32)
     cues: list[Cue] = Field(default_factory=list, max_length=200)
 
     @model_validator(mode='after')
@@ -56,8 +60,14 @@ class Project(StrictModel):
     category: str = Field(default='Storytelling', max_length=60)
     target_seconds: int = Field(default=60, ge=10, le=180)
     duration_mode: Literal['natural', 'target'] = 'natural'
-    voice: Literal['te-IN-ShrutiNeural', 'te-IN-MohanNeural'] = 'te-IN-ShrutiNeural'
+    tts_provider: str = Field(default='edge', max_length=32)
+    voice: str = Field(default='te-IN-ShrutiNeural', max_length=64)
     speech_rate: int = Field(default=0, ge=-25, le=25)
+    delivery_preset: str = Field(default='conversational', max_length=32)
+    pronunciation_dict: dict[str, str] = Field(default_factory=dict)
+    voice_locked: bool = False
+    voice_profile: dict = Field(default_factory=dict)
+    narration_blocks: list[dict] = Field(default_factory=list)
     scenes: list[Scene] = Field(default_factory=list, max_length=30)
     evidence_notes: str = Field(default='', max_length=30000)
     research_report: str = Field(default='', max_length=60000)

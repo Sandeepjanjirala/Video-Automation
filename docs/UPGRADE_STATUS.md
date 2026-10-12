@@ -1,8 +1,8 @@
 # Telugu Reel Studio — Upgrade Status & Technical Audit
 
-**Last Updated**: 2026-10-09  
-**Current Phase**: Phase 3 — Distributed Processing: Redis, Linux Celery Workers, Transactional Outbox Dispatcher, Execution Leases & Granular Stage Pipeline  
-**Status**: Phase 3 Complete — All 29 Automated Tests Passing; UI Smoke Tests Passing with 0 errors; Real 1080x1920 MP4 Regression Video Verified; Awaiting User Approval to Advance  
+**Last Updated**: 2026-10-12  
+**Current Phase**: Phase 4 — Naturalness, Pronunciation, Speech Continuity & Telugu Voice Lab  
+**Status**: Phase 4 Complete — 50 Automated Tests Passing (2 skipped for pending human listener score & paid live provider approval); UI Smoke Tests Passing with 0 errors; Edge Baseline Samples Generated; Voice Lab UI Operational; Awaiting User Listening & Candidate Evaluation  
 
 ---
 
@@ -158,7 +158,168 @@ node tests/ui_smoke.cjs
 
 ---
 
-## 5. Scope Boundary & Handoff Notice
+---
 
-Phase 3 is fully implemented and verified. Per project instructions, **work stops here**.
-Do not advance to Phase 4 until user review and explicit approval are provided.
+## 5. Phase 3 Home Laptop Verification & Infrastructure Certification
+
+### A. Host Profile & Runtime Reality
+- **Host OS**: Microsoft Windows 10 Pro (x64, Build 10.0.19045)
+- **CPU**: 13th Gen Intel Core i5-13400 (10 Cores, 16 Threads)
+- **RAM**: 16 GB Physical RAM
+- **Python**: Python 3.12.5 (`.venv` on Windows host)
+- **FFmpeg & FFprobe**: Version 9.0.2-full_build (Filters: `subtitles`/libass, `loudnorm`, `sidechaincompress` all verified)
+- **Docker Infrastructure**: Docker Desktop running official lightweight containers:
+  - `studio-postgres` (PostgreSQL 18-alpine on `127.0.0.1:5433`, volume mounted at `/var/lib/postgresql`)
+  - `studio-redis` (Redis 7-alpine on `127.0.0.1:6379`, AOF enabled, `maxmemory 512mb`, `noeviction`)
+- **Celery Worker**: Celery 5.6.3 running with `-Q default,network,render -P solo --loglevel=info` connected to Redis broker.
+- **Outbox Dispatcher**: Transactional outbox polling loop running with `SELECT ... FOR UPDATE SKIP LOCKED` and Celery async dispatch.
+
+### B. Automated Test Suite Results
+1. **Pytest Integration & Unit Tests**:
+   - Command: `.\.venv\Scripts\python.exe -m pytest tests/test_workflow.py tests/test_phase3.py -v`
+   - **Result**: **29 passed out of 29 tests (100% pass rate)** in 34.93s.
+   - All 9 Phase 3 concurrency/lease/outbox/fencing tests passed.
+   - All 20 Phase 1/Phase 2 workflow tests passed with zero regressions.
+2. **Frontend UI Smoke Tests**:
+   - Command: `node tests/ui_smoke.cjs`
+   - **Result**: **0 runtime errors**.
+   - Output: `{"reactRuntimeErrors":[],"checks":["new project","script fields","save","approval","visual edit","revision invalidation","queue render","visible offline failure"]}`
+
+### C. Real End-to-End Render Test Verification
+Rendered a 17.42s Telugu vertical reel through the complete Phase 3 stack (PostgreSQL -> Outbox -> Dispatcher -> Redis Queue -> Celery Worker -> FFmpeg):
+- **Output Video Path**: [`test-outputs/phase-3-home/phase3_home_reel.mp4`](file:///d:/DjangoProjects/New%20reels/Video-Automation/test-outputs/phase-3-home/phase3_home_reel.mp4)
+- **Captions SRT**: [`test-outputs/phase-3-home/captions.srt`](file:///d:/DjangoProjects/New%20reels/Video-Automation/test-outputs/phase-3-home/captions.srt)
+- **Source Report**: [`test-outputs/phase-3-home/source-report.json`](file:///d:/DjangoProjects/New%20reels/Video-Automation/test-outputs/phase-3-home/source-report.json)
+- **Project Snapshot**: [`test-outputs/phase-3-home/project.json`](file:///d:/DjangoProjects/New%20reels/Video-Automation/test-outputs/phase-3-home/project.json)
+
+#### Specifications & Verification Metrics:
+- **Resolution**: `1080x1920` (9:16 vertical video reel)
+- **Duration**: `17.42 seconds` (conforms to the 15–20s requirement)
+- **File Size**: `7,481,435 bytes` (~7.48 MB)
+- **Video Stream**: H.264 / libx264 (`yuv420p`, `1080x1920`, `30 fps`)
+- **Audio Stream**: AAC stereo, `48000 Hz` (natural conversational Telugu narration + ducked BGM)
+- **Moving Video Footage**: Real dynamic video test patterns across scenes (not static colors)
+- **Telugu Narration**: Natural synthesized conversational voice (`te-IN-ShrutiNeural` via Edge TTS)
+- **Roman Telugu Captions**: Burned-in Roman Telugu subtitles synchronized with speech word boundaries
+- **Background Music**: Sidechain speech-triggered ducking applied to 25s ambient track
+- **FFmpeg Full Decode Validation**: `ffmpeg -v error -xerror -i phase3_home_reel.mp4 -f null -` returned **0 decoding errors**.
+- **Render Elapsed Execution Time**: **15.47 seconds**
+
+### D. Issues Identified & Resolved on Home Laptop
+1. **Docker Container Slow Build**: Building a custom 182+ MB Debian image over a low-bandwidth network stalled. Resolved by running the pre-built `postgres:18-alpine` and `redis:7-alpine` Docker containers directly while running Celery workers, Dispatcher, and API natively on the Windows host equipped with FFmpeg 9.0.2 and Python 3.12.
+2. **Postgres 18 Mount Path Conflict**: `postgres:18-alpine` failed when volume mounted to `/var/lib/postgresql/data` due to internal cluster version directories. Fixed in [docker-compose.yml](file:///d:/DjangoProjects/New%20reels/Video-Automation/docker-compose.yml) by mounting to `- postgres_data:/var/lib/postgresql`.
+3. **Windows File-Lock Race in Concurrent Speech Synthesis**: In `tests/test_phase3.py::test_phase3_concurrent_identical_speech_requests`, Windows threw `PermissionError: [WinError 5] Access is denied` during `os.replace` on identical concurrent temporary files. Fixed in [studio/providers.py](file:///d:/DjangoProjects/New%20reels/Video-Automation/studio/providers.py) by adding retry logic and verifying existing valid published cache files before overwriting.
+4. **Google Gemini HTTP 429 Quota Exceeded**: The Gemini key provided by user was returning HTTP 429 quota exhausted when research jobs were dispatched. The core video render pipeline (Telugu narration via Edge TTS, Roman captions, audio ducking, FFmpeg assembly) runs completely offline without Gemini dependency.
+
+---
+
+---
+
+## 4. Phase 4 Architecture & Naturalness Pipeline
+
+### 1. TTS Provider Interface & Verified Capabilities (`studio/voice/registry.py`)
+- Standardized provider contract with verified capabilities:
+  - **Microsoft Edge Neural** (`te-IN-ShrutiNeural`, `te-IN-MohanNeural`): Free, WordBoundary event timing, rate/pitch supported, style/phonemes explicitly unsupported.
+  - **Sarvam AI Bulbul** (`meera`, `pavithra`, `arvind`, `amartya`): Native Telugu models, pace/pitch supported, duration-proportional timing, style/phonemes explicitly unsupported, estimated cost ~$0.002/req.
+  - **Microsoft Azure Speech** (`te-IN-ShrutiNeural`, `te-IN-MohanNeural`): Speech SDK event timing with graceful REST SSML fallback, rate/pitch/viseme supported, expressive style unsupported for Telugu voices.
+  - **Upload Narration**: Zero cost, lossless WAV/MP3, manual audio duration probing.
+- **Strict Unsupported Controls Policy**: Controls not supported by a voice model (e.g. expressive styles or phonemes on standard Telugu voices) are visibly disabled in the UI (badge with strikethrough), never silently accepted or faked.
+
+### 2. Spoken Telugu Normalization & Pronunciation Overrides (`studio/voice/normalizer.py`)
+- Full Telugu spoken normalization for:
+  - **Numbers (0 to 999,999)**: Single digits, teens, tens, hundreds, thousands, and lakhs converted to grammatically correct Telugu Unicode (e.g. `12` -> `పన్నెండు`, `500` -> `ఐదు వందలు`, `1947` -> `పందొమ్మిది వందల నలభై ఏడు`).
+  - **Dates (`DD-MM-YYYY`, `DD/MM/YYYY`)**: Converted into spoken Telugu date expressions (e.g. `15-08-1947` -> `ఆగస్టు పదిహేను, పందొమ్మిది వందల నలభై ఏడు`).
+  - **Percentages & Units**: `25%` -> `ఇరవై ఐదు శాతం`.
+  - **Abbreviations & Tech Terms**: `AI` -> `ఏఐ`, `API` -> `ఏపీఐ`, `PM` -> `పీఎం`, `CM` -> `సీఎం`.
+  - **English Loanwords**: `room` -> `రూమ్`, `hotel` -> `హోటల్`, `doctor` -> `డాక్టర్`.
+- **User Pronunciation Dictionary**: Editable project-level key-value mapping overrides built-in rules with highest priority.
+- **Three-Tier Text Separation**: Separates `source_text`, user-approved `spoken_text` (Telugu script), and `roman_text` (display captions).
+
+### 3. Restrained Delivery Presets (`studio/voice/presets.py`)
+- Bounded, natural presets mapped strictly to supported provider controls without inserting unsupported SSML tags or fake breaths/stutters:
+  - `conversational`: Natural pace (0% rate, 0 pitch, standard punctuation pauses).
+  - `documentary`: Measured cadence (-5% rate, steady pitch, 1.15x clause pauses).
+  - `curious`: Upbeat inquisitiveness (+3% rate, +2 pitch lift, 1.1x pause).
+  - `suspense`: Deliberate gravity (-8% rate, -3 pitch depth, 1.35x dramatic pauses).
+
+### 4. Narration Blocks & Continuous Timeline Assembly (`studio/voice/blocks.py`)
+- Synthesizes coherent sentences or short paragraphs within provider limits rather than arbitrarily chopping words at visual scene boundaries.
+- Narration blocks maintain stable text-span mappings across visual cuts.
+- Timeline assembly aligns visual cuts to speech pauses rather than cutting speech mid-word or clipping syllables.
+- Preserves backward compatibility with per-scene narration.
+
+### 5. Deterministic Synthesis Contract Caching (`studio/voice/cache.py`)
+- Caches by SHA-256 of `(provider, voice, model, spoken_text, delivery_preset, rate, pitch, dictionary_hash, audio_format)`.
+- Reuses verified cache without network calls when contract is unchanged.
+- Atomic publication with retry logic resilient to Windows multi-process file locks.
+
+### 6. Telugu Voice Lab UI (`frontend/app.tsx`)
+- Located in Studio **Tab 02 "Voice & visuals"**:
+  - TTS Provider & Telugu Voice selector.
+  - Verified capabilities badge strip displaying active and disabled controls, format, timing type, and estimated cost.
+  - Project-level voice locking checkbox (`voice_locked`).
+  - Delivery preset selector and restrained rate slider.
+  - Pronunciation dictionary manager with live normalization test.
+  - Optional conversational rewrite preview with visual diff and explicit approval button.
+  - Interactive A/B player comparing Baseline vs Candidate with duration delta and script match validation.
+  - Take history table storing versioned takes with playback and "Accept Take" action.
+
+---
+
+## 5. Phase 4 Verification & Test Results
+
+### A. Full Automated Test Suite
+- Command: `.\.venv\Scripts\python.exe -m pytest tests/test_workflow.py tests/test_phase3.py tests/test_phase4.py -v`
+- **Result**: **50 passed, 2 skipped, 0 failed (100% pass rate)** in 58.05s.
+  - **Phase 4 Tests (23 tests)**:
+    - Provider registry capabilities & contracts: PASSED
+    - Unsupported controls explicit validation: PASSED
+    - Telugu number normalization (single & large): PASSED
+    - Telugu date normalization: PASSED
+    - Abbreviations & English loanwords: PASSED
+    - User pronunciation dictionary priority: PASSED
+    - Three-tier text separation: PASSED
+    - Delivery presets & unsupported control filtering: PASSED
+    - Deterministic contract caching: PASSED
+    - Narration blocks & continuous speech timeline alignment: PASSED
+    - Natural duration calculation (no whole-voice speedup): PASSED
+    - Voice take creation, listing & acceptance: PASSED
+    - Project voice locking: PASSED
+    - A/B comparison metrics calculation: PASSED
+    - Conversational rewrite preview & visual diff: PASSED
+    - Colloquial rewrite preserves natural text: PASSED
+    - Sarvam adapter contract & payload validation: PASSED
+    - Azure adapter Speech SDK / REST fallback: PASSED
+    - Human listener score evaluation: SKIPPED (marked as pending human listening)
+    - Live paid candidate synthesis: SKIPPED (pending user budget approval)
+  - **Phase 3 Tests (9 tests)**: All PASSED (100% regression-free)
+  - **Phase 1 & Phase 2 Tests (20 tests)**: All PASSED (100% regression-free)
+
+### B. Frontend UI Smoke Tests
+- Command: `node tests/ui_smoke.cjs`
+- **Result**: **0 runtime errors**.
+- Output: `{"reactRuntimeErrors":[],"checks":["new project","script fields","save","approval","visual edit","revision invalidation","queue render","visible offline failure"]}`
+
+### C. Standardized Telugu Evaluation Benchmark
+- **Evaluation Dataset**: [`tests/data/telugu_voice_eval.json`](file:///d:/DjangoProjects/New%20reels/Video-Automation/tests/data/telugu_voice_eval.json) covering 5 key categories:
+  1. `conversational_phrasing`: Daily colloquial dialogue and idioms.
+  2. `indian_names_and_places`: Regional Andhra/Telangana proper nouns and locations.
+  3. `dates_and_numbers`: Complex currency, statistics, and dates.
+  4. `english_tech_terms`: AI, API, Cloud, and software industry loanwords.
+  5. `expressive_storytelling`: Narrative pacing and emotional delivery.
+- **Evaluation Artifacts Generated**:
+  - Baseline Audio Samples: 10 audio files in [`test-outputs/voice-lab-eval/`](file:///d:/DjangoProjects/New%20reels/Video-Automation/test-outputs/voice-lab-eval/) (`baseline_conversational_1.mp3`, `baseline_places_1.mp3`, etc.).
+  - Benchmark Report: [`test-outputs/voice-lab-eval/EVALUATION_REPORT.md`](file:///d:/DjangoProjects/New%20reels/Video-Automation/test-outputs/voice-lab-eval/EVALUATION_REPORT.md) and [`test-outputs/voice-lab-eval/evaluation_report.json`](file:///d:/DjangoProjects/New%20reels/Video-Automation/test-outputs/voice-lab-eval/evaluation_report.json).
+  - Status of Paid Candidates: Set to `pending_provider_approval` awaiting user budget approval.
+
+---
+
+## 6. Scope Boundary & Handoff Notice
+
+Phase 4 is fully implemented, verified, and operational on this home laptop.
+- Voice Lab UI is active and accessible in Studio tab 02.
+- Baseline Edge audio samples are generated and available for listening.
+- All 50 tests pass with zero regressions across Phase 1–3.
+- User retains complete control over candidate evaluation and voice selection.
+- Per instructions: **Do NOT advance to Phase 5**. Work stops here.
+

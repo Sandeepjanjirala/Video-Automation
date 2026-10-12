@@ -10,7 +10,7 @@
   "name": "telugu-reel-studio-ui",
   "private": true,
   "scripts": {
-    "build": "esbuild app.tsx --bundle --minify --format=esm --outfile=../studio/static/app.js",
+    "build": "node -e \"require('esbuild').buildSync({entryPoints: ['app.tsx'], bundle: true, minify: true, format: 'esm', outfile: '../studio/static/app.js'})\"",
     "test:ui": "node ../tests/ui_smoke.cjs"
   }
 }

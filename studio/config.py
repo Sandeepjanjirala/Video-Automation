@@ -6,12 +6,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.environ.get('REEL_DATA_DIR', str(ROOT / 'data'))).resolve()
 DEFAULTS = {
-    'gemini_key': '', 'gemini_model': 'gemini-2.5-flash', 'pixabay_key': '',
-    'azure_key': '', 'azure_region': '', 'online_enabled': False,
+    'gemini_key': '', 'gemini_model': 'gemini-3.8-flash', 'pixabay_key': '',
+    'azure_key': '', 'azure_region': '', 'sarvam_key': '', 'online_enabled': False,
     'tts_provider': 'edge', 'voice': 'te-IN-ShrutiNeural',
     'daily_ai_calls': 20, 'ffmpeg': '', 'ffprobe': '',
 }
-SECRETS = {'gemini_key', 'pixabay_key', 'azure_key'}
+SECRETS = {'gemini_key', 'pixabay_key', 'azure_key', 'sarvam_key'}
 
 
 def setup():
@@ -33,9 +33,10 @@ def save_settings(values):
         if key in SECRETS and not value:
             continue
         cfg[key] = value
-    if cfg['tts_provider'] not in ('edge', 'azure'):
-        raise ValueError('Choose edge or azure')
-    if cfg['voice'] not in ('te-IN-ShrutiNeural', 'te-IN-MohanNeural'):
+    if cfg['tts_provider'] not in ('edge', 'azure', 'sarvam'):
+        raise ValueError('Choose edge, azure, or sarvam')
+    from .voice.registry import TELUGU_VOICE_CATALOG
+    if cfg['voice'] not in TELUGU_VOICE_CATALOG and not cfg['voice'].startswith(('te-IN-', 'azure:')):
         raise ValueError('Choose a supported Telugu voice')
     if not isinstance(cfg['online_enabled'], bool):
         raise ValueError('Online setting must be boolean')

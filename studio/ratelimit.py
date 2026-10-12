@@ -18,6 +18,7 @@ PROVIDER_RATE_LIMITS = {
     'pixabay': 50,   # 50 requests/minute
     'azure': 20,     # 20 requests/minute
     'edge_tts': 30,  # 30 requests/minute
+    'sarvam': 30,    # 30 requests/minute
 }
 
 _redis_client: Optional[redis.Redis] = None

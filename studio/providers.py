@@ -231,66 +231,75 @@ def download_stock(video_id):
         raise
 
 
-def synthesize(text, voice, rate, provider):
-    # Provider is captured in the job snapshot; edits cannot change a running job's voice backend.
-    cfg = settings()
-    key = store.digest({'version': 1, 'provider': provider, 'text': text, 'voice': voice, 'rate': rate})
-    audio = DATA / 'cache' / (key + '.mp3')
-    metadata = DATA / 'cache' / (key + '.timing.json')
-    if audio.exists() and metadata.exists() and audio.stat().st_size > 0:
-        try:
-            parsed = json.loads(metadata.read_text('utf-8'))
-            if isinstance(parsed, list):
-                return audio, parsed
-        except Exception:
-            pass
-    online()
-    acquire_rate_slot(provider)
-    unique_suffix = f'.{uuid.uuid4().hex[:8]}.part'
-    temp_audio = audio.with_suffix(unique_suffix + '.mp3')
-    temp_meta = metadata.with_suffix(unique_suffix + '.json')
-    boundaries = []
-    try:
-        if provider == 'edge':
-            import edge_tts
+def synthesize(text, voice, rate, provider, pitch=0, delivery_preset='conversational', pronunciation_dict=None):
+    """Phase 4 synthesis engine supporting Edge, Sarvam, Azure, and Uploaded voices
+    with normalization, delivery presets, and contract caching.
+    """
+    from .voice.registry import get_voice_capability
+    from .voice.normalizer import normalize_narration
+    from .voice.presets import apply_delivery_preset
+    from .voice.cache import compute_synthesis_contract_key, get_cached_synthesis, store_cached_synthesis
+    from .voice.lab import get_adapter_for_provider
 
-            async def generate():
-                engine = edge_tts.Communicate(text, voice=voice, rate=f'{rate:+d}%', boundary='WordBoundary')
-                with temp_audio.open('wb') as output:
-                    async for chunk in engine.stream():
-                        if chunk['type'] == 'audio':
-                            output.write(chunk['data'])
-                        elif chunk['type'] == 'WordBoundary':
-                            boundaries.append({'start': chunk['offset'] / 10_000_000,
-                                               'end': (chunk['offset'] + chunk['duration']) / 10_000_000,
-                                               'text': chunk['text']})
-            asyncio.run(asyncio.wait_for(generate(), timeout=120))
-        elif provider == 'azure':
-            region = cfg['azure_region']
-            if not cfg['azure_key'] or not re.fullmatch(r'[a-z0-9-]{2,40}', region):
-                raise ValueError('Configure Azure Speech key and region')
-            ssml = f'<speak version="1.0" xml:lang="te-IN"><voice name="{voice}"><prosody rate="{rate:+d}%">{escape(text)}</prosody></voice></speak>'
-            result = request('POST', f'https://{region}.tts.speech.microsoft.com/cognitiveservices/v1',
-                             headers={'Ocp-Apim-Subscription-Key': cfg['azure_key'], 'Content-Type': 'application/ssml+xml',
-                                      'X-Microsoft-OutputFormat': 'audio-24khz-96kbitrate-mono-mp3', 'User-Agent': 'TeluguReelStudio'},
-                             content=ssml.encode('utf-8'))
-            temp_audio.write_bytes(result.content)
-        else:
-            raise ValueError('Unsupported voice provider')
-        from .media import probe
-        info = probe(temp_audio)
-        if not any(s['codec_type'] == 'audio' for s in info['streams']):
-            raise ValueError('Speech provider returned no audio')
-        temp_meta.write_text(json.dumps(boundaries), 'utf-8')
-        json.loads(temp_meta.read_text('utf-8'))
-        temp_meta.replace(metadata)
-        temp_audio.replace(audio)
-        record_usage(provider, estimated_units=len(text), actual_units=len(text))
+    cap = get_voice_capability(voice, provider=provider)
+
+    # 1. Normalize text (dates, numbers, loanwords, custom dictionary overrides)
+    norm = normalize_narration(text, pronunciation_dict=pronunciation_dict)
+    spoken_text = norm.spoken_text
+
+    # 2. Apply delivery preset
+    preset_info = apply_delivery_preset(spoken_text, delivery_preset, cap, base_rate=rate, base_pitch=pitch)
+    final_text = preset_info['adjusted_text']
+    eff_rate = preset_info['effective_rate']
+    eff_pitch = preset_info['effective_pitch']
+
+    # 3. Contract caching check
+    contract_key = compute_synthesis_contract_key(
+        provider=cap.provider,
+        voice=cap.voice_id,
+        model=cap.model,
+        spoken_text=final_text,
+        delivery_preset=delivery_preset,
+        rate=eff_rate,
+        pitch=eff_pitch,
+        dictionary=pronunciation_dict,
+        audio_format='mp3'
+    )
+    cached = get_cached_synthesis(contract_key)
+    if cached:
+        audio, boundaries, _ = cached
+        return audio, boundaries
+
+    # 4. Check online connectivity and acquire rate slot
+    if cap.provider != 'upload':
+        online()
+        acquire_rate_slot(cap.provider)
+
+    # 5. Synthesize via provider adapter
+    unique_suffix = f'.{uuid.uuid4().hex[:8]}.part'
+    audio_dest = DATA / 'cache' / f'{contract_key}.mp3'
+    meta_dest = DATA / 'cache' / f'{contract_key}.timing.json'
+    temp_audio = audio_dest.with_suffix(unique_suffix + '.mp3')
+    temp_meta = meta_dest.with_suffix(unique_suffix + '.json')
+
+    adapter = get_adapter_for_provider(cap.provider)
+    try:
+        audio, boundaries, metadata = adapter.synthesize(
+            text=final_text,
+            voice=cap.voice_id,
+            rate=eff_rate,
+            pitch=eff_pitch,
+            target_audio=temp_audio,
+            target_meta=temp_meta
+        )
+        audio, _ = store_cached_synthesis(contract_key, audio, boundaries, metadata)
+        record_usage(cap.provider, estimated_units=len(final_text), actual_units=len(final_text))
+        return audio, boundaries
     except Exception as exc:
         import logging
         logging.getLogger('studio.providers').warning(f"synthesize failed with {type(exc).__name__}: {exc}")
         temp_audio.unlink(missing_ok=True)
         temp_meta.unlink(missing_ok=True)
-        record_usage(provider, estimated_units=len(text), uncertain=True)
-        raise ValueError('Narration generation failed. Check provider settings/connectivity, or upload your recording.') from None
-    return audio, boundaries
+        if cap.provider != 'upload':
+            record_usage(cap.provider, estimated_units=len(final_text), uncertain=True)
+        raise ValueError(f"Narration generation failed ({type(exc).__name__}: {exc}). Check provider settings/connectivity, or upload your recording.") from None

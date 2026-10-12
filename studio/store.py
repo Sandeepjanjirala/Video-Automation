@@ -18,7 +18,7 @@ from .config import DATA, setup
 from .models import Project as PydanticProject
 from .db.models import (
     Base, Workspace, Project, Revision, Asset, Job, JobStage, Draft,
-    ApplicationReceipt, Outbox
+    ApplicationReceipt, Outbox, VoiceTake
 )
 from .db.session import (
     get_engine, session_scope, check_connection, get_database_url,
@@ -925,3 +925,164 @@ def apply_job(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
             'conflicts': conflicts,
             'revision': new_rev
         }
+
+
+def unpack_voice_take(vt: VoiceTake) -> Dict[str, Any]:
+    return {
+        'id': vt.id,
+        'take_id': vt.id,
+        'project_id': vt.project_id,
+        'scene_id': vt.scene_id,
+        'provider': vt.provider,
+        'voice_id': vt.voice_id,
+        'model': vt.model,
+        'preset': vt.preset,
+        'spoken_text': vt.spoken_text,
+        'roman_text': vt.roman_text,
+        'asset_id': vt.asset_id,
+        'audio_url': f'/api/assets/{vt.asset_id}/media' if vt.asset_id else '',
+        'duration': vt.duration,
+        'timing_data': vt.timing_data or [],
+        'accepted': vt.accepted,
+        'contract_key': vt.contract_key,
+        'meta': vt.meta or {},
+        'created_at': vt.created_at.isoformat() if vt.created_at else now()
+    }
+
+
+def add_voice_take(
+    project_id: str,
+    scene_id: Optional[str],
+    provider: str,
+    voice_id: str,
+    spoken_text: str,
+    duration: float,
+    timing_data: Optional[List[Any]] = None,
+    roman_text: Optional[str] = '',
+    asset_id: Optional[str] = None,
+    model: Optional[str] = None,
+    preset: str = 'conversational',
+    contract_key: Optional[str] = None,
+    meta: Optional[Dict[str, Any]] = None,
+    accepted: bool = False,
+    take_id: Optional[str] = None,
+    session: Optional[Session] = None
+) -> Dict[str, Any]:
+    tid = take_id or f'take_{uuid.uuid4().hex[:12]}'
+
+    def _do_add(s: Session) -> Dict[str, Any]:
+        take = VoiceTake(
+            id=tid,
+            project_id=project_id,
+            scene_id=scene_id or None,
+            provider=provider,
+            voice_id=voice_id,
+            model=model,
+            preset=preset,
+            spoken_text=spoken_text,
+            roman_text=roman_text or '',
+            asset_id=asset_id,
+            duration=duration,
+            timing_data=timing_data or [],
+            accepted=accepted,
+            contract_key=contract_key,
+            meta=meta or {}
+        )
+        s.add(take)
+        s.flush()
+        return unpack_voice_take(take)
+
+    if session is not None:
+        return _do_add(session)
+    with session_scope() as s:
+        return _do_add(s)
+
+
+def get_voice_take(take_id: str, session: Optional[Session] = None) -> Optional[Dict[str, Any]]:
+    if session is not None:
+        vt = session.get(VoiceTake, take_id)
+        return unpack_voice_take(vt) if vt else None
+    with session_scope() as s:
+        vt = s.get(VoiceTake, take_id)
+        return unpack_voice_take(vt) if vt else None
+
+
+def list_voice_takes(project_id: str, scene_id: Optional[str] = None, session: Optional[Session] = None) -> List[Dict[str, Any]]:
+    stmt = select(VoiceTake).where(VoiceTake.project_id == project_id)
+    if scene_id:
+        stmt = stmt.where(VoiceTake.scene_id == scene_id)
+    stmt = stmt.order_by(VoiceTake.created_at.desc())
+
+    if session is not None:
+        takes = session.execute(stmt).scalars().all()
+        return [unpack_voice_take(t) for t in takes]
+    with session_scope() as s:
+        takes = s.execute(stmt).scalars().all()
+        return [unpack_voice_take(t) for t in takes]
+
+
+def accept_voice_take(project_id: str, take_id: str, session: Optional[Session] = None) -> Dict[str, Any]:
+    def _do_accept(s: Session) -> Dict[str, Any]:
+        take = s.get(VoiceTake, take_id)
+        if not take or take.project_id != project_id:
+            raise ValueError(f"Voice take '{take_id}' not found for project '{project_id}'")
+
+        if take.scene_id:
+            stmt = (
+                update(VoiceTake)
+                .where(VoiceTake.project_id == project_id, VoiceTake.scene_id == take.scene_id)
+                .values(accepted=False)
+            )
+            s.execute(stmt)
+        take.accepted = True
+
+        proj = s.execute(select(Project).where(Project.id == project_id).with_for_update()).scalar_one_or_none()
+        if not proj:
+            raise ValueError(f"Project '{project_id}' not found")
+
+        p_data = copy.deepcopy(proj.body)
+        if take.scene_id:
+            for sc in p_data.get('scenes', []):
+                if sc.get('id') == take.scene_id:
+                    sc['take_id'] = take.id
+                    if take.asset_id:
+                        sc['audio_asset'] = take.asset_id
+                        sc['audio_text_hash'] = digest(sc.get('narration', ''))
+                    if take.spoken_text:
+                        sc['spoken_text'] = take.spoken_text
+                    sc['delivery_preset'] = take.preset
+                    break
+
+        if not p_data.get('voice_locked'):
+            p_data['tts_provider'] = take.provider
+            p_data['voice'] = take.voice_id
+            p_data['delivery_preset'] = take.preset
+
+        now_dt = datetime.now(timezone.utc)
+        new_rev = proj.revision + 1
+        validated = PydanticProject.model_validate(p_data).model_dump()
+        proj.revision = new_rev
+        proj.body = validated
+        flag_modified(proj, 'body')
+        proj.approved_revision = None
+        proj.updated_at = now_dt
+
+        rev_entry = Revision(
+            project_id=project_id,
+            revision=new_rev,
+            body=validated,
+            created_at=now_dt
+        )
+        s.add(rev_entry)
+        s.flush()
+
+        return {
+            'take': unpack_voice_take(take),
+            'project': unpack(proj)
+        }
+
+    if session is not None:
+        return _do_accept(session)
+    with session_scope() as s:
+        return _do_accept(s)
+

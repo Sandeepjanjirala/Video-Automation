@@ -1,0 +1,67 @@
+{
+  "project_id": "93dba246d73140e396a369239b04615b",
+  "revision": 1,
+  "created": "2026-10-09T16:03:39.065597+00:00",
+  "duration": 17.421354,
+  "dimensions": [
+    1080,
+    1920
+  ],
+  "scenes": [
+    {
+      "scene_id": "scene_home_1",
+      "duration": 9.866666666666667,
+      "alignment": "estimated from text length; review required",
+      "visual": {
+        "id": "77ee26ea90654ae3985b1f1cc6ee49fd",
+        "kind": "video",
+        "name": "Moving Reel Footage 1",
+        "sha256": "83d0d7e7d92a5a88528ad8d6ab1e580024cb638c2fcb075e5cf126d34eb90518",
+        "duration": 10.0,
+        "filename": "77ee26ea90654ae3985b1f1cc6ee49fd.mp4",
+        "provider": "upload",
+        "external_id": null,
+        "source_url": "",
+        "license_url": "",
+        "retrieved": "2026-10-09T15:33:07.004017+00:00"
+      },
+      "source_audio_muted": true
+    },
+    {
+      "scene_id": "scene_home_2",
+      "duration": 7.533333333333333,
+      "alignment": "estimated from text length; review required",
+      "visual": {
+        "id": "a257a20e79534de3a903286f708b5f41",
+        "kind": "video",
+        "name": "Moving Reel Footage 2",
+        "sha256": "1f9ddb7a70ce69147db1a8738ee33ede18a0ea34e0c88f360955657ee724bec2",
+        "duration": 10.0,
+        "filename": "a257a20e79534de3a903286f708b5f41.mp4",
+        "provider": "upload",
+        "external_id": null,
+        "source_url": "",
+        "license_url": "",
+        "retrieved": "2026-10-09T15:33:10.713829+00:00"
+      },
+      "source_audio_muted": true
+    }
+  ],
+  "caption_note": "Automatic Roman Telugu timings need preview review. Manual cues override automatic timings.",
+  "evidence_notes": "Phase 3 end-to-end integration and render verification on home laptop.",
+  "research_sources": [],
+  "music": {
+    "id": "a8bf9d890428481096fd7befafdca724",
+    "kind": "audio",
+    "name": "Reel Ambient BGM",
+    "sha256": "3f0479ffb50569f0c59e97ec6aab52c11cd3a38083d7d96bdb5c2ff69512b471",
+    "duration": 25.0,
+    "filename": "a8bf9d890428481096fd7befafdca724.mp3",
+    "provider": "upload",
+    "external_id": null,
+    "source_url": "",
+    "license_url": "",
+    "retrieved": "2026-10-09T15:33:11.338747+00:00"
+  },
+  "speech_provider": "edge"
+}

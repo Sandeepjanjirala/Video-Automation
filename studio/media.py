@@ -52,12 +52,22 @@ def duration(path):
 
 
 def voice_for(scene, project, provider):
-    if scene['audio_asset']:
-        if scene['audio_text_hash'] != store.digest(scene['narration']):
+    if scene.get('audio_asset'):
+        if scene.get('audio_text_hash') != store.digest(scene['narration']):
             raise ValueError('An uploaded narration no longer matches the script revision. Re-attach or reconfirm it.')
         return store.asset_path(scene['audio_asset'], 'audio'), []
     from .providers import synthesize
-    return synthesize(scene['narration'], project['voice'], project['speech_rate'], provider)
+    text = scene.get('spoken_text') or scene['narration']
+    preset = scene.get('delivery_preset') or project.get('delivery_preset', 'conversational')
+    pdict = project.get('pronunciation_dict') or {}
+    return synthesize(
+        text=text,
+        voice=project.get('voice', 'te-IN-ShrutiNeural'),
+        rate=project.get('speech_rate', 0),
+        provider=provider,
+        delivery_preset=preset,
+        pronunciation_dict=pdict
+    )
 
 
 def captions(scene, audio_duration, boundaries):

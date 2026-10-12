@@ -263,6 +263,7 @@ def asset_meta(aid: str):
 
 
 @app.get('/api/assets/{aid}/media')
+@app.get('/api/assets/{aid}/file')
 def asset_media(aid: str):
     return FileResponse(store.asset_path(aid))
 
@@ -312,6 +313,136 @@ def export(jid: str, name: str):
     if not path.is_file():
         raise HTTPException(404)
     return FileResponse(path, filename=name if name != 'reel.mp4' else None)
+
+
+
+# ---------------- Voice Lab (Phase 4) Endpoints ----------------
+
+@app.get('/api/voice/capabilities')
+def voice_capabilities():
+    from .voice.registry import list_voices
+    caps = list_voices()
+    return [
+        {
+            'voice_id': c.voice_id,
+            'display_name': c.display_name,
+            'provider': c.provider,
+            'gender': c.gender,
+            'language_code': c.language_code,
+            'model': c.model,
+            'description': c.description,
+            'supported_controls': c.supported_controls,
+            'unsupported_controls': c.unsupported_controls,
+            'max_characters_per_request': c.max_characters_per_request,
+            'audio_formats': c.audio_formats,
+            'timing_metadata': c.timing_metadata,
+            'estimated_cost_per_1k_chars': c.estimated_cost_per_1k_chars
+        }
+        for c in caps
+    ]
+
+
+class NormalizeBody(BaseModel):
+    text: str
+    dictionary: Optional[dict[str, str]] = None
+
+
+@app.post('/api/voice/normalize')
+def voice_normalize(body: NormalizeBody):
+    from .voice.normalizer import normalize_narration
+    norm = normalize_narration(body.text, pronunciation_dict=body.dictionary)
+    return {
+        'source_text': norm.source_text,
+        'spoken_text': norm.spoken_text,
+        'roman_text': norm.roman_text,
+        'overrides_applied': norm.overrides_applied
+    }
+
+
+class PreviewBody(BaseModel):
+    project_id: str
+    scene_id: Optional[str] = ''
+    text: str
+    provider: str = 'edge'
+    voice: str = 'te-IN-ShrutiNeural'
+    preset: str = 'conversational'
+    rate: int = 0
+    pitch: int = 0
+    dictionary: Optional[dict[str, str]] = None
+    regenerate: bool = False
+
+
+@app.post('/api/voice/preview')
+def voice_preview(body: PreviewBody):
+    from .voice.lab import generate_voice_take
+    take = generate_voice_take(
+        project_id=body.project_id,
+        scene_id=body.scene_id or '',
+        text=body.text,
+        provider=body.provider,
+        voice=body.voice,
+        delivery_preset=body.preset,
+        rate=body.rate,
+        pitch=body.pitch,
+        pronunciation_dict=body.dictionary,
+        explicit_regenerate=body.regenerate
+    )
+    return take
+
+
+@app.get('/api/projects/{pid}/takes')
+def project_takes(pid: str, scene_id: Optional[str] = None):
+    return store.list_voice_takes(pid, scene_id=scene_id)
+
+
+@app.post('/api/projects/{pid}/takes/{take_id}/accept')
+def accept_take(pid: str, take_id: str):
+    return store.accept_voice_take(pid, take_id)
+
+
+class ABCompareBody(BaseModel):
+    take_a: dict
+    take_b: dict
+
+
+@app.post('/api/voice/ab_compare')
+def voice_ab_compare(body: ABCompareBody):
+    from .voice.lab import compare_takes_ab
+    return compare_takes_ab(body.take_a, body.take_b)
+
+
+class RewritePreviewBody(BaseModel):
+    text: str
+
+
+@app.post('/api/voice/rewrite_preview')
+def voice_rewrite_preview(body: RewritePreviewBody):
+    from .voice.lab import preview_conversational_rewrite
+    return preview_conversational_rewrite(body.text)
+
+
+class VoiceLockBody(BaseModel):
+    locked: bool
+
+
+@app.post('/api/projects/{pid}/voice_lock')
+def set_voice_lock(pid: str, body: VoiceLockBody):
+    proj = store.get_project(pid)
+    p_data = proj['project']
+    p_data['voice_locked'] = body.locked
+    return store.save_project(p_data, pid, proj['revision'])
+
+
+class DictUpdateBody(BaseModel):
+    dictionary: dict[str, str]
+
+
+@app.post('/api/projects/{pid}/pronunciation_dict')
+def update_pronunciation_dict(pid: str, body: DictUpdateBody):
+    proj = store.get_project(pid)
+    p_data = proj['project']
+    p_data['pronunciation_dict'] = body.dictionary
+    return store.save_project(p_data, pid, proj['revision'])
 
 
 app.mount('/', StaticFiles(directory=ROOT / 'studio' / 'static', html=True), name='ui')

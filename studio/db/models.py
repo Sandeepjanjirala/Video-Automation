@@ -40,6 +40,7 @@ class Project(Base):
     revisions = relationship('Revision', back_populates='project', cascade='all, delete-orphan', order_by='Revision.revision.desc()')
     jobs = relationship('Job', back_populates='project', cascade='all, delete-orphan')
     draft = relationship('Draft', back_populates='project', uselist=False, cascade='all, delete-orphan')
+    voice_takes = relationship('VoiceTake', back_populates='project', cascade='all, delete-orphan', order_by='VoiceTake.created_at.desc()')
 
     __table_args__ = (
         Index('ix_projects_workspace_updated', 'workspace_id', 'updated_at'),
@@ -193,3 +194,32 @@ class Usage(Base):
     actual_billable_units: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     uncertain_calls: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     last_call_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class VoiceTake(Base):
+    __tablename__ = 'voice_takes'
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    project_id: Mapped[str] = mapped_column(String(64), ForeignKey('projects.id', ondelete='CASCADE'), nullable=False, index=True)
+    scene_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    voice_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    model: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    preset: Mapped[str] = mapped_column(String(32), default='conversational')
+    spoken_text: Mapped[str] = mapped_column(Text, nullable=False)
+    roman_text: Mapped[Optional[str]] = mapped_column(Text, default='')
+    asset_id: Mapped[Optional[str]] = mapped_column(String(64), ForeignKey('assets.id', ondelete='SET NULL'), nullable=True)
+    duration: Mapped[float] = mapped_column(Float, default=0.0)
+    timing_data: Mapped[List[Any]] = mapped_column(JSONB, default=list)
+    accepted: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    contract_key: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
+    meta: Mapped[Dict[str, Any]] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), server_default=func.now(), index=True)
+
+    project = relationship('Project', back_populates='voice_takes')
+    asset = relationship('Asset')
+
+    __table_args__ = (
+        Index('ix_voice_takes_proj_scene', 'project_id', 'scene_id'),
+    )
+

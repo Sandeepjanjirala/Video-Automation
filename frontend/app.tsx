@@ -17,14 +17,15 @@ async function api(path: string, body?: Any, method?: string) {
 }
 const uid = () => crypto.randomUUID().replaceAll('-', '').slice(0, 12);
 const scene = () => ({
-  id: uid(), narration: '', roman: '', keywords: '', visual: 'upload', video_asset: '',
+  id: uid(), narration: '', spoken_text: '', roman: '', keywords: '', visual: 'upload', video_asset: '',
   audio_asset: '', audio_text_hash: '', trim_start: 0, fit: 'crop', crop_x: .5, hold_seconds: 0,
-  graphic_title: '', rights_reviewed: false, cues: []
+  graphic_title: '', rights_reviewed: false, narration_block_id: '', take_id: '', delivery_preset: 'conversational', cues: []
 });
 const empty = () => ({
   title: 'My next story', topic: '', category: 'Storytelling', target_seconds: 60,
-  duration_mode: 'natural', voice: 'te-IN-ShrutiNeural', speech_rate: 0, scenes: [scene()],
-  evidence_notes: '', research_report: '', research_sources: [], research_grounding: {},
+  duration_mode: 'natural', tts_provider: 'edge', voice: 'te-IN-ShrutiNeural', speech_rate: 0,
+  delivery_preset: 'conversational', pronunciation_dict: {}, voice_locked: false, voice_profile: {}, narration_blocks: [],
+  scenes: [scene()], evidence_notes: '', research_report: '', research_sources: [], research_grounding: {},
   music_asset: '', music_gain: .12, music_rights_reviewed: false, caption_size: 56, caption_bottom: 300,
   script_approved_hash: '', draft_script: ''
 });
@@ -67,6 +68,18 @@ function App() {
   const [conflicts, setConflicts] = useState<Any[]>([]);
   const autosaveTimer = useRef<Any>(null);
 
+  // Phase 4 Voice Lab UI state
+  const [voiceCapabilities, setVoiceCapabilities] = useState<Any[]>([]);
+  const [takeHistory, setTakeHistory] = useState<Any[]>([]);
+  const [candidateTake, setCandidateTake] = useState<Any>(null);
+  const [voiceLabSceneId, setVoiceLabSceneId] = useState<string>('');
+  const [explicitRegenerate, setExplicitRegenerate] = useState(false);
+  const [rewritePreview, setRewritePreview] = useState<Any>(null);
+  const [newDictKey, setNewDictKey] = useState('');
+  const [newDictVal, setNewDictVal] = useState('');
+  const [normTestText, setNormTestText] = useState('');
+  const [normTestResult, setNormTestResult] = useState<Any>(null);
+
   const tell = (s: string, bad = false) => { setMessage(s); setError(bad); };
   async function action(fn: () => Promise<any>) {
     setBusy(true);
@@ -83,6 +96,12 @@ function App() {
     setCueEdit({});
     setHistory(null);
     setConflicts([]);
+    setCandidateTake(null);
+    setRewritePreview(null);
+    if (r.project.scenes?.length) {
+      setVoiceLabSceneId(r.project.scenes[0].id);
+    }
+    api('/projects/' + r.id + '/takes').then(t => setTakeHistory(t)).catch(() => {});
     // Check for autosaved server draft
     api('/projects/' + r.id + '/draft').then(d => {
       if (d && d.updated && (!r.updated || new Date(d.updated).getTime() > new Date(r.updated).getTime())) {
@@ -109,7 +128,113 @@ function App() {
       setCfg(d.settings);
       if (d.projects.length) load(d.projects[0]);
     }).catch(e => tell(e.message, true));
+    api('/voice/capabilities').then(caps => setVoiceCapabilities(caps)).catch(() => {});
   }, []);
+
+  async function generateVoicePreview() {
+    if (!row || !p) return;
+    const currentScene = p.scenes.find((s: Any) => s.id === (voiceLabSceneId || p.scenes[0]?.id)) || p.scenes[0];
+    if (!currentScene) return;
+    const textToSynthesize = currentScene.spoken_text || currentScene.narration;
+    if (!textToSynthesize.trim()) {
+      tell('Enter Telugu narration before generating a voice preview.', true);
+      return;
+    }
+    setBusy(true);
+    try {
+      const take = await api('/voice/preview', {
+        project_id: row.id,
+        scene_id: currentScene.id,
+        text: textToSynthesize,
+        provider: p.tts_provider || 'edge',
+        voice: p.voice || 'te-IN-ShrutiNeural',
+        preset: p.delivery_preset || 'conversational',
+        rate: p.speech_rate || 0,
+        pitch: 0,
+        dictionary: p.pronunciation_dict || {},
+        regenerate: explicitRegenerate
+      });
+      setCandidateTake(take);
+      tell(`Candidate take generated (${take.duration.toFixed(1)}s, ${take.display_name}).`);
+      const updatedTakes = await api('/projects/' + row.id + '/takes');
+      setTakeHistory(updatedTakes);
+    } catch (e: any) {
+      tell(e.message, true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function acceptTake(takeId: string) {
+    if (!row) return;
+    setBusy(true);
+    try {
+      const res = await api('/projects/' + row.id + '/takes/' + takeId + '/accept');
+      sync(res.project);
+      tell('Voice take accepted and applied to project (v' + res.project.revision + ').');
+      const updatedTakes = await api('/projects/' + row.id + '/takes');
+      setTakeHistory(updatedTakes);
+    } catch (e: any) {
+      tell(e.message, true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function checkConversationalRewrite() {
+    const currentScene = p.scenes.find((s: Any) => s.id === (voiceLabSceneId || p.scenes[0]?.id)) || p.scenes[0];
+    if (!currentScene || !currentScene.narration.trim()) {
+      tell('Scene has no Telugu narration to rewrite.', true);
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await api('/voice/rewrite_preview', {text: currentScene.narration});
+      setRewritePreview(res);
+      if (!res.changed) {
+        tell('Narration already has natural spoken cadence. No colloquial changes needed.');
+      }
+    } catch (e: any) {
+      tell(e.message, true);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function applyRewrite() {
+    if (!rewritePreview || !rewritePreview.proposed) return;
+    const currentScene = p.scenes.find((s: Any) => s.id === (voiceLabSceneId || p.scenes[0]?.id)) || p.scenes[0];
+    if (!currentScene) return;
+    edit(currentScene.id, {narration: rewritePreview.proposed, spoken_text: rewritePreview.proposed});
+    setRewritePreview(null);
+    tell('Colloquial spoken phrasing approved and applied to scene narration.');
+  }
+
+  function addDictEntry() {
+    if (!newDictKey.trim() || !newDictVal.trim()) return;
+    const updatedDict = {...(p.pronunciation_dict || {}), [newDictKey.trim()]: newDictVal.trim()};
+    change('pronunciation_dict', updatedDict);
+    setNewDictKey('');
+    setNewDictVal('');
+    tell(`Pronunciation rule added for "${newDictKey.trim()}".`);
+  }
+
+  function removeDictEntry(k: string) {
+    const updatedDict = {...(p.pronunciation_dict || {})};
+    delete updatedDict[k];
+    change('pronunciation_dict', updatedDict);
+    tell(`Pronunciation rule "${k}" removed.`);
+  }
+
+  async function testNormalize() {
+    if (!normTestText.trim()) return;
+    try {
+      const res = await api('/voice/normalize', {text: normTestText, dictionary: p.pronunciation_dict});
+      setNormTestResult(res);
+    } catch (e: any) {
+      tell(e.message, true);
+    }
+  }
 
   // Poll jobs
   useEffect(() => {
@@ -474,30 +599,313 @@ function App() {
                 <section className="panel">
                   <div className="sectionhead">
                     <div>
-                      <span className="eyebrow">THE SOUND OF YOUR STORY</span>
-                      <h2>Telugu narration</h2>
+                      <span className="eyebrow">PHASE 4 · TELUGU VOICE LAB & SOUND PROFILE</span>
+                      <h2>Telugu Narration & Delivery Presets</h2>
                     </div>
                     <div className="actions" style={{margin: 0}}>
                       <button onClick={() => openLibrary('all')}>Reusable media library</button>
                       <button disabled={busy} onClick={() => action(() => queue('stock_all'))}>Find footage for unassigned scenes</button>
                     </div>
                   </div>
+
+                  {/* Provider, Voice & Locking */}
                   <div className="grid two">
-                    <Field label="Voice">
-                      <select value={p.voice} onChange={e => change('voice', e.target.value)}>
-                        <option value="te-IN-ShrutiNeural">Shruti · Telugu female</option>
-                        <option value="te-IN-MohanNeural">Mohan · Telugu male</option>
+                    <Field label="TTS Provider" hint="Sarvam AI specialist, Edge zero-cost, Azure SDK/REST, or Human Upload">
+                      <select value={p.tts_provider || 'edge'} onChange={e => {
+                        const newProv = e.target.value;
+                        const defaultVoiceForProv =
+                          newProv === 'sarvam' ? 'pavithra' :
+                          newProv === 'azure' ? 'te-IN-ShrutiNeural' :
+                          newProv === 'upload' ? 'human_upload' : 'te-IN-ShrutiNeural';
+                        setP((prev: Any) => ({...prev, tts_provider: newProv, voice: defaultVoiceForProv}));
+                        setDirty(true);
+                      }}>
+                        <option value="edge">Edge Neural (Free · te-IN voices)</option>
+                        <option value="sarvam">Sarvam AI (Bulbul Neural · Telugu specialist)</option>
+                        <option value="azure">Azure Speech (REST / SDK · Cloud)</option>
+                        <option value="upload">Upload Narration (Human Voice)</option>
                       </select>
                     </Field>
-                    <Field label={'Speech rate: ' + p.speech_rate + '%'}>
-                      <input type="range" min="-25" max="25" value={p.speech_rate} onChange={e => change('speech_rate', +e.target.value)} />
+
+                    <Field label="Voice">
+                      <select value={p.voice || 'te-IN-ShrutiNeural'} onChange={e => change('voice', e.target.value)}>
+                        {(p.tts_provider === 'sarvam') && (
+                          <>
+                            <option value="pavithra">Pavithra · Bulbul v3 (Telugu Female)</option>
+                            <option value="meera">Meera · Bulbul v3 (Telugu Female)</option>
+                            <option value="arvind">Arvind · Bulbul v3 (Telugu Male)</option>
+                            <option value="amartya">Amartya · Bulbul v3 (Telugu Male)</option>
+                          </>
+                        )}
+                        {(p.tts_provider === 'edge' || p.tts_provider === 'azure') && (
+                          <>
+                            <option value="te-IN-ShrutiNeural">Shruti · Telugu female</option>
+                            <option value="te-IN-MohanNeural">Mohan · Telugu male</option>
+                          </>
+                        )}
+                        {(p.tts_provider === 'upload') && (
+                          <option value="human_upload">Uploaded Audio (Human Voice)</option>
+                        )}
+                      </select>
                     </Field>
                   </div>
+
+                  {/* Verified Capabilities & Limits Badge Strip */}
+                  {(() => {
+                    const currentCap = voiceCapabilities.find((c: Any) => c.voice_id === p.voice && c.provider === p.tts_provider)
+                      || voiceCapabilities.find((c: Any) => c.voice_id === p.voice)
+                      || voiceCapabilities[0];
+                    if (!currentCap) return null;
+                    return (
+                      <div style={{margin: '12px 0'}}>
+                        <small className="muted" style={{display: 'block', marginBottom: 4}}>VERIFIED PROVIDER CAPABILITIES & CONSTRAINTS:</small>
+                        <div className="cap-badges">
+                          {currentCap.supported_controls?.map((ctrl: string) => (
+                            <span key={ctrl} className="badge-cap-ok">✓ {ctrl.toUpperCase()}</span>
+                          ))}
+                          {currentCap.unsupported_controls?.map((ctrl: string) => (
+                            <span key={ctrl} className="badge-cap-no" title="Unsupported controls are visibly disabled and not sent">✕ {ctrl}</span>
+                          ))}
+                          <span className="badge-cap-info">Format: {currentCap.audio_formats?.[0] || 'mp3'}</span>
+                          <span className="badge-cap-info">Timing: {currentCap.timing_metadata}</span>
+                          <span className="badge-cap-info">Limit: {currentCap.max_characters_per_request} chars</span>
+                          <span className="badge-cap-info">Est. Cost: ₹{(currentCap.estimated_cost_per_1k_chars * 1000).toFixed(2)}/1M chars</span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* Voice Locking Toggle */}
+                  <label className="check">
+                    <input type="checkbox" checked={p.voice_locked || false} onChange={e => change('voice_locked', e.target.checked)} />
+                    <b>🔒 Lock voice profile to project</b> (Mid-project provider/speaker switches require explicit approval)
+                  </label>
+
+                  {/* Delivery Presets & Speech Rate */}
+                  <div className="grid two" style={{marginTop: 10}}>
+                    <Field label="Delivery Preset" hint="Mapped strictly to verified provider controls and natural punctuation breathing pauses">
+                      <select value={p.delivery_preset || 'conversational'} onChange={e => change('delivery_preset', e.target.value)}>
+                        <option value="conversational">Conversational (Natural, casual storytelling flow)</option>
+                        <option value="documentary">Documentary (Measured, authoritative cadence)</option>
+                        <option value="curious">Curious (Inquisitive pitch lift & lively pace)</option>
+                        <option value="suspense">Suspense (Dramatic pauses & lower pitch)</option>
+                      </select>
+                    </Field>
+
+                    <Field label={'Speech rate: ' + p.speech_rate + '%'} hint={p.tts_provider === 'upload' ? 'Rate adjustment not applicable to uploaded audio' : 'Restrained tempo adjustment'}>
+                      <input
+                        type="range"
+                        min="-25"
+                        max="25"
+                        disabled={p.tts_provider === 'upload'}
+                        value={p.speech_rate || 0}
+                        onChange={e => change('speech_rate', +e.target.value)}
+                      />
+                    </Field>
+                  </div>
+
+                  {/* Action buttons */}
                   <div className="actions">
                     <button disabled={busy} onClick={() => action(approve)}>Save & approve changes</button>
                     <button className="primary" disabled={busy} onClick={() => action(() => queue('voice'))}>Prepare voice previews</button>
                   </div>
-                  <p className="muted">Provider: {cfg.tts_provider === 'edge' ? 'Edge community integration (online; no API key)' : 'Azure Speech'}. You can instead upload your own narration for every scene. Edge is an unofficial integration; confirm service suitability and rights for commercial use.</p>
+
+                  {/* Pronunciation Dictionary Editor */}
+                  <details style={{marginTop: 16}}>
+                    <summary><b>Pronunciation Dictionary & Overrides</b> ({Object.keys(p.pronunciation_dict || {}).length} custom mappings)</summary>
+                    <p className="muted">Explicitly map English loanwords, acronyms, and place names to native Telugu phonetic forms. Normalizer applies these before synthesis.</p>
+                    <div style={{maxWidth: 600}}>
+                      <div className="dict-row">
+                        <input placeholder="Word / Acronym (e.g. AI, API, Vizag)" value={newDictKey} onChange={e => setNewDictKey(e.target.value)} />
+                        <span>→</span>
+                        <input placeholder="Spoken Telugu (e.g. ఏఐ, ఏపీఐ, వైజాగ్)" value={newDictVal} onChange={e => setNewDictVal(e.target.value)} />
+                        <button type="button" onClick={addDictEntry}>Add override</button>
+                      </div>
+                      {Object.entries(p.pronunciation_dict || {}).map(([k, v]) => (
+                        <div key={k} className="dict-row" style={{background: '#fff', padding: '6px 12px', border: '1px solid var(--line)', borderRadius: 6}}>
+                          <b style={{flex: 1}}>{k}</b>
+                          <span>→</span>
+                          <span style={{flex: 1}}>{v as string}</span>
+                          <button type="button" className="ghost" onClick={() => removeDictEntry(k)}>✕</button>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div style={{marginTop: 14, paddingTop: 12, borderTop: '1px dashed var(--line)'}}>
+                      <small><b>Test Pronunciation Normalizer:</b></small>
+                      <div className="dict-row" style={{marginTop: 6}}>
+                        <input placeholder="Test text with numbers/dates/English terms..." value={normTestText} onChange={e => setNormTestText(e.target.value)} />
+                        <button type="button" onClick={testNormalize}>Normalize</button>
+                      </div>
+                      {normTestResult && (
+                        <div style={{background: '#f4f7f1', padding: 10, borderRadius: 6, fontSize: 13}}>
+                          <div><b>Spoken Telugu:</b> {normTestResult.spoken_text}</div>
+                          <div style={{color: 'var(--muted)', marginTop: 4}}><b>Roman Captions:</b> {normTestResult.roman_text}</div>
+                        </div>
+                      )}
+                    </div>
+                  </details>
+
+                  {/* Conversational Rewrite Preview (Approval Required) */}
+                  <details style={{marginTop: 12}}>
+                    <summary><b>Conversational Rewrite Preview</b> (Colloquial rhythm review)</summary>
+                    <p className="muted">Polishes bookish Telugu suffixes (ఉన్నది → ఉంది, చేసినది → చేశారు) into natural conversational spoken flow. Diff is shown and requires your approval.</p>
+                    <div className="actions">
+                      <button type="button" disabled={busy} onClick={checkConversationalRewrite}>
+                        Check Scene {p.scenes.findIndex((s: Any) => s.id === (voiceLabSceneId || p.scenes[0]?.id)) + 1} For Colloquial Polish
+                      </button>
+                    </div>
+                    {rewritePreview && (
+                      <div className="diff-container">
+                        <b>Conversational Polish Diff:</b>
+                        <p>{rewritePreview.note}</p>
+                        <div style={{margin: '10px 0', padding: 12, background: '#fafafa', border: '1px solid var(--line)', borderRadius: 6}}>
+                          {rewritePreview.diff?.map((part: Any, idx: number) => {
+                            if (part.type === 'removed') return <span key={idx} className="diff-word-del">{part.text}</span>;
+                            if (part.type === 'added') return <span key={idx} className="diff-word-add">{part.text}</span>;
+                            return <span key={idx}>{part.text} </span>;
+                          })}
+                        </div>
+                        {rewritePreview.changed ? (
+                          <div className="actions">
+                            <button type="button" className="primary" onClick={applyRewrite}>✓ Approve & Apply to Scene Narration</button>
+                            <button type="button" onClick={() => setRewritePreview(null)}>Dismiss</button>
+                          </div>
+                        ) : (
+                          <small className="muted">No colloquial changes needed for this text.</small>
+                        )}
+                      </div>
+                    )}
+                  </details>
+
+                  {/* Interactive A/B Candidate Preview & Comparison */}
+                  <div className="voicelab" style={{marginTop: 20}}>
+                    <h3>🎙️ Voice Candidate Preview & Identical-Script A/B Test</h3>
+                    <p className="muted">
+                      Synthesize identical script with candidate voice. Compare side-by-side with baseline before committing.
+                    </p>
+
+                    <div className="grid two" style={{alignItems: 'flex-end'}}>
+                      <Field label="Test Scene">
+                        <select value={voiceLabSceneId || p.scenes[0]?.id} onChange={e => {
+                          setVoiceLabSceneId(e.target.value);
+                          setCandidateTake(null);
+                        }}>
+                          {p.scenes.map((sc: Any, idx: number) => (
+                            <option key={sc.id} value={sc.id}>Scene {idx + 1}: {sc.narration?.slice(0, 40) || 'Untitled'}...</option>
+                          ))}
+                        </select>
+                      </Field>
+
+                      <div className="actions" style={{marginBottom: 13}}>
+                        <button type="button" className="primary" disabled={busy} onClick={generateVoicePreview}>
+                          ▶ Generate Candidate Preview Take
+                        </button>
+                        <label className="check" style={{margin: 0}}>
+                          <input type="checkbox" checked={explicitRegenerate} onChange={e => setExplicitRegenerate(e.target.checked)} />
+                          Bypass cache (explicit regenerate)
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Text tiers preview */}
+                    {(() => {
+                      const curSc = p.scenes.find((s: Any) => s.id === (voiceLabSceneId || p.scenes[0]?.id)) || p.scenes[0];
+                      if (!curSc) return null;
+                      return (
+                        <div style={{background: '#fff', border: '1px solid var(--line)', borderRadius: 8, padding: 12, margin: '10px 0', fontSize: 13}}>
+                          <div><b>Source Narration (Telugu):</b> {curSc.narration || '(empty)'}</div>
+                          <div style={{marginTop: 4}}><b>Spoken Telugu (Normalized):</b> {curSc.spoken_text || curSc.narration || '(empty)'}</div>
+                          <div style={{color: 'var(--muted)', marginTop: 4}}><b>Display Captions (Roman):</b> {curSc.roman || '(empty)'}</div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* Side-by-side A/B Cards */}
+                    {candidateTake && (
+                      <div>
+                        <div className="ab-grid">
+                          <div className="ab-card">
+                            <h4>
+                              <b>Baseline Voice</b>
+                              <span className="badge">Baseline</span>
+                            </h4>
+                            <audio controls src={'/api/assets/' + (p.scenes.find((s: Any) => s.id === voiceLabSceneId)?.audio_asset || '') + '/media'} />
+                            <small className="muted">Current project scene audio asset</small>
+                          </div>
+
+                          <div className="ab-card active-take">
+                            <h4>
+                              <b>Candidate Take ({candidateTake.display_name})</b>
+                              <span className="badge approved">Candidate Take</span>
+                            </h4>
+                            <audio controls autoPlay src={candidateTake.audio_url} />
+                            <small>
+                              Duration: <b>{candidateTake.duration?.toFixed(2)}s</b> · Provider: {candidateTake.provider} · Preset: {candidateTake.preset}
+                            </small>
+                            <div className="actions" style={{marginTop: 6}}>
+                              <button type="button" className="primary" onClick={() => acceptTake(candidateTake.take_id)}>
+                                ✓ Accept This Take for Scene
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="ab-metrics">
+                          <div><b>Duration:</b> {candidateTake.duration?.toFixed(2)}s</div>
+                          <div><b>Script Match:</b> ✓ Identical text synthesized</div>
+                          <div><b>Est. Cost:</b> ₹{(candidateTake.estimated_cost * 100).toFixed(4)}</div>
+                          <div><b>Cache Status:</b> Contract key {candidateTake.contract_key?.slice(0, 8)}...</div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Take History */}
+                    {takeHistory.length > 0 && (
+                      <details style={{marginTop: 14}}>
+                        <summary><b>Take History for Project</b> ({takeHistory.length} recorded takes)</summary>
+                        <table className="takes-table">
+                          <thead>
+                            <tr>
+                              <th>Take ID</th>
+                              <th>Scene</th>
+                              <th>Voice / Provider</th>
+                              <th>Preset</th>
+                              <th>Duration</th>
+                              <th>Status</th>
+                              <th>Listen & Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {takeHistory.map((tk: Any) => (
+                              <tr key={tk.id}>
+                                <td><code>{tk.id?.slice(0, 10)}</code></td>
+                                <td>{tk.scene_id ? `Scene ${p.scenes.findIndex((s: Any) => s.id === tk.scene_id) + 1}` : 'General'}</td>
+                                <td>{tk.voice_id} ({tk.provider})</td>
+                                <td>{tk.preset}</td>
+                                <td>{tk.duration?.toFixed(1)}s</td>
+                                <td>
+                                  {tk.accepted ? (
+                                    <span className="badge approved">Accepted</span>
+                                  ) : (
+                                    <span className="badge">Take</span>
+                                  )}
+                                </td>
+                                <td>
+                                  <div style={{display: 'flex', gap: 6, alignItems: 'center'}}>
+                                    <audio style={{height: 28, width: 150}} controls src={tk.audio_url} />
+                                    {!tk.accepted && (
+                                      <button type="button" onClick={() => acceptTake(tk.id)}>Accept</button>
+                                    )}
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </details>
+                    )}
+                  </div>
                 </section>
 
                 {p.scenes.map((s: Any, i: number) => {
@@ -892,9 +1300,15 @@ function App() {
             <Field label="Narration provider">
               <select value={cfg.tts_provider} onChange={e => setCfg({...cfg, tts_provider: e.target.value})}>
                 <option value="edge">Edge community integration — no key, online</option>
+                <option value="sarvam">Sarvam AI Bulbul neural — Telugu specialist</option>
                 <option value="azure">Azure Speech — official API, account required</option>
               </select>
             </Field>
+            {cfg.tts_provider === 'sarvam' && (
+              <Field label="Sarvam API subscription key" hint={cfg.sarvam_key_configured ? 'A key is saved.' : 'Needed for Sarvam Bulbul neural synthesis.'}>
+                <input type="password" autoComplete="off" value={cfg.sarvam_key || ''} onChange={e => setCfg({...cfg, sarvam_key: e.target.value})} />
+              </Field>
+            )}
             {cfg.tts_provider === 'azure' && (
               <>
                 <Field label="Azure Speech key">

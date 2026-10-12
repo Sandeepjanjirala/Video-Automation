@@ -1,0 +1,27 @@
+1
+00:00:00,000 --> 00:00:02,424
+Namaskaram! Telugu Reel Studio
+
+2
+00:00:02,424 --> 00:00:03,770
+mee home laptop lo
+
+3
+00:00:03,770 --> 00:00:06,643
+vijayavanthamga run avuthondi. Anni
+
+4
+00:00:06,643 --> 00:00:09,336
+configurations siddhamga unnayi.
+
+5
+00:00:09,867 --> 00:00:12,259
+PostgreSQL mariyu Redis architecture
+
+6
+00:00:12,259 --> 00:00:14,724
+aadharamga Celery workerlu background
+
+7
+00:00:14,724 --> 00:00:16,899
+lo videolanu render chesthunnayi.
