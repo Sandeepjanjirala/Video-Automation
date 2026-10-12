@@ -780,4 +780,56 @@ Skeleton   DB Unmanaged  DRF Core   Assets/Media    Jobs &       Voice Lab    Fr
 - **Django Internal Tables**: Exactly **0** created.
 - **Baseline Video**: `test-outputs/phase-3-home/phase3_home_reel.mp4` (7,481,435 bytes) untouched.
 
+### 9. Stage M3 Execution Report & API Contract Parity Matrix
+
+**Status**: **PASSED**  
+**Execution Date**: 2026-10-12  
+**Django Server**: `http://127.0.0.1:8788`  
+**FastAPI Server**: `http://127.0.0.1:8787` (Active production backend)  
+**Database Identity**: `django_readonly` (Strict SELECT only; 0 writes)  
+
+#### Endpoint Parity Matrix
+
+| FastAPI Route | Django DRF Route | HTTP Method | Parity Status | Known Differences | Tests Covering Endpoint | Deferred Behavior / Notes |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `/api/bootstrap` | `/api/bootstrap` | `GET` | **100% PARITY** | Token is unique session secret | `test_bootstrap_endpoint` | None. Returns token, public settings, projects. |
+| (Embedded in bootstrap) | `/api/projects` | `GET` | **100% PARITY** | DRF standalone collection | `test_django_project_list_endpoint` | Workspace-scoped project collection list. |
+| `/api/projects/{pid}` | `/api/projects/{pid}` | `GET` | **100% PARITY** | None (100% JSON equality) | `test_django_project_detail_endpoint`, `test_project_detail_parity_with_fastapi`, `test_telugu_unicode_http_parity` | Returns `{id, revision, approved, updated, project}`. |
+| `/api/projects/{pid}/history` | `/api/projects/{pid}/history` | `GET` | **100% PARITY** | None | `test_project_history_endpoint` | Returns list of revisions ordered by revision DESC. |
+| `/api/projects/{pid}/draft` | `/api/projects/{pid}/draft` | `GET` | **100% PARITY** | None | `test_project_draft_endpoint` | Returns draft body if present, or `{}` if none. |
+| `/api/projects/{pid}/preflight` | `/api/projects/{pid}/preflight` | `GET` | **100% PARITY** | None | `test_project_preflight_parity` | Pure validation calculation (`ready`, `errors`, `warnings`). |
+| `/api/projects/{pid}/jobs` | `/api/projects/{pid}/jobs` | `GET` | **100% PARITY** | None | `test_project_jobs_endpoint` | Returns jobs list for project ordered newest first. |
+| `/api/projects/{pid}/takes` | `/api/projects/{pid}/takes` | `GET` | **100% PARITY** | None | `test_project_takes_endpoint` | Returns Voice Lab takes list with optional scene filter. |
+| `/api/voice/capabilities` | `/api/voice/capabilities` | `GET` | **100% PARITY** | None | `test_voice_capabilities_parity` | Returns verified TTS capabilities from registry. |
+| `/api/assets` | `/api/assets` | `GET` | **100% PARITY** | None | `test_assets_list_and_detail` | Returns list of media asset metadata records. |
+| `/api/assets/{aid}` | `/api/assets/{aid}` | `GET` | **100% PARITY** | None | `test_assets_list_and_detail` | Returns single asset metadata record. |
+| Nonexistent project | `/api/projects/{nonexistent}` | `GET` | **100% PARITY** | None (HTTP 400 `{'detail': 'Project not found'}`) | `test_error_parity_nonexistent_project` | Exact status and detail match. |
+
+#### Deferred Endpoints (Non-Pure Reads / Action Endpoints)
+1. `/api/assets/{aid}/thumbnail`: Generates thumbnail on disk using FFmpeg subprocess if uncached. **Deferred to Stage M4**.
+2. `/api/assets/{aid}/media`, `/api/assets/{aid}/file`: Binary media file streaming. **Deferred to Stage M4**.
+3. `/api/jobs/{jid}/audio/{scene_id}`: Synthesized audio file streaming. **Deferred to Stage M4/M5**.
+4. `/api/exports/{jid}/{name}`: Reel and captions download binary streaming. **Deferred to Stage M4/M5**.
+5. `/api/projects/{pid}/jobs/{jid}/apply`, `/api/projects/{pid}/apply-job/{jid}`: Mutating action that updates project revision and creates receipts. **Deferred to Stage M5**.
+6. `/api/stock`: Pixabay provider HTTP search. **Deferred to Stage M4**.
+
+#### Unicode & Security Verification
+- **Telugu Script & Roman Transliteration**: Verified identical SHA-256 (`5b934e4d9b523c7f648b0b12c0f87a595d21391740966bef01988bcb71ff7d64`) over HTTP between FastAPI (:8787) and Django (:8788).
+- **Security Headers**: `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `Cache-Control: no-store` enforced on all `/api/` responses.
+- **Write Protection**: Mutating requests rejected (HTTP 403 / 405).
+
+#### Test Results Summary
+- **Pytest Suite**: **84 passed, 2 skipped, 0 failed** in 65.66s.
+  - Workflow regression tests (20): PASSED
+  - Phase 3 Celery/Redis tests (9): PASSED
+  - Phase 4 Voice Lab tests (21 passed, 2 skipped): PASSED
+  - Django M1 tests (5): PASSED
+  - Django M2 tests (13): PASSED
+  - Django M3 tests (16): PASSED
+- **UI Smoke Test**: PASSED with **0 runtime errors**.
+- **Alembic Revision**: `0003_phase4_voice_lab` (Unchanged).
+- **Database Row Counts**: Exactly 0 writes from Django.
+- **Baseline Video**: `test-outputs/phase-3-home/phase3_home_reel.mp4` (7,481,435 bytes) untouched.
+
+
 

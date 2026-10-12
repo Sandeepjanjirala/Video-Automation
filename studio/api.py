@@ -106,9 +106,7 @@ def approve(pid: str, body: RevisionBody):
 
 @app.get('/api/projects/{pid}/history')
 def history(pid: str):
-    with store.connection() as db:
-        return [{'revision': row['revision'], 'created': row['created'], 'project': json.loads(row['body'])}
-                for row in db.execute('SELECT * FROM revisions WHERE project_id=? ORDER BY revision DESC LIMIT 50', (pid,))]
+    return store.revisions(pid)
 
 
 class JobBody(BaseModel):
