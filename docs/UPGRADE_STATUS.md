@@ -326,34 +326,32 @@ Phase 4 is fully implemented, verified, and operational on this home laptop.
 
 ## 7. DJANGO MIGRATION
 
-**Current Stage**: Stage M3 — Port Read-Only APIs to Django DRF with FastAPI Payload Parity  
-**Status**: Stage M3 Complete — 100% Payload Parity Across Read Endpoints, Zero DB Mutations, Telugu Unicode Exactness, All Regression Tests Passing  
+**Current Stage**: Stage M4 — Media Delivery + Controlled Asset Uploads + Pixabay Read Proxy  
+**Status**: Stage M4 Complete — 100% Binary Media & Range Parity, Windows Concurrency-Safe Thumbnails, Scoped Writer DB Isolation, SHA-256 Deduplication, All 104 Regression Tests Passing  
 **Architecture Document**: [`docs/DJANGO_MIGRATION_PLAN.md`](file:///d:/DjangoProjects/New%20reels/Video-Automation/docs/DJANGO_MIGRATION_PLAN.md)  
 **Strategy**: Staged Coexistence with Unmanaged Models (Option C) transitioning to Django 5.x + DRF.  
 **Pre-migration Tag**: `pre-django-migration` on commit `7f2d37c50ff9429f0970aacf8f4aa068013f5101`.  
 **M1 Checkpoint Tag**: `django-m1-complete` on commit `39adc94b7936fb79d454c0e88c1c0d292a78d4c3`.  
 **M2 Checkpoint Tag**: `django-m2-complete` on commit `b19a579c5bc2d8d8ce426b349d4722da1713d077`.  
-**Database Identity**: `django_readonly` role with `SELECT` grant on public schema. Negative tests verify `INSERT`/`UPDATE`/`DELETE`/`DROP`/`ALTER`/`CREATE` are rejected by PostgreSQL.  
-**Schema Authority**: Alembic remains the sole schema authority (`alembic_version: 0003_phase4_voice_lab`); exactly 0 Django internal tables created.  
-**Ported Read Endpoints**:
-- `GET /api/bootstrap` (100% parity with token, public settings, projects)
-- `GET /api/projects` (workspace-scoped collection)
-- `GET /api/projects/{pid}` (100% payload equality with FastAPI)
-- `GET /api/projects/{pid}/history` (ordered revision snapshots)
-- `GET /api/projects/{pid}/draft` (autosave draft or empty dict)
-- `GET /api/projects/{pid}/preflight` (pure readiness validation)
-- `GET /api/projects/{pid}/jobs` (jobs listing)
-- `GET /api/projects/{pid}/takes` (voice takes listing)
-- `GET /api/voice/capabilities` (TTS capabilities from registry)
-- `GET /api/assets` and `GET /api/assets/{aid}` (media asset metadata)
-**Security Parity**: `LocalSecurityMiddleware` enforces `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`, `Cache-Control: no-store`, and blocks mutating requests (403/405).  
-**Unicode Fidelity**: Telugu script and Roman transliteration match FastAPI responses byte-for-byte and hash-for-hash (SHA-256 match, 0 mojibake).  
+**M3 Checkpoint Tag**: `django-m3-complete` on commit `4405612030e7fb084f26d004449f866665305e69`.  
+**Database Identity**:
+- Read queries (`DATABASES['default']`): `django_readonly` role (SELECT-only on public schema).
+- Asset creation (`DATABASES['media_writer']`): `django_media_writer` role with isolated privileges ONLY on `assets` table and `SELECT` on `workspaces`.
+- Zero write privileges on `jobs`, `revisions`, `projects`, `outbox`, `drafts`, `application_receipts`, `voice_takes`.
+**Schema Authority**: Alembic remains the sole schema authority (`alembic_version: 0003_phase4_voice_lab`); exactly 0 Django internal tables or migrations created.  
+**Ported M4 Endpoints**:
+- `GET /api/assets/{aid}/media` and `GET /api/assets/{aid}/file` (streaming binary media with RFC 7233 byte-range support: 200, 206, 416).
+- `GET /api/assets/{aid}/thumbnail` (cached JPEG delivery; bounded FFmpeg on cache miss with atomic replace and Windows concurrency lock handling).
+- `POST /api/assets` (chunked streaming upload, 200MB limit, SHA-256 deduplication, FFprobe container validation, transactional DB write).
+- `GET /api/stock` (Pixabay search proxy with query validation, 422 on missing `q`, and secret protection).
+**Security Parity**: `LocalSecurityMiddleware` enforces `X-Content-Type-Options`, `Referrer-Policy`, `X-Frame-Options`, `Cache-Control: no-store`, validates `x-studio-token` and `Origin`, enforces 220 MB request limits, and allows ONLY `POST /api/assets` while blocking all other mutations (405).  
 **Server Topology**:
 - FastAPI: `http://127.0.0.1:8787` (Active primary backend, status 200).
-- Django: `http://127.0.0.1:8788` (Side-by-side read parity backend, status 200).
-**Test Parity**: **84 passed, 2 skipped, 0 failed** across workflow, Phase 3, Phase 4, Django M1, Django M2, and Django M3 tests. UI smoke test passing with 0 runtime errors.  
+- Django: `http://127.0.0.1:8788` (Side-by-side migration backend, status 200).
+**Test Parity**: **104 passed, 2 skipped, 0 failed** across workflow, Phase 3, Phase 4, Django M1, Django M2, Django M3, and Django M4 tests. UI smoke test passing with 0 runtime errors.  
 **Baseline Video**: `test-outputs/phase-3-home/phase3_home_reel.mp4` (7,481,435 bytes) untouched.  
-**Execution Gate**: Awaiting user approval to proceed to Stage M4.
+**Execution Gate**: Awaiting user approval to proceed to Stage M5.
+
 
 
 

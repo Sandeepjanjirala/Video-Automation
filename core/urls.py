@@ -1,4 +1,4 @@
-"""URL configuration for core app (Stage M3)."""
+"""URL configuration for core app (Stage M4)."""
 from django.urls import path
 from .views import (
     HealthCheckView,
@@ -12,8 +12,11 @@ from .views import (
     ProjectJobsView,
     ProjectTakesView,
     VoiceCapabilitiesView,
-    AssetListView,
+    AssetListCreateView,
     AssetDetailView,
+    AssetMediaView,
+    AssetThumbnailView,
+    StockSearchView,
 )
 
 urlpatterns = [
@@ -38,7 +41,14 @@ urlpatterns = [
     # Voice Lab
     path('voice/capabilities', VoiceCapabilitiesView.as_view(), name='voice_capabilities'),
 
-    # Media Assets
-    path('assets', AssetListView.as_view(), name='asset_list'),
+    # Stock Provider Proxy (M4)
+    path('stock', StockSearchView.as_view(), name='stock_search'),
+
+    # Media Assets & Delivery (M4)
+    path('assets', AssetListCreateView.as_view(), name='asset_list_create'),
     path('assets/<str:aid>', AssetDetailView.as_view(), name='asset_detail'),
+    path('assets/<str:aid>/media', AssetMediaView.as_view(), name='asset_media'),
+    path('assets/<str:aid>/file', AssetMediaView.as_view(), name='asset_file'),
+    path('assets/<str:aid>/thumbnail', AssetThumbnailView.as_view(), name='asset_thumbnail'),
 ]
+

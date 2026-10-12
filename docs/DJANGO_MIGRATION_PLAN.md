@@ -831,5 +831,72 @@ Skeleton   DB Unmanaged  DRF Core   Assets/Media    Jobs &       Voice Lab    Fr
 - **Database Row Counts**: Exactly 0 writes from Django.
 - **Baseline Video**: `test-outputs/phase-3-home/phase3_home_reel.mp4` (7,481,435 bytes) untouched.
 
+---
+
+## 17. DJANGO MIGRATION — M4 EXECUTION REPORT
+
+**Execution Timestamp**: 2026-10-12  
+**Status**: Stage M4 Complete — Media Delivery, Thumbnail Caching, Controlled Asset Uploads & Pixabay Read Proxy Verified  
+
+### 1. Migrated Endpoints
+| FastAPI Endpoint | Django DRF Route | HTTP Method | Parity Status | DB Role | Test Function | Technical Implementation |
+|---|---|---|---|---|---|---|
+| `/api/assets/{aid}/media` | `/api/assets/<aid>/media` | `GET` | **100% PARITY** | `django_readonly` | `test_media_streaming_parity`, `test_http_range_requests` | `ranged_file_response` streaming with RFC 7233 byte-range support (200 / 206 / 416). Zero whole-file RAM buffering. |
+| `/api/assets/{aid}/file` | `/api/assets/<aid>/file` | `GET` | **100% PARITY** | `django_readonly` | `test_media_file_alias_parity` | Exact alias for `/media` with byte-for-byte SHA-256 match. |
+| `/api/assets/{aid}/thumbnail` | `/api/assets/<aid>/thumbnail` | `GET` | **100% PARITY** | `django_readonly` | `test_thumbnail_cached_parity`, `test_thumbnail_generation_and_concurrency` | Serves `data/cache/{aid}.thumb.jpg` if present; on cache miss, executes bounded FFmpeg with atomic rename (`.part.jpg` -> `.thumb.jpg`) with concurrency collision handling. |
+| `/api/assets` | `/api/assets` | `POST` | **100% PARITY** | `django_media_writer` | `test_upload_valid_video_and_deduplication`, `test_upload_corrupted_media_cleanup`, `test_upload_invalid_extension` | Chunked streaming (1MB chunks), 200MB limit, SHA-256 incremental hashing, deduplication check, FFprobe container validation, transactional DB write via isolated writer role. |
+| `/api/stock` | `/api/stock` | `GET` | **100% PARITY** | None (Provider Proxy) | `test_stock_proxy_missing_query`, `test_stock_proxy_character_limit`, `test_stock_proxy_secret_protection` | Pixabay stock query proxy with parameter validation (422 on missing `q`, 400 on `>100` chars) and server-side secret protection. |
+
+### 2. Database Privilege Isolation
+- **Read Operations (`DATABASES['default']`)**:
+  - Uses `django_readonly` role (SELECT-only on public schema).
+  - All standard GET queries operate through this role.
+- **Controlled Asset Upload (`DATABASES['media_writer']`)**:
+  - Uses dedicated `django_media_writer` application role.
+  - Privileges granted: `CONNECT`, schema `USAGE`, `SELECT, INSERT, UPDATE, DELETE` ONLY on `assets` table, and `SELECT` on `workspaces` (required for foreign key verification).
+  - Explicitly revoked / no privileges on: `jobs`, `job_stages`, `outbox`, `revisions`, `drafts`, `projects`, `application_receipts`, `voice_takes`, `usage`, `alembic_version`.
+  - Negative tests verify attempted writes to other application tables raise permission denied errors.
+
+### 3. Media Streaming & HTTP Range Support
+- Custom `ranged_file_response` handler provides full RFC 7233 Range compliance for video seeking:
+  - Standard request: HTTP 200 with `Accept-Ranges: bytes` and `Content-Length`.
+  - Partial content request (`Range: bytes=start-end`): HTTP 206 with `Content-Range: bytes start-end/total`.
+  - Suffix and open-ended ranges supported without loading full files into memory (chunked generator).
+  - Out-of-bounds range: HTTP 416 with `Content-Range: bytes */total`.
+  - Path traversal protection: Path resolution enforces `file_path.parent == assets_dir`.
+
+### 4. Thumbnail Caching & Concurrency Safety
+- Fast path: Serves existing JPEG thumbnail from `data/cache` without invoking FFmpeg.
+- Generation path: On cache miss for video assets, launches FFmpeg with bounded execution (15s timeout).
+- Concurrency protection: Renders to unique temporary path `data/cache/{aid}.thumb.{uuid}.part.jpg` and uses atomic `os.replace`. Catches Windows file lock collisions gracefully if another concurrent worker wins the race.
+- Audio rejection: Returns HTTP 404 (`Thumbnails only available for video assets`) matching FastAPI.
+
+### 5. Upload Limits & Deduplication
+- Upload limit: 200 MB per file strictly enforced during chunk streaming.
+- Memory safety: Requests stream in 1 MB chunks to disk (`FILE_UPLOAD_MAX_MEMORY_SIZE = 2MB`); zero 200 MB RAM buffering.
+- FFprobe validation: Rejects corrupted media, invalid streams, or files with no usable audio/video.
+- Incremental SHA-256 deduplication: Content hash computed while streaming. Re-uploading an existing file deletes the temporary file and returns the existing asset record without duplicating physical storage or database rows.
+- Application-level race protection: Double-checks hash existence inside database transaction before record insertion.
+
+### 6. Stock Proxy & Secret Protection
+- Reuses verified `studio.providers.stock_search`.
+- Missing query parameter returns HTTP 422 Unprocessable Entity (FastAPI parity).
+- Server-side `PIXABAY_API_KEY` is never exposed in response JSON, error details, or client payloads.
+
+### 7. Regression Test Suite
+- **Pytest Suite**: **104 passed, 2 skipped, 0 failed** in 69.67s.
+  - Workflow regression tests (20): PASSED
+  - Phase 3 Celery/Redis tests (9): PASSED
+  - Phase 4 Voice Lab tests (21 passed, 2 skipped): PASSED
+  - Django M1 tests (5): PASSED
+  - Django M2 tests (13): PASSED
+  - Django M3 tests (16): PASSED
+  - Django M4 tests (20): PASSED
+- **UI Smoke Test**: PASSED with **0 runtime errors**.
+- **Alembic Revision**: `0003_phase4_voice_lab` (100% unchanged).
+- **Persistent Assets Count**: 25 in DB, 25 in `data/assets` (0 orphan files or leaked rows).
+- **Baseline Video**: `test-outputs/phase-3-home/phase3_home_reel.mp4` (7,481,435 bytes) intact.
+
+
 
 

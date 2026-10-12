@@ -62,6 +62,24 @@ if db_url.startswith('postgresql+psycopg2://'):
 
 parsed = urlparse(db_url)
 
+# Stage M4: Narrowly scoped media writer database identity
+# Used exclusively for controlled asset creation (POST /api/assets)
+media_writer_url = os.environ.get('STUDIO_MEDIA_WRITER_DATABASE_URL')
+if not media_writer_url:
+    writer_file = BASE_DIR / 'backups' / '.media_writer_db_url'
+    if writer_file.exists():
+        try:
+            media_writer_url = writer_file.read_text(encoding='utf-8').strip()
+        except Exception:
+            pass
+if not media_writer_url:
+    media_writer_url = db_url
+
+if media_writer_url.startswith('postgresql+psycopg2://'):
+    media_writer_url = media_writer_url.replace('postgresql+psycopg2://', 'postgresql://', 1)
+
+parsed_writer = urlparse(media_writer_url)
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -71,8 +89,22 @@ DATABASES = {
         'HOST': parsed.hostname or '127.0.0.1',
         'PORT': str(parsed.port or 5433),
         'CONN_MAX_AGE': 0,
-    }
+    },
+    'media_writer': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': parsed_writer.path.lstrip('/') or 'studio',
+        'USER': parsed_writer.username or 'django_media_writer',
+        'PASSWORD': parsed_writer.password or '',
+        'HOST': parsed_writer.hostname or '127.0.0.1',
+        'PORT': str(parsed_writer.port or 5433),
+        'CONN_MAX_AGE': 0,
+    },
 }
+
+# Upload Limits: Stream large files to disk without buffering 200MB into memory
+DATA_UPLOAD_MAX_MEMORY_SIZE = 220 * 1024 * 1024  # 220 MB request payload limit
+FILE_UPLOAD_MAX_MEMORY_SIZE = 2 * 1024 * 1024    # 2 MB in-memory chunk limit before disk spill
+
 
 # Redis URL for non-mutating health checks
 REDIS_URL = os.environ.get('CELERY_BROKER_URL') or os.environ.get('REDIS_URL') or 'redis://127.0.0.1:6379/0'
