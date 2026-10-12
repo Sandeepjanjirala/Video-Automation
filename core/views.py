@@ -1,4 +1,4 @@
-"""Core views for Telugu Reel Studio (Phase M1)."""
+"""Core views for Telugu Reel Studio (Stage M1 & M2)."""
 import subprocess
 from django.conf import settings
 from django.db import connection
@@ -6,6 +6,19 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 import redis
+
+from .models import (
+    Workspace,
+    Project,
+    Revision,
+    Asset,
+    Job,
+    JobStage,
+    Draft,
+    ApplicationReceipt,
+    OutboxEvent,
+    VoiceTake,
+)
 
 
 class HealthCheckView(APIView):
@@ -100,3 +113,54 @@ class HealthCheckView(APIView):
         }
 
         return Response(response_payload, status=http_status)
+
+
+class SchemaStatusView(APIView):
+    """Internal M2 diagnostic endpoint reporting unmanaged model status and counts.
+    
+    Safe read-only development endpoint. No private data or credentials exposed.
+    """
+
+    def get(self, request, *args, **kwargs):
+        # Query counts across mapped models
+        model_counts = {
+            "Workspace": Workspace.objects.count(),
+            "Project": Project.objects.count(),
+            "Revision": Revision.objects.count(),
+            "Asset": Asset.objects.count(),
+            "Job": Job.objects.count(),
+            "JobStage": JobStage.objects.count(),
+            "Draft": Draft.objects.count(),
+            "ApplicationReceipt": ApplicationReceipt.objects.count(),
+            "OutboxEvent": OutboxEvent.objects.count(),
+            "VoiceTake": VoiceTake.objects.count(),
+        }
+
+        alembic_rev = None
+        usage_count = 0
+        with connection.cursor() as cursor:
+            cursor.execute("SELECT version_num FROM alembic_version LIMIT 1;")
+            row = cursor.fetchone()
+            if row:
+                alembic_rev = row[0]
+            cursor.execute("SELECT count(*) FROM usage;")
+            usage_count = cursor.fetchone()[0]
+
+        return Response({
+            "stage": "M2",
+            "schema_authority": "alembic",
+            "alembic_revision": alembic_rev,
+            "mapped_models_count": len(model_counts),
+            "model_counts": model_counts,
+            "unmapped_tables": {
+                "usage": {
+                    "reason": "Composite primary key (day, provider); queried via core.repository functions",
+                    "row_count": usage_count,
+                },
+                "alembic_version": {
+                    "reason": "Alembic internal schema migration table",
+                    "version": alembic_rev,
+                }
+            },
+            "read_only": True
+        })

@@ -731,7 +731,53 @@ Skeleton   DB Unmanaged  DRF Core   Assets/Media    Jobs &       Voice Lab    Fr
 - Frontend UI smoke test: **0 runtime errors** (`{"reactRuntimeErrors":[],"checks":[...]}`).
 - Baseline 17.42s 1080x1920 video (`test-outputs/phase-3-home/phase3_home_reel.mp4`): Untouched and intact.
 
-### 8. Recommended Stage M2 Scope
-- Connect Django models (`managed = False`) to map `workspaces`, `projects`, `revisions`, and `drafts`.
-- Implement read-only DRF serializers and verify data extraction matching FastAPI `/api/projects` outputs.
+### 8. Stage M2 Execution Report & Model Coverage Table
+
+**Status**: **PASSED**  
+**Execution Date**: 2026-10-12  
+**Database Role**: `django_readonly` (Dedicated role with `SELECT` grant only; negative tests prove `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE`, `ALTER`, `DROP`, `CREATE` are rejected by PostgreSQL).
+
+#### Model Mapping Matrix
+
+| Existing PostgreSQL Table | Django Model (`core.models`) | Primary Key (PK) | Important Relationships | JSONB Fields | `managed` Status | Mapping Verified? | Known Limitations / Notes |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `workspaces` | `Workspace` | `id` (VARCHAR 64) | None | None | `False` | **Yes** | Root workspace boundary. |
+| `projects` | `Project` | `id` (VARCHAR 64) | `workspace -> Workspace` (DO_NOTHING) | `body` | `False` | **Yes** | `body` holds full project JSON document with scenes. |
+| `revisions` | `Revision` | `id` (SERIAL / AutoField) | `project -> Project` (DO_NOTHING) | `body` | `False` | **Yes** | Unique together `(project, revision)`. Ascending order verified. |
+| `assets` | `Asset` | `id` (VARCHAR 64) | `workspace -> Workspace` (DO_NOTHING) | `meta` | `False` | **Yes** | Media asset metadata with duration, hash, source. |
+| `jobs` | `Job` | `id` (VARCHAR 64) | `workspace -> Workspace`, `project -> Project` (DO_NOTHING) | `snapshot`, `result` | `False` | **Yes** | Execution lease, heartbeat, and state tracking preserved. |
+| `job_stages` | `JobStage` | `id` (SERIAL / AutoField) | `job -> Job` (DO_NOTHING) | `details` | `False` | **Yes** | Granular stage progression records. |
+| `drafts` | `Draft` | `project_id` (VARCHAR 64) | `project -> Project` (OneToOne, DO_NOTHING) | `body` | `False` | **Yes** | **No synthetic `id`**: PK explicitly mapped to `project_id`. |
+| `application_receipts` | `ApplicationReceipt` | `id` (SERIAL / AutoField) | `job -> Job`, `project -> Project` (DO_NOTHING) | `conflicts` | `False` | **Yes** | Optimistic merge receipt history. |
+| `outbox` | `OutboxEvent` | `id` (SERIAL / AutoField) | None | `payload` | `False` | **Yes** | Transactional outbox event records. |
+| `voice_takes` | `VoiceTake` | `id` (VARCHAR 64) | `project -> Project`, `asset -> Asset` (DO_NOTHING) | `timing_data`, `meta` | `False` | **Yes** | Phase 4 Voice Lab versioned speech synthesis takes. |
+
+#### Tables Intentionally Not Mapped as Django ORM Models
+
+1. **`usage`**:
+   - **PostgreSQL Schema**: `PRIMARY KEY (day, provider)` — Composite primary key.
+   - **Reason**: Django 5.1 does not natively support composite primary keys in `models.Model`. Inventing a fake surrogate key would risk corrupted ORM caching.
+   - **Strategy**: Represented through read-only functions in `core/repository.py` (`list_usage()`, `get_usage(day, provider)`) using safe direct connection queries.
+2. **`alembic_version`**:
+   - **PostgreSQL Schema**: `PRIMARY KEY (version_num)`.
+   - **Reason**: Alembic internal migration catalog table. Owned exclusively by Alembic. Not a domain entity.
+
+#### Data Integrity & Unicode Verification
+- **Telugu Unicode Fidelity**: Verified exact character-for-character match (SHA-256: `5b934e4d9b523c7f648b0b12c0f87a595d21391740966bef01988bcb71ff7d64`) between PostgreSQL direct query and Django ORM for Telugu script and Roman transliteration in `Project.body`.
+- **JSONB Round-Trip**: All snapshots, results, and bodies deserialize as Python dicts/lists without modification.
+- **Repository Layer**: Read-only repository functions (`list_projects`, `get_project`, `get_revision_history`, `list_assets`, `get_job`, `get_job_stages`, `list_usage`) verified operational.
+- **Diagnostic Endpoint**: `GET /api/migration/schema-status` verified returning HTTP 200 with model counts and Alembic version without exposing credentials or private payloads.
+
+#### Test Results Summary
+- **Pytest Suite**: **68 passed, 2 skipped, 0 failed** in 60.75s.
+  - Workflow regression tests (20): PASSED
+  - Phase 3 Celery/Redis tests (9): PASSED
+  - Phase 4 Voice Lab tests (21 passed, 2 skipped): PASSED
+  - Django M1 tests (5): PASSED
+  - Django M2 tests (13): PASSED
+- **UI Smoke Test**: PASSED with **0 runtime errors**.
+- **Alembic Revision**: `0003_phase4_voice_lab` (Unchanged).
+- **Django Internal Tables**: Exactly **0** created.
+- **Baseline Video**: `test-outputs/phase-3-home/phase3_home_reel.mp4` (7,481,435 bytes) untouched.
+
 

@@ -326,18 +326,24 @@ Phase 4 is fully implemented, verified, and operational on this home laptop.
 
 ## 7. DJANGO MIGRATION
 
-**Current Stage**: Stage M1 — Safe Django Skeleton + Database Connectivity + Health Check  
-**Status**: Stage M1 Complete — Coexistence Verified; Read-Only Health Endpoint Operational on 127.0.0.1:8788  
+**Current Stage**: Stage M2 — Map Existing PostgreSQL Schema into Django ORM (Read-Only Verification Only)  
+**Status**: Stage M2 Complete — 10 Unmanaged Models Mapped, Read-Only Repository Operational, Negative Write Protections Verified, Schema Invariant  
 **Architecture Document**: [`docs/DJANGO_MIGRATION_PLAN.md`](file:///d:/DjangoProjects/New%20reels/Video-Automation/docs/DJANGO_MIGRATION_PLAN.md)  
 **Strategy**: Staged Coexistence with Unmanaged Models (Option C) transitioning to Django 5.x + DRF.  
 **Pre-migration Tag**: `pre-django-migration` on commit `7f2d37c50ff9429f0970aacf8f4aa068013f5101`.  
-**PostgreSQL Backup**: Verified dump `backups/studio_pre_django_20261012T145428Z.dump` (SHA-256: `f835bc5d1144dbb7b6e6984b39f2b15477fdb4f55496eaf02f1c9a97c6673a8e`).  
-**Schema Authority**: Alembic remains the sole schema authority (`alembic_version: 0003_phase4_voice_lab`); zero Django migrations created or executed on existing application schema.  
+**M1 Checkpoint Tag**: `django-m1-complete` on commit `39adc94b7936fb79d454c0e88c1c0d292a78d4c3`.  
+**Database Identity**: `django_readonly` role with `SELECT` grant on public schema. Negative tests verify `INSERT`/`UPDATE`/`DELETE`/`DROP`/`ALTER`/`CREATE` are rejected by PostgreSQL.  
+**Schema Authority**: Alembic remains the sole schema authority (`alembic_version: 0003_phase4_voice_lab`); exactly 0 Django internal tables created.  
+**Mapped Models**: `Workspace`, `Project`, `Revision`, `Asset`, `Job`, `JobStage`, `Draft` (PK: `project_id`), `ApplicationReceipt`, `OutboxEvent`, `VoiceTake` (all `managed = False`).  
+**Unmapped Tables**: `usage` (composite PK `[day, provider]`, accessed via repository), `alembic_version` (Alembic internal catalog).  
+**Unicode Fidelity**: Telugu script and Roman transliteration match direct PostgreSQL query byte-for-byte and hash-for-hash (SHA-256 match, 0 mojibake).  
 **Server Topology**:
 - FastAPI: `http://127.0.0.1:8787` (Active primary backend, status 200).
-- Django: `http://127.0.0.1:8788` (Side-by-side test backend, status 200).
-**Test Parity**: 55 passed, 2 skipped, 0 failed across full regression suite and Django M1 tests. UI smoke test passing with 0 runtime errors.  
-**Execution Gate**: Awaiting user approval to proceed to Stage M2.
+- Django: `http://127.0.0.1:8788` (Side-by-side test backend, status 200, `/api/health` and `/api/migration/schema-status` operational).
+**Test Parity**: **68 passed, 2 skipped, 0 failed** across workflow, Phase 3, Phase 4, Django M1, and Django M2 tests. UI smoke test passing with 0 runtime errors.  
+**Baseline Video**: `test-outputs/phase-3-home/phase3_home_reel.mp4` (7,481,435 bytes) untouched.  
+**Execution Gate**: Awaiting user approval to proceed to Stage M3.
+
 
 
 

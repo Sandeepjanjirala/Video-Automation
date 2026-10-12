@@ -40,10 +40,20 @@ WSGI_APPLICATION = 'config.wsgi.application'
 ASGI_APPLICATION = 'config.asgi.application'
 
 # Database Configuration (Connects to existing PostgreSQL instance)
-db_url = os.environ.get(
-    'STUDIO_DATABASE_URL',
-    'postgresql://postgres:postgres@127.0.0.1:5433/studio'
-)
+# Prefer read-only connection if configured or locally available for M2 safety
+db_url = os.environ.get('STUDIO_READONLY_DATABASE_URL')
+if not db_url:
+    readonly_file = BASE_DIR / 'backups' / '.readonly_db_url'
+    if readonly_file.exists():
+        try:
+            db_url = readonly_file.read_text(encoding='utf-8').strip()
+        except Exception:
+            pass
+if not db_url:
+    db_url = os.environ.get(
+        'STUDIO_DATABASE_URL',
+        'postgresql://postgres:postgres@127.0.0.1:5433/studio'
+    )
 
 # Handle sqlalchemy-style postgresql+psycopg2:// if passed
 if db_url.startswith('postgresql+psycopg2://'):
