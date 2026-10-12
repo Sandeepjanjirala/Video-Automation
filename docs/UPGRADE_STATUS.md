@@ -321,5 +321,16 @@ Phase 4 is fully implemented, verified, and operational on this home laptop.
 - Baseline Edge audio samples are generated and available for listening.
 - All 50 tests pass with zero regressions across Phase 1–3.
 - User retains complete control over candidate evaluation and voice selection.
-- Per instructions: **Do NOT advance to Phase 5**. Work stops here.
+
+---
+
+## 7. DJANGO MIGRATION
+
+**Status**: planning / not implemented  
+**Architecture Document**: [`docs/DJANGO_MIGRATION_PLAN.md`](file:///d:/DjangoProjects/New%20reels/Video-Automation/docs/DJANGO_MIGRATION_PLAN.md)  
+**Strategy**: Staged Coexistence with Unmanaged Models (Option C) transitioning to Django 5.x + DRF.  
+**Frontend Plan**: React 19 preserved for initial API parity; Django Templates + HTML/CSS + jQuery designed for separate phase after backend verification.  
+**Pre-migration Baseline Commit**: `dbb89c3` ("save FastAPI project") on branch `main`.  
+**Execution Gate**: Awaiting user review and explicit approval.
+
 
