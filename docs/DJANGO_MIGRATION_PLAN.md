@@ -646,3 +646,92 @@ Skeleton   DB Unmanaged  DRF Core   Assets/Media    Jobs &       Voice Lab    Fr
 ### Actions Requiring Manual User Approval
 1. Confirmation of the migration architecture described in this plan.
 2. Formal approval to create the pre-migration git checkpoint (`pre-django-migration`) and start **Stage M1**.
+
+---
+
+## 14. DJANGO MIGRATION — M1 EXECUTION REPORT
+
+**Execution Timestamp**: 2026-10-12  
+**Status**: Stage M1 Complete — Verified Coexistence & Read-Only Health Endpoint  
+
+### 1. Git Baseline Checkpoint & Tag
+- Baseline Commit: `7f2d37c50ff9429f0970aacf8f4aa068013f5101`
+- Git Tag: `pre-django-migration`
+- Branch: `main`
+
+### 2. PostgreSQL Logical Backup & Integrity Verification
+- **Source Database**: `studio` on port `5433` (PostgreSQL 18.6)
+- **Backup File**: `backups/studio_pre_django_20261012T145428Z.dump` (custom `-Fc` format)
+- **Backup Size**: 93,408 bytes
+- **SHA-256 Checksum**: `f835bc5d1144dbb7b6e6984b39f2b15477fdb4f55496eaf02f1c9a97c6673a8e`
+- **Restore Verification**:
+  - Restored into temporary disposable database `studio_verify_backup`.
+  - All 11 table row counts and Alembic version matched 100%:
+    - `workspaces`: Source=1, Restored=1 (MATCH)
+    - `projects`: Source=6, Restored=6 (MATCH)
+    - `revisions`: Source=65, Restored=65 (MATCH)
+    - `assets`: Source=25, Restored=25 (MATCH)
+    - `jobs`: Source=46, Restored=46 (MATCH)
+    - `job_stages`: Source=122, Restored=122 (MATCH)
+    - `drafts`: Source=0, Restored=0 (MATCH)
+    - `application_receipts`: Source=27, Restored=27 (MATCH)
+    - `outbox`: Source=46, Restored=46 (MATCH)
+    - `usage`: Source=5, Restored=5 (MATCH)
+    - `voice_takes`: Source=0, Restored=0 (MATCH)
+    - `alembic_version`: Source=0003_phase4_voice_lab, Restored=0003_phase4_voice_lab (MATCH)
+  - Disposable database `studio_verify_backup` was safely dropped after validation.
+
+### 3. Installed Packages
+- `django==5.1.15`
+- `djangorestframework==3.15.2`
+- `asgiref==3.12.1`
+- `sqlparse==0.6.0`
+
+### 4. Running Servers & Ports
+- **FastAPI**: `http://127.0.0.1:8787` (Active primary backend, status 200)
+- **Django**: `http://127.0.0.1:8788` (Independent side-by-side test backend, status 200)
+
+### 5. Health API Verification (`GET http://127.0.0.1:8788/api/health`)
+- Response:
+  ```json
+  {
+    "status": "ok",
+    "service": "django",
+    "version": "5.1.15",
+    "database": {
+      "engine": "postgresql",
+      "connected": true,
+      "current_alembic_revision": "0003_phase4_voice_lab",
+      "tables_visible": true,
+      "table_count": 12,
+      "read_query_verified": true
+    },
+    "redis": {
+      "connected": true
+    },
+    "media_tools": {
+      "ffmpeg": "ffmpeg version 9.0.2-full_build...",
+      "ffprobe": "ffprobe version 9.0.2-full_build..."
+    }
+  }
+  ```
+
+### 6. Schema Ownership & Mutation Protection
+- Alembic revision before M1: `0003_phase4_voice_lab`
+- Alembic revision after M1: `0003_phase4_voice_lab` (Identical)
+- `django_migrations` table present in PostgreSQL: **No** (Zero internal migration tables created)
+- Real database state mutated: **No** (Health check is strictly read-only)
+
+### 7. Test Results
+- Full automated test suite: **55 passed, 2 skipped, 0 failed** in 38.37s.
+  - Existing workflow tests (20): PASSED
+  - Existing Phase 3 Celery/Redis tests (9): PASSED
+  - Existing Phase 4 Voice Lab tests (21 passed, 2 skipped): PASSED
+  - Focused Django M1 tests (5): PASSED
+- Frontend UI smoke test: **0 runtime errors** (`{"reactRuntimeErrors":[],"checks":[...]}`).
+- Baseline 17.42s 1080x1920 video (`test-outputs/phase-3-home/phase3_home_reel.mp4`): Untouched and intact.
+
+### 8. Recommended Stage M2 Scope
+- Connect Django models (`managed = False`) to map `workspaces`, `projects`, `revisions`, and `drafts`.
+- Implement read-only DRF serializers and verify data extraction matching FastAPI `/api/projects` outputs.
+

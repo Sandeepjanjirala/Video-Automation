@@ -1,0 +1,83 @@
+"""Django settings for Telugu Reel Studio (Phase M1).
+
+Safe coexistence settings:
+- Read-only connection to existing PostgreSQL database.
+- Zero internal migration-backed apps installed (preserves Alembic schema authority).
+- Local loopback binding only (127.0.0.1, localhost).
+"""
+import os
+from pathlib import Path
+from urllib.parse import urlparse
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Security Settings
+SECRET_KEY = os.environ.get(
+    'DJANGO_SECRET_KEY',
+    'django-insecure-studio-dev-key-7f2d37c50ff9429f0970aacf8f4aa068'
+)
+
+# Debug disabled by default; enable only with explicit DJANGO_DEBUG=1
+DEBUG = os.environ.get('DJANGO_DEBUG', 'False').lower() in ('true', '1')
+
+# Local development loopback restriction only
+ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'testserver']
+
+# Minimal application definition for M1 (No migration-backed auth/session apps)
+INSTALLED_APPS = [
+    'rest_framework',
+    'core.apps.CoreConfig',
+]
+
+MIDDLEWARE = [
+    'django.middleware.security.SecurityMiddleware',
+    'django.middleware.common.CommonMiddleware',
+]
+
+ROOT_URLCONF = 'config.urls'
+
+WSGI_APPLICATION = 'config.wsgi.application'
+ASGI_APPLICATION = 'config.asgi.application'
+
+# Database Configuration (Connects to existing PostgreSQL instance)
+db_url = os.environ.get(
+    'STUDIO_DATABASE_URL',
+    'postgresql://postgres:postgres@127.0.0.1:5433/studio'
+)
+
+# Handle sqlalchemy-style postgresql+psycopg2:// if passed
+if db_url.startswith('postgresql+psycopg2://'):
+    db_url = db_url.replace('postgresql+psycopg2://', 'postgresql://', 1)
+
+parsed = urlparse(db_url)
+
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': parsed.path.lstrip('/') or 'studio',
+        'USER': parsed.username or 'postgres',
+        'PASSWORD': parsed.password or 'postgres',
+        'HOST': parsed.hostname or '127.0.0.1',
+        'PORT': str(parsed.port or 5433),
+        'CONN_MAX_AGE': 0,
+    }
+}
+
+# Redis URL for non-mutating health checks
+REDIS_URL = os.environ.get('CELERY_BROKER_URL') or os.environ.get('REDIS_URL') or 'redis://127.0.0.1:6379/0'
+
+# Django REST Framework Configuration
+REST_FRAMEWORK = {
+    'DEFAULT_RENDERER_CLASSES': [
+        'rest_framework.renderers.JSONRenderer',
+    ],
+    'UNAUTHENTICATED_USER': None,
+}
+
+# Internationalization
+LANGUAGE_CODE = 'en-us'
+TIME_ZONE = 'UTC'
+USE_I18N = True
+USE_TZ = True
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
