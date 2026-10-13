@@ -98,6 +98,24 @@ if job_writer_url.startswith('postgresql+psycopg2://'):
 
 parsed_job_writer = urlparse(job_writer_url)
 
+# Stage M6: Narrowly scoped project writer database identity
+# Used for project creation, updates, approvals, drafts, and job result application.
+project_writer_url = os.environ.get('STUDIO_PROJECT_WRITER_DATABASE_URL')
+if not project_writer_url:
+    project_writer_file = BASE_DIR / 'backups' / '.project_writer_db_url'
+    if project_writer_file.exists():
+        try:
+            project_writer_url = project_writer_file.read_text(encoding='utf-8').strip()
+        except Exception:
+            pass
+if not project_writer_url:
+    project_writer_url = db_url
+
+if project_writer_url.startswith('postgresql+psycopg2://'):
+    project_writer_url = project_writer_url.replace('postgresql+psycopg2://', 'postgresql://', 1)
+
+parsed_project_writer = urlparse(project_writer_url)
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -124,6 +142,15 @@ DATABASES = {
         'PASSWORD': parsed_job_writer.password or '',
         'HOST': parsed_job_writer.hostname or '127.0.0.1',
         'PORT': str(parsed_job_writer.port or 5433),
+        'CONN_MAX_AGE': 0,
+    },
+    'project_writer': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': parsed_project_writer.path.lstrip('/') or 'studio',
+        'USER': parsed_project_writer.username or 'django_project_writer',
+        'PASSWORD': parsed_project_writer.password or '',
+        'HOST': parsed_project_writer.hostname or '127.0.0.1',
+        'PORT': str(parsed_project_writer.port or 5433),
         'CONN_MAX_AGE': 0,
     },
 }

@@ -667,10 +667,9 @@ def test_export_artifact_endpoint(pg_connection, test_project_fixture):
 def test_m5_security_disallowed_mutations():
     """Verify unauthorized mutating endpoints remain strictly rejected with 405."""
     disallowed_calls = [
-        ("POST", "/api/projects/pid_1/approve", {}),
-        ("PUT", "/api/projects/pid_1/draft", {}),
-        ("POST", "/api/projects/pid_1/apply-job/jid_1", {}),
-        ("POST", "/api/projects/pid_1/jobs/jid_1/apply", {}),
+        ("POST", "/api/settings", {}),
+        ("POST", "/api/voice/preview", {}),
+        ("DELETE", "/api/projects/pid_1", {}),
         ("DELETE", "/api/assets/some_aid", {}),
     ]
     for method, path, payload in disallowed_calls:

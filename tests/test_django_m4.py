@@ -257,9 +257,9 @@ def test_security_guards_token_enforcement():
 
 
 def test_security_guards_disallowed_mutation_paths():
-    """Verify all mutating routes other than POST /api/assets remain rejected with 405 in M4."""
+    """Verify all mutating routes not permitted by the mutation allowlist remain rejected with 405."""
     resp = DJ_CLIENT.post(
-        "/api/projects",
+        "/api/settings",
         {},
         format='json',
         HTTP_X_STUDIO_TOKEN=DJANGO_TOKEN

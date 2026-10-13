@@ -19,17 +19,26 @@ class LocalSecurityMiddleware(MiddlewareMixin):
             if origin and origin != request.build_absolute_uri('/').rstrip('/'):
                 return JsonResponse({'detail': 'Cross-origin changes are not allowed'}, status=403)
 
-            # Stage M5 Mutation Allowlist:
+            # Stage M6 Mutation Allowlist:
             # - POST /api/assets (media upload from M4)
-            # - POST /api/projects/<pid>/jobs (job creation)
-            # - POST /api/jobs/<jid>/retry (job retry)
-            # - POST /api/jobs/<jid>/cancel (job cancel)
+            # - POST /api/projects (project create)
+            # - PUT /api/projects/<pid> (project update with optimistic lock)
+            # - POST /api/projects/<pid>/approve (project revision approval)
+            # - PUT /api/projects/<pid>/draft (autosave draft save)
+            # - DELETE /api/projects/<pid>/draft (autosave draft delete)
+            # - POST /api/projects/<pid>/jobs/<jid>/apply & /apply-job/<jid> (job result application)
+            # - POST /api/projects/<pid>/assign-media (scene media assignment)
+            # - POST /api/projects/<pid>/voice_lock (voice lock toggle)
+            # - POST /api/projects/<pid>/pronunciation_dict (pronunciation dict update)
+            # - POST /api/projects/<pid>/jobs (job creation from M5)
+            # - POST /api/jobs/<jid>/retry (job retry from M5)
+            # - POST /api/jobs/<jid>/cancel (job cancel from M5)
             # All other mutating endpoints remain strictly rejected with 405.
             import re
             normalized_path = request.path.rstrip('/')
             is_allowed_mutation = False
             if request.method == 'POST':
-                if normalized_path == '/api/assets':
+                if normalized_path in ('/api/assets', '/api/projects'):
                     is_allowed_mutation = True
                 elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/jobs', normalized_path):
                     is_allowed_mutation = True
@@ -37,9 +46,29 @@ class LocalSecurityMiddleware(MiddlewareMixin):
                     is_allowed_mutation = True
                 elif re.fullmatch(r'/api/jobs/[a-zA-Z0-9_-]+/cancel', normalized_path):
                     is_allowed_mutation = True
+                elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/approve', normalized_path):
+                    is_allowed_mutation = True
+                elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/assign-media', normalized_path):
+                    is_allowed_mutation = True
+                elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/voice_lock', normalized_path):
+                    is_allowed_mutation = True
+                elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/pronunciation_dict', normalized_path):
+                    is_allowed_mutation = True
+                elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/jobs/[a-zA-Z0-9_-]+/apply', normalized_path):
+                    is_allowed_mutation = True
+                elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/apply-job/[a-zA-Z0-9_-]+', normalized_path):
+                    is_allowed_mutation = True
+            elif request.method == 'PUT':
+                if re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+', normalized_path):
+                    is_allowed_mutation = True
+                elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/draft', normalized_path):
+                    is_allowed_mutation = True
+            elif request.method == 'DELETE':
+                if re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/draft', normalized_path):
+                    is_allowed_mutation = True
 
             if not is_allowed_mutation:
-                return JsonResponse({'detail': 'Django instance does not accept this mutation during Stage M4 / Stage M5'}, status=405)
+                return JsonResponse({'detail': 'Django instance does not accept this mutation during Stage M4 / Stage M5 / Stage M6'}, status=405)
 
             # Enforce request size limit
             limit = 220 * 1024 * 1024 if normalized_path == '/api/assets' else 1024 * 1024

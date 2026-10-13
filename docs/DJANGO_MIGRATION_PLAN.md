@@ -901,6 +901,69 @@ Skeleton   DB Unmanaged  DRF Core   Assets/Media    Jobs &       Voice Lab    Fr
 - **Persistent Assets Count**: 25 in DB, 25 in `data/assets` (0 orphan files or leaked rows).
 - **Baseline Video**: `test-outputs/phase-3-home/phase3_home_reel.mp4` (7,481,435 bytes) intact.
 
+---
+
+## 18. DJANGO MIGRATION — M5 EXECUTION REPORT
+
+**Execution Timestamp**: 2026-10-13  
+**Status**: Stage M5 Complete — Jobs + Transactional Outbox + Redis/Celery Distributed Rendering Verified  
+
+### 1. Migrated Endpoints
+- `POST /api/projects/{pid}/jobs`: Transactional job creation + outbox event enqueue via `django_job_writer`.
+- `POST /api/jobs/{jid}/retry`: In-place retry ('original' / 'current' modes) via `django_job_writer`.
+- `POST /api/jobs/{jid}/cancel`: Cooperative cancellation terminating FFmpeg subprocess trees.
+- `GET /api/jobs/{jid}/audio/{scene_id}`: Safe traversal-guarded scene audio delivery.
+- `GET /api/exports/{jid}/{name}`: RFC 7233 byte-range streaming for export artifacts.
+
+### 2. Evidence
+- **Real Django-Triggered Reel**: `test-outputs/django-m5/20261013_200719/django_m5_reel.mp4` (7,423,667 bytes, 1080x1920 vertical reel, 17.42s).
+- **Full FFmpeg Decode**: 0 decode errors.
+- **Regression Suite**: 120 passed, 2 skipped, 0 failed.
+
+---
+
+## 19. DJANGO MIGRATION — M6 EXECUTION REPORT
+
+**Execution Timestamp**: 2026-10-13  
+**Status**: Stage M6 Complete — Project Writes, Revisions, Drafts, Approvals & Job Result Application Verified  
+
+### 1. Migrated Endpoints
+| FastAPI Endpoint | Django DRF Route | HTTP Method | Parity Status | DB Role | Technical Implementation |
+|---|---|---|---|---|---|
+| `/api/projects` | `/api/projects` | `POST` | **100% PARITY** | `django_project_writer` | Pydantic schema validation, atomic insert of Project + Revision 1 snapshot, draft cleanup. |
+| `/api/projects/{pid}` | `/api/projects/<pid>` | `PUT` | **100% PARITY** | `django_project_writer` | Optimistic locking on expected revision, row-level lock (`select_for_update`), approval invalidation on change, revision bump, immutable revision record. |
+| `/api/projects/{pid}/approve` | `/api/projects/<pid>/approve` | `POST` | **100% PARITY** | `django_project_writer` | Script validation (non-empty narration, roman, evidence notes), script hash computation, approved_revision update. |
+| `/api/projects/{pid}/draft` | `/api/projects/<pid>/draft` | `PUT` | **100% PARITY** | `django_project_writer` | Upsert client editor draft body. |
+| `/api/projects/{pid}/draft` | `/api/projects/<pid>/draft` | `GET` | **100% PARITY** | `django_readonly` | Retrieve client editor draft or `{}`. |
+| `/api/projects/{pid}/draft` | `/api/projects/<pid>/draft` | `DELETE` | **100% PARITY** | `django_project_writer` | Discard client editor draft. |
+| `/api/projects/{pid}/jobs/{jid}/apply` | `/api/projects/<pid>/jobs/<jid>/apply` | `POST` & `GET` | **100% PARITY** | `django_project_writer` | Merge stock/draft/research results, scene/script conflict detection, force flag override, ApplicationReceipt persistence, idempotent duplicate apply. |
+| `/api/projects/{pid}/assign-media` | `/api/projects/<pid>/assign-media` | `POST` | **100% PARITY** | `django_project_writer` | Assign uploaded video or audio asset across project scenes. |
+| `/api/projects/{pid}/voice_lock` | `/api/projects/<pid>/voice_lock` | `POST` | **100% PARITY** | `django_project_writer` | Toggle project voice profile lock. |
+| `/api/projects/{pid}/pronunciation_dict` | `/api/projects/<pid>/pronunciation_dict` | `POST` | **100% PARITY** | `django_project_writer` | Update custom pronunciation overrides. |
+
+### 2. Database Privilege Isolation
+- **Role**: `django_project_writer`
+- **Privileges**:
+  - `SELECT`: `workspaces`, `projects`, `revisions`, `drafts`, `assets`, `jobs`, `job_stages`, `application_receipts`
+  - `INSERT`: `projects`, `revisions`, `drafts`, `application_receipts`
+  - `UPDATE`: `projects`, `drafts`, column-specific `UPDATE (applied, applied_at)` on `jobs`
+  - `DELETE`: `drafts` ONLY (zero delete on `projects`, `revisions`, `jobs`, `assets`)
+  - Sequence usage on `revisions_id_seq`, `application_receipts_id_seq`
+  - Zero write access to `assets`, `outbox`, `voice_takes`, `usage`.
+
+### 3. Concurrency Protection & Invariants
+- Verified concurrent update race condition: two simultaneous update requests on same revision N commit exactly one to N+1, while second is rejected with 400 conflict.
+- Verified database invariant: `projects.revision == max(revisions.revision)` across all states.
+- Revisions table is strictly append-only.
+
+### 4. Regression & Verification Totals
+- **Full Pytest Regression Suite**: **135 passed, 2 skipped, 0 failed** in 45.19s across all 9 test suites.
+- **UI Smoke Test**: Passed with **0 runtime errors**.
+- **Real Integration Test**: Clean sequence executed against live Django :8788 and verified mutually visible from FastAPI :8787.
+- **Table Row Deltas**: Exactly 0 net rows leaked after cleanup.
+- **Schema Authority**: Alembic revision `0003_phase4_voice_lab` unchanged. 0 Django migrations created.
+
+
 
 
 

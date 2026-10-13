@@ -26,6 +26,9 @@ from rest_framework.views import APIView
 from studio.config import public_settings, executable, DATA
 from studio.media import probe, run as media_run
 from studio import store
+from studio.models import Project as PydanticProject
+import pydantic
+from core import services
 from .models import (
     Workspace,
     Project,
@@ -292,16 +295,37 @@ class BootstrapView(APIView):
 # ==============================================================================
 
 class ProjectListView(APIView):
-    """GET /api/projects - Lists all projects scoped to workspace."""
+    """GET /api/projects - Lists all projects scoped to workspace.
+    POST /api/projects - Creates a new project document with initial revision 1.
+    """
 
     def get(self, request, *args, **kwargs):
         ws_id = request.query_params.get('workspace_id', 'default')
         projs = Project.objects.filter(workspace_id=ws_id).order_by('-updated_at')
         return Response([serialize_project_dict(p) for p in projs])
 
+    def post(self, request, *args, **kwargs):
+        data = request.data
+        if not isinstance(data, dict):
+            return Response({'detail': 'Invalid JSON body'}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        try:
+            PydanticProject.model_validate(data)
+        except pydantic.ValidationError as err:
+            return Response({'detail': err.errors()}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            p, _ = services.save_project_mutation(data, pid=data.get('id'))
+            return Response(serialize_project_dict(p), status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
 
 class ProjectDetailView(APIView):
-    """GET /api/projects/{pid} - Returns project detail or 400 if not found."""
+    """GET /api/projects/{pid} - Returns project detail or 400 if not found.
+    PUT /api/projects/{pid} - Updates project with optimistic lock and bumps revision.
+    """
 
     def get(self, request, pid: str, *args, **kwargs):
         try:
@@ -309,6 +333,37 @@ class ProjectDetailView(APIView):
             return Response(serialize_project_dict(proj))
         except Project.DoesNotExist:
             return Response({'detail': 'Project not found'}, status=status.HTTP_400_BAD_REQUEST)
+
+    def put(self, request, pid: str, *args, **kwargs):
+        data = request.data
+        if not isinstance(data, dict) or 'revision' not in data or 'project' not in data:
+            return Response(
+                {'detail': [{'loc': ['body'], 'msg': 'Body must contain revision and project', 'type': 'value_error'}]},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+        if not isinstance(data['revision'], int):
+            return Response(
+                {'detail': [{'loc': ['body', 'revision'], 'msg': 'Input should be a valid integer', 'type': 'int_parsing'}]},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+        if not isinstance(data['project'], dict):
+            return Response(
+                {'detail': [{'loc': ['body', 'project'], 'msg': 'Input should be a valid dictionary', 'type': 'dict_type'}]},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+
+        try:
+            PydanticProject.model_validate(data['project'])
+        except pydantic.ValidationError as err:
+            return Response({'detail': err.errors()}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            p, _ = services.save_project_mutation(data['project'], pid=pid, expected_revision=data['revision'])
+            return Response(serialize_project_dict(p), status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ProjectHistoryView(APIView):
@@ -319,14 +374,121 @@ class ProjectHistoryView(APIView):
         return Response([serialize_revision_dict(r) for r in revs])
 
 
+class ProjectApproveView(APIView):
+    """POST /api/projects/{pid}/approve - Approves project revision after validating scenes and evidence."""
+
+    def post(self, request, pid: str, *args, **kwargs):
+        data = request.data
+        if not isinstance(data, dict) or 'revision' not in data or not isinstance(data['revision'], int):
+            return Response(
+                {'detail': [{'loc': ['body', 'revision'], 'msg': 'Input should be a valid integer', 'type': 'int_parsing'}]},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+        try:
+            p = services.approve_project(pid, revision=data['revision'])
+            return Response(serialize_project_dict(p), status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
 class ProjectDraftView(APIView):
-    """GET /api/projects/{pid}/draft - Returns autosave draft body or empty dict."""
+    """GET /api/projects/{pid}/draft - Returns autosave draft body or empty dict.
+    PUT /api/projects/{pid}/draft - Upserts client autosave draft.
+    DELETE /api/projects/{pid}/draft - Discards client autosave draft.
+    """
 
     def get(self, request, pid: str, *args, **kwargs):
         draft = Draft.objects.filter(project_id=pid).first()
         if draft and draft.body:
             return Response(draft.body)
         return Response({})
+
+    def put(self, request, pid: str, *args, **kwargs):
+        data = request.data
+        if not isinstance(data, dict):
+            return Response({'detail': 'Invalid draft body'}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        res = services.save_draft_data(pid, data)
+        return Response(res, status=status.HTTP_200_OK)
+
+    def delete(self, request, pid: str, *args, **kwargs):
+        services.delete_draft_data(pid)
+        return Response({'ok': True}, status=status.HTTP_200_OK)
+
+
+class ProjectApplyJobView(APIView):
+    """POST /api/projects/{pid}/jobs/{jid}/apply (and GET)
+    Applies completed job results to project with field/scene conflict detection.
+    """
+
+    def _apply(self, request, pid: str, jid: str):
+        force = request.query_params.get('force', 'false').lower() in ('true', '1')
+        try:
+            res = services.apply_job_result(pid, jid, force=force)
+            return Response(res, status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    def post(self, request, pid: str, jid: str, *args, **kwargs):
+        return self._apply(request, pid, jid)
+
+    def get(self, request, pid: str, jid: str, *args, **kwargs):
+        return self._apply(request, pid, jid)
+
+
+class ProjectAssignMediaView(APIView):
+    """POST /api/projects/{pid}/assign-media - Assigns video or audio asset to project scenes."""
+
+    def post(self, request, pid: str, *args, **kwargs):
+        data = request.data
+        if not isinstance(data, dict) or 'asset_id' not in data or 'scene_ids' not in data:
+            return Response(
+                {'detail': [{'loc': ['body'], 'msg': 'Fields asset_id and scene_ids required', 'type': 'value_error'}]},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+        if not isinstance(data['asset_id'], str) or not isinstance(data['scene_ids'], list):
+            return Response(
+                {'detail': [{'loc': ['body'], 'msg': 'asset_id must be string and scene_ids list', 'type': 'value_error'}]},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+        try:
+            p = services.assign_media_to_scenes(pid, data['asset_id'], data['scene_ids'])
+            return Response(serialize_project_dict(p), status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ProjectVoiceLockView(APIView):
+    """POST /api/projects/{pid}/voice_lock - Toggles voice profile lock on project."""
+
+    def post(self, request, pid: str, *args, **kwargs):
+        data = request.data
+        if not isinstance(data, dict) or 'locked' not in data or not isinstance(data['locked'], bool):
+            return Response(
+                {'detail': [{'loc': ['body'], 'msg': 'Field locked (bool) required', 'type': 'value_error'}]},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+        try:
+            p = services.set_project_voice_lock(pid, data['locked'])
+            return Response(serialize_project_dict(p), status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class ProjectPronunciationDictView(APIView):
+    """POST /api/projects/{pid}/pronunciation_dict - Updates pronunciation overrides."""
+
+    def post(self, request, pid: str, *args, **kwargs):
+        data = request.data
+        if not isinstance(data, dict) or 'dictionary' not in data or not isinstance(data['dictionary'], dict):
+            return Response(
+                {'detail': [{'loc': ['body', 'dictionary'], 'msg': 'Field dictionary (dict) required', 'type': 'value_error'}]},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+        try:
+            p = services.set_project_pronunciation_dict(pid, data['dictionary'])
+            return Response(serialize_project_dict(p), status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class ProjectPreflightView(APIView):

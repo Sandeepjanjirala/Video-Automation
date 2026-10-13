@@ -326,8 +326,8 @@ Phase 4 is fully implemented, verified, and operational on this home laptop.
 
 ## 7. DJANGO MIGRATION
 
-**Current Stage**: Stage M5 — Jobs + Transactional Outbox + Redis/Celery Pipeline + Real Django-Triggered Reel  
-**Status**: Stage M5 Complete (PASSED) — 100% Real Celery Pipeline Integration via Django, Narrow Writer DB Role, Transactional Outbox Atomicity, Safe Range Export Streaming, 120 Regression Tests Passing, UI Smoke Passing  
+**Current Stage**: Stage M6 — Project Writes + Revisions + Drafts + Approvals + Job Result Application  
+**Status**: Stage M6 Complete (PASSED) — Full Project Mutation Parity via Django, Narrow `django_project_writer` Role, Optimistic Locking & Concurrency Protection, Immutable Revisions, Field/Scene Conflict Merging, Application Receipts, 135 Regression Tests Passing, UI Smoke Passing  
 **Architecture Document**: [`docs/DJANGO_MIGRATION_PLAN.md`](file:///d:/DjangoProjects/New%20reels/Video-Automation/docs/DJANGO_MIGRATION_PLAN.md)  
 **Strategy**: Staged Coexistence with Unmanaged Models (Option C) transitioning to Django 5.x + DRF.  
 **Pre-migration Tag**: `pre-django-migration` on commit `7f2d37c50ff9429f0970aacf8f4aa068013f5101`.  
@@ -335,58 +335,62 @@ Phase 4 is fully implemented, verified, and operational on this home laptop.
 **M2 Checkpoint Tag**: `django-m2-complete` on commit `b19a579c5bc2d8d8ce426b349d4722da1713d077`.  
 **M3 Checkpoint Tag**: `django-m3-complete` on commit `4405612030e7fb084f26d004449f866665305e69`.  
 **M4 Checkpoint Tag**: `django-m4-complete` on commit `a1bdec085de40ac384b885ee868a3c160d0da89c`.  
-**M5 Checkpoint Tag**: `django-m5-complete`.  
+**M5 Checkpoint Tag**: `django-m5-complete` on commit `c19b16d`.  
+**M6 Checkpoint Tag**: `django-m6-complete`.  
 
 ### Database Identities & Privileges
 - **Read queries (`DATABASES['default']`)**: `django_readonly` role (SELECT-only on public schema).
-- **Asset creation (`DATABASES['media_writer']`)**: `django_media_writer` role with isolated privileges (`SELECT` on `workspaces`, `assets`; `INSERT` on `assets`). In M5 hardening, `DELETE` was explicitly revoked.
-- **Job creation & control (`DATABASES['job_writer']`)**: Dedicated `django_job_writer` role with minimal required permissions:
-  - `SELECT`: `workspaces`, `projects`, `assets`, `jobs`, `job_stages`, `outbox`
-  - `INSERT`: `jobs`, `job_stages`, `outbox`
-  - `UPDATE`: `jobs`
-  - `USAGE, SELECT`: `job_stages_id_seq`, `outbox_id_seq`
-  - Zero write privileges on `revisions`, `drafts`, `application_receipts`, `voice_takes`, and zero `DELETE` privileges anywhere.
+- **Asset creation (`DATABASES['media_writer']`)**: `django_media_writer` role (`SELECT` on `workspaces`, `assets`; `INSERT` on `assets`; zero `DELETE` privileges).
+- **Job creation & control (`DATABASES['job_writer']`)**: Dedicated `django_job_writer` role (`SELECT` on `workspaces`, `projects`, `assets`, `jobs`, `job_stages`, `outbox`; `INSERT` on `jobs`, `job_stages`, `outbox`; `UPDATE` on `jobs`; sequence usage on `job_stages_id_seq`, `outbox_id_seq`).
+- **Project mutations & receipts (`DATABASES['project_writer']`)**: Dedicated `django_project_writer` role with least-privilege boundary:
+  - `SELECT`: `workspaces`, `projects`, `revisions`, `drafts`, `assets`, `jobs`, `job_stages`, `application_receipts`
+  - `INSERT`: `projects`, `revisions`, `drafts`, `application_receipts`
+  - `UPDATE`: `projects`, `drafts`, and column-restricted `UPDATE (applied, applied_at)` on `jobs`
+  - `DELETE`: `drafts` only (zero delete on `projects`, `revisions`, `jobs`, or `assets`)
+  - `USAGE, SELECT`: `revisions_id_seq`, `application_receipts_id_seq`
+  - Zero write privileges on `assets`, `outbox`, `voice_takes`, `usage`.
 
-### M4 Hardening Review
-- **Media Writer DELETE Privilege**: Revoked `DELETE ON assets` from `django_media_writer`. File cleanup on aborted uploads does not require DB row deletions.
-- **SHA-256 Concurrency Deduplication**: Documented that while atomic transaction + hash lookups protect application-level deduplication, absolute concurrency across separate uncoordinated processes requires future DB UNIQUE constraints.
+### Ported M6 Endpoints
+- `POST /api/projects`: Atomic project creation + revision 1 snapshot insertion inside `transaction.atomic(using='project_writer')`. Clears autosave drafts, validates Pydantic schema.
+- `PUT /api/projects/{pid}`: Optimistic concurrency save validating expected revision. Increments revision to N+1, creates revision snapshot, invalidates previous approval (`approved_revision = None`), preserves `script_approved_hash` if script untouched, and no-ops without bump if body is identical.
+- `POST /api/projects/{pid}/approve`: Revision approval validating non-empty Telugu narration, Roman captions, and evidence notes. Updates `approved_revision = revision` and stores `script_approved_hash`.
+- `PUT /api/projects/{pid}/draft`: Upserts client autosave draft record.
+- `GET /api/projects/{pid}/draft`: Returns saved draft body or empty object `{}`.
+- `DELETE /api/projects/{pid}/draft`: Discards client autosave draft.
+- `POST /api/projects/{pid}/jobs/{jid}/apply` (and `/api/projects/{pid}/apply-job/{jid}`): Applies completed background job results to project with field/scene conflict detection (stock, draft, research). Supports `force=true`, creates `ApplicationReceipt`, marks job applied atomically, and is strictly idempotent.
+- `POST /api/projects/{pid}/assign-media`: Atomic video or audio asset assignment to scenes.
+- `POST /api/projects/{pid}/voice_lock`: Toggles project voice lock state.
+- `POST /api/projects/{pid}/pronunciation_dict`: Updates custom pronunciation dictionary overrides.
 
-### Ported M5 Endpoints
-- `POST /api/projects/{pid}/jobs`: Transactional job creation + outbox event insertion inside `transaction.atomic(using='job_writer')`. Validates revision and preflight; enforces `operation_key` idempotency.
-- `POST /api/jobs/{jid}/retry`: In-place retry supporting `'original'` (re-running snapshot) and `'current'` (pulling current approved project revision) modes. Resets job state to `queued`, increments `attempt_count`, and emits outbox event.
-- `POST /api/jobs/{jid}/cancel`: Cooperative cancellation updating job record and terminating background FFmpeg subprocess trees via `store.terminate_subprocess_tree`.
-- `GET /api/jobs/{jid}/audio/{scene_id}`: Safe traversal-guarded scene narration audio delivery.
-- `GET /api/exports/{jid}/{name}`: RFC 7233 byte-range streaming for completed video exports (e.g. `reel.mp4`).
+### Project Deletion Contract Decision
+- Audited FastAPI reference implementation: FastAPI does NOT expose a `DELETE /api/projects/{pid}` route. Only `DELETE /api/projects/{pid}/draft` is supported.
+- In strict adherence to the migration mandate not to invent new endpoints, project deletion is omitted from Django, and `DELETE /api/projects/{pid}` is rejected with 405 by `LocalSecurityMiddleware`.
 
-### Deferred Endpoint
-- `POST /api/projects/{pid}/jobs/{jid}/apply`: Deferred to Stage M6. Mutates `projects`, `revisions`, and `application_receipts`, which requires a wider transactional boundary reserved for project write migration.
+### Concurrency & Conflict Protection Verification
+- **Concurrent Update Test**: Two simultaneous threads attempting to update the same project from revision 1 with different content. Exactly one commits revision 2; the second is rejected with 400 conflict (`"This project changed in another tab. Reload before saving."`). Zero lost updates, zero duplicate revision numbers.
+- **Scene/Script Conflict Tests**: Job result application detects if user edited scene video assets or script during job execution, reporting conflicts and preserving user edits unless `force=true`.
+- **Database Invariant**: Verified `projects.revision == max(revisions.revision)` after every mutation.
 
-### Real Django-Triggered Integration Test Evidence
-- **Trigger**: HTTP POST to `http://127.0.0.1:8788/api/projects/93dba246d73140e396a369239b04615b/jobs` with revision 2, quality 'final'.
-- **Job Record**: ID `dbca96a68e604023a1b58cb954ac464c`, state `queued`.
-- **Outbox Record**: Event ID 69 (`job.enqueued`), processed by existing `studio-dispatcher`.
-- **Celery Execution**: Dispatched to `studio-worker-render` (`render` queue), task `studio.tasks.task_render_pipeline[834fd7a4-7c51-4b46-b1f0-3852011c78fb]`.
-- **Execution Time**: 29.03s total pipeline elapsed time.
-- **Output Artifact**: [`test-outputs/django-m5/20261013_200719/django_m5_reel.mp4`](file:///d:/DjangoProjects/New%20reels/Video-Automation/test-outputs/django-m5/20261013_200719/django_m5_reel.mp4) (7,423,667 bytes).
-- **FFprobe Verification**:
-  - Dimensions: 1080x1920 (vertical reel).
-  - Duration: 17.42 seconds.
-  - Video stream: H.264 (30 fps).
-  - Audio stream: AAC stereo (48 kHz).
-  - FFmpeg null-muxer decode: 0 errors (`ffmpeg -v error -xerror -i reel.mp4 -f null -`).
-- **Manual Playback Verification**:
-  - Moving video footage visible across scene 1 and scene 2.
-  - Telugu narration audible: "నమస్కారం! తెలుగు రీల్ స్టూడియో మీ హోమ్ లాప్ టాప్ లో విజయవంతంగా రన్ అవుతోంది..."
-  - Roman Telugu captions displayed and synchronized: "Namaskaram! Telugu Reel Studio", "mee home laptop lo", "PostgreSQL mariyu Redis architecture", etc.
-  - Background music audible with voice ducking during speech segments.
-  - No black/corrupted frames.
-- **FastAPI / React Visibility**: FastAPI :8787 read API verified seeing job `dbca96a68e604023a1b58cb954ac464c` with state `succeeded`.
-- **Failure Cleanup**: Tested controlled failure (`target_seconds` < holds). Job cleanly reached `failed` state with clear persisted error, temporary folders were deleted, and retry reset job to `queued` with attempt count 2.
+### Real Django Integration Flow Evidence
+- **Project Created**: ID `e5c1c16a53404690a6b9808e966ecfae`, Revision 1.
+- **Project Edited**: Revision 2, approval invalidated.
+- **Draft Lifecycle**: Save, read, and delete verified.
+- **Project Approved**: Revision 2 approved, `script_approved_hash` stored.
+- **FastAPI Visibility**: FastAPI :8787 read verified seeing approved Revision 2.
+- **Job Result Applied**: Stock asset applied to Scene 1, revision incremented to 3.
+- **Application Receipt**: Receipt ID 33 persisted in PostgreSQL.
+- **FastAPI Visibility**: FastAPI :8787 read verified seeing Revision 3 with applied asset.
+- **Duplicate Apply**: Idempotently returned `"Job results were already applied."` without revision bump.
+- **Database Table Delta**: Exactly 0 net table row delta after cleanup.
+
+### Regression & Health Status
+- **Automated Regression Suite**: **135 passed, 2 skipped, 0 failed** in 45.19s across all 9 test suites (`test_workflow`, `test_phase3`, `test_phase4`, `test_django_m1` through `test_django_m6`).
+- **UI Smoke Test**: Passed with **0 runtime errors** (`{"reactRuntimeErrors":[],"checks":["new project","script fields","save","approval","visual edit","revision invalidation","queue render","visible offline failure"]}`).
+- **M5 Reel Intact**: [`test-outputs/django-m5/20261013_200719/django_m5_reel.mp4`](file:///d:/DjangoProjects/New%20reels/Video-Automation/test-outputs/django-m5/20261013_200719/django_m5_reel.mp4) (7,423,667 bytes) intact and verified.
+- **Phase 3 Reel Intact**: [`test-outputs/phase-3-home/phase3_home_reel.mp4`](file:///d:/DjangoProjects/New%20reels/Video-Automation/test-outputs/phase-3-home/phase3_home_reel.mp4) (7,481,435 bytes) intact.
 - **Schema Authority**: Alembic revision unchanged (`0003_phase4_voice_lab`). Exactly 0 Django migrations created.
-- **Regression Suite**: **120 passed, 2 skipped, 0 failed**.
-- **UI Smoke Test**: Passed with 0 runtime errors.
-- **Phase 3 Baseline Video**: [`test-outputs/phase-3-home/phase3_home_reel.mp4`](file:///d:/DjangoProjects/New%20reels/Video-Automation/test-outputs/phase-3-home/phase3_home_reel.mp4) (7,481,435 bytes) untouched.
-- **Execution Gate**: Awaiting user approval to proceed to Stage M6.
+- **Remaining on FastAPI**: `POST /api/settings`, Phase 4 Voice Lab mutations (`POST /api/voice/normalize`, `POST /api/voice/preview`, `POST /api/voice/ab_compare`, `POST /api/voice/rewrite_preview`, `POST /api/projects/{pid}/takes/{take_id}/accept`).
+- **Execution Gate**: Stage M6 COMPLETE. Awaiting user approval to proceed to Stage M7.
 
 
 
