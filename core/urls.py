@@ -10,6 +10,10 @@ from .views import (
     ProjectDraftView,
     ProjectPreflightView,
     ProjectJobsView,
+    JobRetryView,
+    JobCancelView,
+    JobAudioArtifactView,
+    ExportArtifactView,
     ProjectTakesView,
     VoiceCapabilitiesView,
     AssetListCreateView,
@@ -34,11 +38,17 @@ urlpatterns = [
     path('projects/<str:pid>/draft', ProjectDraftView.as_view(), name='project_draft'),
     path('projects/<str:pid>/preflight', ProjectPreflightView.as_view(), name='project_preflight'),
 
-    # Jobs & Voice Takes
+    # Jobs & Background Operations (M5)
     path('projects/<str:pid>/jobs', ProjectJobsView.as_view(), name='project_jobs'),
-    path('projects/<str:pid>/takes', ProjectTakesView.as_view(), name='project_takes'),
+    path('jobs/<str:jid>/retry', JobRetryView.as_view(), name='job_retry'),
+    path('jobs/<str:jid>/cancel', JobCancelView.as_view(), name='job_cancel'),
 
-    # Voice Lab
+    # Artifact Delivery (M5)
+    path('jobs/<str:jid>/audio/<str:scene_id>', JobAudioArtifactView.as_view(), name='job_audio_artifact'),
+    path('exports/<str:jid>/<str:name>', ExportArtifactView.as_view(), name='export_artifact'),
+
+    # Voice Lab & Takes
+    path('projects/<str:pid>/takes', ProjectTakesView.as_view(), name='project_takes'),
     path('voice/capabilities', VoiceCapabilitiesView.as_view(), name='voice_capabilities'),
 
     # Stock Provider Proxy (M4)

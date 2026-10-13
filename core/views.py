@@ -344,15 +344,299 @@ class ProjectPreflightView(APIView):
 
 
 # ==============================================================================
-# 4. Jobs & Takes
+# 4. Jobs & Background Operations (Stage M5)
 # ==============================================================================
 
 class ProjectJobsView(APIView):
-    """GET /api/projects/{pid}/jobs - Returns list of jobs for project."""
+    """GET /api/projects/{pid}/jobs - Returns list of jobs for project.
+    POST /api/projects/{pid}/jobs - Idempotently enqueues a background job and creates
+    an atomic transactional outbox record using scoped django_job_writer identity.
+    """
 
     def get(self, request, pid: str, *args, **kwargs):
         job_objs = Job.objects.filter(project_id=pid).order_by('-created_at')[:30]
         return Response([serialize_job_dict(j) for j in job_objs])
+
+    def post(self, request, pid: str, *args, **kwargs):
+        data = request.data
+        if not isinstance(data, dict):
+            return Response({'detail': 'Invalid JSON body'}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+        errors = []
+        if 'revision' not in data:
+            errors.append({'type': 'missing', 'loc': ['body', 'revision'], 'msg': 'Field required'})
+        elif not isinstance(data['revision'], int):
+            errors.append({'type': 'int_parsing', 'loc': ['body', 'revision'], 'msg': 'Input should be a valid integer'})
+
+        valid_kinds = ('research', 'draft', 'voice', 'render', 'stock', 'stock_all')
+        if 'kind' not in data:
+            errors.append({'type': 'missing', 'loc': ['body', 'kind'], 'msg': 'Field required'})
+        elif data['kind'] not in valid_kinds:
+            errors.append({'type': 'literal_error', 'loc': ['body', 'kind'], 'msg': f"Input should be one of {valid_kinds}"})
+
+        quality = data.get('quality', 'final')
+        if quality not in ('draft', 'final'):
+            errors.append({'type': 'literal_error', 'loc': ['body', 'quality'], 'msg': "Input should be 'draft' or 'final'"})
+
+        if errors:
+            return Response({'detail': errors}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+
+        revision = data['revision']
+        kind = data['kind']
+        script = str(data.get('script', ''))[:20000]
+        video_id = int(data.get('video_id', 0))
+        scene_id = str(data.get('scene_id', ''))[:48]
+        operation_key = data.get('operation_key')
+        if operation_key is not None:
+            operation_key = str(operation_key)[:128]
+
+        from studio.config import settings as studio_settings
+        tts_provider = studio_settings().get('tts_provider', 'edge')
+        options = {
+            'tts_provider': tts_provider,
+            'quality': quality,
+            'script': script,
+            'video_id': video_id,
+            'scene_id': scene_id,
+        }
+
+        with transaction.atomic(using='job_writer'):
+            # 1. Operation key idempotency check
+            if operation_key:
+                existing_op = Job.objects.using('job_writer').filter(operation_key=operation_key).first()
+                if existing_op:
+                    return Response(serialize_job_dict(existing_op), status=status.HTTP_200_OK)
+
+            # 2. Check for duplicate pending job of same kind on this project
+            dup_exists = Job.objects.using('job_writer').filter(
+                project_id=pid,
+                kind=kind,
+                state__in=['queued', 'running']
+            ).exists()
+            if dup_exists:
+                return Response(
+                    {'detail': f'A {kind} job is already in progress for this project'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # 3. Project existence and revision check
+            p = Project.objects.using('job_writer').filter(id=pid).first()
+            if not p or p.revision != revision:
+                return Response({'detail': 'Save the current revision first'}, status=status.HTTP_400_BAD_REQUEST)
+
+            if kind in ('voice', 'render') and p.approved_revision != revision:
+                return Response({'detail': 'Approve this exact script revision first'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # 4. Render preflight check
+            if kind == 'render':
+                pf = store.preflight(p.body)
+                if not pf['ready']:
+                    msg = pf['errors'][0]['message'] if pf['errors'] else 'Preflight checks failed'
+                    return Response({'detail': f'Cannot queue render: {msg}'}, status=status.HTTP_400_BAD_REQUEST)
+
+            # 5. Create new Job and transactional Outbox event
+            jid = uuid.uuid4().hex
+            now_dt = datetime.now(timezone.utc)
+            snapshot = {'project': p.body, 'options': options}
+
+            new_job = Job.objects.using('job_writer').create(
+                id=jid,
+                workspace_id=p.workspace_id,
+                project_id=pid,
+                revision=revision,
+                kind=kind,
+                state='queued',
+                stage='queued',
+                progress='Waiting for worker',
+                snapshot=snapshot,
+                result={},
+                applied=False,
+                operation_key=operation_key,
+            )
+
+            JobStage.objects.using('job_writer').create(
+                job=new_job,
+                attempt=1,
+                stage='queued',
+                state='queued',
+                details=options,
+            )
+
+            OutboxEvent.objects.using('job_writer').create(
+                event_type='job.enqueued',
+                payload={
+                    'job_id': jid,
+                    'project_id': pid,
+                    'revision': revision,
+                    'kind': kind,
+                    'options': options,
+                    'operation_key': operation_key,
+                },
+                processed=False,
+                attempts=0,
+            )
+
+            return Response(serialize_job_dict(new_job), status=status.HTTP_200_OK)
+
+
+class JobRetryView(APIView):
+    """POST /api/jobs/{jid}/retry - Retries a failed job in 'original' or 'current' mode."""
+
+    def post(self, request, jid: str, *args, **kwargs):
+        mode = None
+        if isinstance(request.data, dict) and 'mode' in request.data:
+            mode = request.data['mode']
+        if not mode:
+            mode = request.query_params.get('mode', 'original')
+
+        if mode not in ('original', 'current'):
+            return Response({'detail': "Mode must be 'original' or 'current'"}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic(using='job_writer'):
+            j = Job.objects.using('job_writer').select_for_update().filter(id=jid).first()
+            if not j:
+                return Response({'detail': 'Job not found'}, status=status.HTTP_400_BAD_REQUEST)
+            if j.state != 'failed':
+                return Response({'detail': 'Only failed jobs can be retried'}, status=status.HTTP_400_BAD_REQUEST)
+
+            now_dt = datetime.now(timezone.utc)
+            if mode == 'current':
+                p = Project.objects.using('job_writer').filter(id=j.project_id).first()
+                if not p:
+                    return Response({'detail': 'Project not found'}, status=status.HTTP_400_BAD_REQUEST)
+                snap = dict(j.snapshot)
+                snap['project'] = p.body
+                j.snapshot = snap
+                j.revision = p.revision
+                j.progress = 'Retry queued (current project)'
+            else:
+                j.progress = 'Retry queued (original inputs)'
+
+            j.state = 'queued'
+            j.stage = 'queued'
+            j.result = {}
+            j.cancelled = False
+            j.cancelled_at = None
+            j.lease_token = None
+            j.lease_expires_at = None
+            j.attempt_count = (j.attempt_count or 1) + 1
+            j.updated_at = now_dt
+            j.save(using='job_writer', update_fields=[
+                'snapshot', 'revision', 'progress', 'state', 'stage',
+                'result', 'cancelled', 'cancelled_at', 'lease_token',
+                'lease_expires_at', 'attempt_count', 'updated_at'
+            ])
+
+            JobStage.objects.using('job_writer').create(
+                job=j,
+                attempt=j.attempt_count,
+                stage=f'retry_{mode}',
+                state='queued',
+                details={'mode': mode},
+            )
+
+            OutboxEvent.objects.using('job_writer').create(
+                event_type='job.enqueued',
+                payload={
+                    'job_id': jid,
+                    'project_id': j.project_id,
+                    'revision': j.revision,
+                    'kind': j.kind,
+                    'options': j.snapshot.get('options', {}),
+                },
+                processed=False,
+                attempts=0,
+            )
+
+            return Response(serialize_job_dict(j), status=status.HTTP_200_OK)
+
+
+class JobCancelView(APIView):
+    """POST /api/jobs/{jid}/cancel - Idempotently cancels a running or queued job."""
+
+    def post(self, request, jid: str, *args, **kwargs):
+        sub_pid = None
+        with transaction.atomic(using='job_writer'):
+            j = Job.objects.using('job_writer').select_for_update().filter(id=jid).first()
+            if not j:
+                return Response({'detail': 'Job not found'}, status=status.HTTP_400_BAD_REQUEST)
+            if j.state in ('succeeded', 'cancelled'):
+                return Response(serialize_job_dict(j), status=status.HTTP_200_OK)
+
+            now_dt = datetime.now(timezone.utc)
+            j.cancelled = True
+            j.cancelled_at = now_dt
+            j.state = 'cancelled'
+            j.progress = 'Cancelled by user'
+            j.updated_at = now_dt
+            sub_pid = j.subprocess_pid
+            j.subprocess_pid = None
+            j.save(using='job_writer', update_fields=[
+                'cancelled', 'cancelled_at', 'state', 'progress',
+                'subprocess_pid', 'updated_at'
+            ])
+
+        if sub_pid:
+            store.terminate_subprocess_tree(sub_pid)
+
+        return Response(serialize_job_dict(j), status=status.HTTP_200_OK)
+
+
+class JobAudioArtifactView(APIView):
+    """GET /api/jobs/{jid}/audio/{scene_id} - Serves generated voice preview audio."""
+
+    def get(self, request, jid: str, scene_id: str, *args, **kwargs):
+        try:
+            j = Job.objects.get(id=jid)
+        except Job.DoesNotExist:
+            return Response({'detail': 'Job not found'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if j.state != 'succeeded' or j.kind != 'voice':
+            return Response({'detail': 'Voice preview is not ready'}, status=status.HTTP_400_BAD_REQUEST)
+
+        voices = j.result.get('voices', []) if isinstance(j.result, dict) else []
+        item = next((v for v in voices if v.get('scene_id') == scene_id), None)
+        if not item or not item.get('audio_path'):
+            return Response({'detail': 'Scene audio not found'}, status=status.HTTP_400_BAD_REQUEST)
+
+        audio_path = Path(item['audio_path']).resolve()
+        cache_dir = (DATA / 'cache').resolve()
+        assets_dir = (DATA / 'assets').resolve()
+
+        if audio_path.parent not in (cache_dir, assets_dir) or not audio_path.is_file():
+            return Response({'detail': 'Invalid audio path'}, status=status.HTTP_400_BAD_REQUEST)
+
+        return FileResponse(open(audio_path, 'rb'), content_type='audio/mpeg')
+
+
+class ExportArtifactView(APIView):
+    """GET /api/exports/{jid}/{name} - Serves finalized job export artifacts."""
+
+    def get(self, request, jid: str, name: str, *args, **kwargs):
+        import re
+        if not re.fullmatch(r'[a-f0-9]{32}', jid) or name not in ('reel.mp4', 'captions.srt', 'source-report.json', 'project.json'):
+            return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        try:
+            j = Job.objects.get(id=jid)
+        except Job.DoesNotExist:
+            return Response({'detail': 'Export is incomplete'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if j.state != 'succeeded':
+            return Response({'detail': 'Export is incomplete'}, status=status.HTTP_400_BAD_REQUEST)
+
+        exports_base = (DATA / 'exports').resolve()
+        export_path = (exports_base / jid / name).resolve()
+
+        # Path traversal guard
+        if export_path.parent != (exports_base / jid).resolve() or not export_path.is_file():
+            return Response({'detail': 'Export artifact not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if name == 'reel.mp4':
+            return ranged_file_response(request, export_path, content_type='video/mp4')
+
+        content_type, _ = mimetypes.guess_type(str(export_path))
+        return FileResponse(open(export_path, 'rb'), content_type=content_type or 'application/octet-stream')
 
 
 class ProjectTakesView(APIView):

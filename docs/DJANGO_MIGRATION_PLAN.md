@@ -563,8 +563,12 @@ Skeleton   DB Unmanaged  DRF Core   Assets/Media    Jobs &       Voice Lab    Fr
 - **Tests**: Upload test video, verify deduplication against existing asset hashes.
 
 ### Stage M5: Job Enqueuing, Outbox & Celery Pipeline
-- **Scope**: Port `/api/projects/{pid}/jobs`, `/api/jobs/{jid}/retry`, `/api/jobs/{jid}/cancel`, `/api/projects/{pid}/jobs/{jid}/apply`. Integrate with Celery app and verify outbox record insertion.
-- **Tests**: Enqueue research, stock, and render test jobs; verify execution lease acquisition and terminal state transition.
+- **Status**: **PASSED & COMPLETE** (Checkpoint tag: `django-m5-complete`)
+- **Scope**: Ported `/api/projects/{pid}/jobs`, `/api/jobs/{jid}/retry`, `/api/jobs/{jid}/cancel`, `/api/jobs/{jid}/audio/{scene_id}`, and `/api/exports/{jid}/{name}`.
+- **Architectural Boundary**: Jobs and transactional Outbox events are persisted atomically via `transaction.atomic(using='job_writer')`. Reused existing `studio.dispatcher`, `studio.celery_app`, Celery workers, and Redis broker without creating duplicate Celery applications or modifying worker code.
+- **Deferred Endpoint**: `/api/projects/{pid}/jobs/{jid}/apply` was explicitly deferred to Stage M6 because it mutates project revisions and application receipts, which falls under project write migration.
+- **Real Render Verification**: Enqueued real render job `dbca96a68e604023a1b58cb954ac464c` through Django port 8788; executed via outbox, dispatcher, Redis, and Linux worker container. Output verified at `test-outputs/django-m5/20261013_200719/django_m5_reel.mp4` (1080x1920, 17.42s, H.264/AAC, 0 FFmpeg errors, audible Telugu narration and Roman captions confirmed via manual playback).
+- **Tests**: 120 regression tests passing, UI smoke passing with 0 errors. Alembic schema untouched.
 
 ### Stage M6: Voice Lab & Phase 4 Naturalness Endpoints
 - **Scope**: Port `/api/voice/capabilities`, `/api/voice/normalize`, `/api/voice/preview`, `/api/projects/{pid}/takes`, `/api/projects/{pid}/takes/{take_id}/accept`, `/api/voice/ab_compare`, `/api/voice/rewrite_preview`.

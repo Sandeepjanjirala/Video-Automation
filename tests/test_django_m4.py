@@ -455,7 +455,7 @@ def test_stock_proxy_provider_error(monkeypatch):
 # 6. Database Role Separation Tests
 # ==============================================================================
 
-def test_database_role_separation():
+def test_database_role_separation(pg_connection):
     """Verify django_readonly is strictly read-only and django_media_writer can write ONLY to assets."""
     ro_url = os.environ.get('STUDIO_READONLY_DATABASE_URL')
     if not ro_url:
@@ -480,7 +480,7 @@ def test_database_role_separation():
     ro_conn.rollback()
     ro_conn.close()
 
-    # 2. django_media_writer CAN write to assets
+    # 2. django_media_writer CAN insert into assets
     w_conn = psycopg2.connect(writer_url)
     w_cur = w_conn.cursor()
     temp_aid = f"writer_test_{uuid.uuid4().hex[:8]}"
@@ -489,8 +489,22 @@ def test_database_role_separation():
         [temp_aid, f"{temp_aid}.mp4"]
     )
     w_conn.commit()
-    w_cur.execute("DELETE FROM assets WHERE id = %s", [temp_aid])
-    w_conn.commit()
+
+    # M4 Hardening Review: verify django_media_writer CANNOT DELETE from assets
+    with pytest.raises(psycopg2.Error):
+        w_cur.execute("DELETE FROM assets WHERE id = %s", [temp_aid])
+    w_conn.rollback()
+    w_conn.close()
+
+    # Clean up test row using superuser admin connection
+    admin_cur = pg_connection.cursor()
+    admin_cur.execute("DELETE FROM assets WHERE id = %s", [temp_aid])
+    pg_connection.commit()
+    admin_cur.close()
+
+    # Reconnect media writer for forbidden write checks
+    w_conn = psycopg2.connect(writer_url)
+    w_cur = w_conn.cursor()
 
     # 3. django_media_writer CANNOT write to other application tables
     forbidden_writes = [

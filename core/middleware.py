@@ -19,11 +19,27 @@ class LocalSecurityMiddleware(MiddlewareMixin):
             if origin and origin != request.build_absolute_uri('/').rstrip('/'):
                 return JsonResponse({'detail': 'Cross-origin changes are not allowed'}, status=403)
 
-            # Stage M4 ONLY allows POST /api/assets for controlled media upload
-            # All other mutating endpoints remain strictly rejected
+            # Stage M5 Mutation Allowlist:
+            # - POST /api/assets (media upload from M4)
+            # - POST /api/projects/<pid>/jobs (job creation)
+            # - POST /api/jobs/<jid>/retry (job retry)
+            # - POST /api/jobs/<jid>/cancel (job cancel)
+            # All other mutating endpoints remain strictly rejected with 405.
+            import re
             normalized_path = request.path.rstrip('/')
-            if normalized_path != '/api/assets' or request.method != 'POST':
-                return JsonResponse({'detail': 'Django instance does not accept this mutation during Stage M4'}, status=405)
+            is_allowed_mutation = False
+            if request.method == 'POST':
+                if normalized_path == '/api/assets':
+                    is_allowed_mutation = True
+                elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/jobs', normalized_path):
+                    is_allowed_mutation = True
+                elif re.fullmatch(r'/api/jobs/[a-zA-Z0-9_-]+/retry', normalized_path):
+                    is_allowed_mutation = True
+                elif re.fullmatch(r'/api/jobs/[a-zA-Z0-9_-]+/cancel', normalized_path):
+                    is_allowed_mutation = True
+
+            if not is_allowed_mutation:
+                return JsonResponse({'detail': 'Django instance does not accept this mutation during Stage M4 / Stage M5'}, status=405)
 
             # Enforce request size limit
             limit = 220 * 1024 * 1024 if normalized_path == '/api/assets' else 1024 * 1024

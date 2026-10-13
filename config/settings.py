@@ -80,6 +80,24 @@ if media_writer_url.startswith('postgresql+psycopg2://'):
 
 parsed_writer = urlparse(media_writer_url)
 
+# Stage M5: Narrowly scoped job writer database identity
+# Used exclusively for job creation, retry, and cancellation (POST /api/projects/{pid}/jobs, etc.)
+job_writer_url = os.environ.get('STUDIO_JOB_WRITER_DATABASE_URL')
+if not job_writer_url:
+    job_writer_file = BASE_DIR / 'backups' / '.job_writer_db_url'
+    if job_writer_file.exists():
+        try:
+            job_writer_url = job_writer_file.read_text(encoding='utf-8').strip()
+        except Exception:
+            pass
+if not job_writer_url:
+    job_writer_url = db_url
+
+if job_writer_url.startswith('postgresql+psycopg2://'):
+    job_writer_url = job_writer_url.replace('postgresql+psycopg2://', 'postgresql://', 1)
+
+parsed_job_writer = urlparse(job_writer_url)
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -97,6 +115,15 @@ DATABASES = {
         'PASSWORD': parsed_writer.password or '',
         'HOST': parsed_writer.hostname or '127.0.0.1',
         'PORT': str(parsed_writer.port or 5433),
+        'CONN_MAX_AGE': 0,
+    },
+    'job_writer': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': parsed_job_writer.path.lstrip('/') or 'studio',
+        'USER': parsed_job_writer.username or 'django_job_writer',
+        'PASSWORD': parsed_job_writer.password or '',
+        'HOST': parsed_job_writer.hostname or '127.0.0.1',
+        'PORT': str(parsed_job_writer.port or 5433),
         'CONN_MAX_AGE': 0,
     },
 }

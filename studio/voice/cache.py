@@ -4,6 +4,7 @@ provider + model + voice + normalized spoken text + delivery preset + rate + pit
 """
 import hashlib
 import json
+import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from ..config import DATA
