@@ -660,9 +660,9 @@ def test_unsupported_mutations_remain_rejected():
     )
     assert resp.status_code == 405
 
-    # POST /api/settings is not accepted by Django in M6
+    # POST on arbitrary non-whitelisted path is not accepted by Django
     resp_set = DJ_CLIENT.post(
-        "/api/settings",
+        "/api/unsupported_mutation",
         {},
         format='json',
         HTTP_X_STUDIO_TOKEN=DJANGO_TOKEN

@@ -10,6 +10,7 @@ import hashlib
 import mimetypes
 import subprocess
 import secrets
+import threading
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
@@ -23,7 +24,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from studio.config import public_settings, executable, DATA
+from studio.config import public_settings, save_settings, executable, DATA
 from studio.media import probe, run as media_run
 from studio import store
 from studio.models import Project as PydanticProject
@@ -51,6 +52,12 @@ from .serializers import (
 
 # Persistent session token for bootstrap parity
 DJANGO_TOKEN = secrets.token_urlsafe(32)
+
+# Thread lock for safe atomic settings writes
+SETTINGS_LOCK = threading.Lock()
+
+# Static root directory for serving React frontend
+STATIC_DIR = Path(settings.BASE_DIR) / 'studio' / 'static'
 
 
 def ranged_file_response(request, file_path: Path, content_type: Optional[str] = None):
@@ -1074,4 +1081,153 @@ class StockSearchView(APIView):
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:
             return Response({'detail': f'Stock provider error: {str(exc)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ==============================================================================
+# 8. Settings & Voice Lab Mutations (Stage M7)
+# ==============================================================================
+
+class SettingsView(APIView):
+    """POST /api/settings - Safely update settings.json and return masked public settings."""
+
+    def post(self, request, *args, **kwargs):
+        if not isinstance(request.data, dict):
+            return Response({'detail': 'Invalid settings body'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            with SETTINGS_LOCK:
+                res = save_settings(request.data)
+                return Response(res, status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class VoiceNormalizeView(APIView):
+    """POST /api/voice/normalize - Spoken Telugu Unicode normalization & pronunciation override."""
+
+    def post(self, request, *args, **kwargs):
+        text_val = request.data.get('text')
+        if text_val is None:
+            return Response({'detail': 'Text field is required'}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        dict_val = request.data.get('dictionary')
+        try:
+            from studio.voice.normalizer import normalize_narration
+            norm = normalize_narration(str(text_val), pronunciation_dict=dict_val)
+            return Response({
+                'source_text': norm.source_text,
+                'spoken_text': norm.spoken_text,
+                'roman_text': norm.roman_text,
+                'overrides_applied': norm.overrides_applied
+            }, status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class VoicePreviewView(APIView):
+    """POST /api/voice/preview - Synthesize speech take and persist candidate."""
+
+    def post(self, request, *args, **kwargs):
+        data = request.data
+        project_id = data.get('project_id')
+        text_val = data.get('text')
+        if not project_id or not text_val:
+            return Response(
+                {'detail': 'project_id and text are required'},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+        try:
+            from studio.voice.lab import generate_voice_take
+            take = generate_voice_take(
+                project_id=str(project_id),
+                scene_id=str(data.get('scene_id') or ''),
+                text=str(text_val),
+                provider=str(data.get('provider') or 'edge'),
+                voice=str(data.get('voice') or 'te-IN-ShrutiNeural'),
+                delivery_preset=str(data.get('preset') or 'conversational'),
+                rate=int(data.get('rate') or 0),
+                pitch=int(data.get('pitch') or 0),
+                pronunciation_dict=data.get('dictionary'),
+                explicit_regenerate=bool(data.get('regenerate', False))
+            )
+            return Response(take, status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class VoiceABCompareView(APIView):
+    """POST /api/voice/ab_compare - Compare two voice takes."""
+
+    def post(self, request, *args, **kwargs):
+        take_a = request.data.get('take_a')
+        take_b = request.data.get('take_b')
+        if take_a is None or take_b is None:
+            return Response(
+                {'detail': 'take_a and take_b are required'},
+                status=status.HTTP_422_UNPROCESSABLE_ENTITY
+            )
+        try:
+            from studio.voice.lab import compare_takes_ab
+            res = compare_takes_ab(take_a, take_b)
+            return Response(res, status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class VoiceRewritePreviewView(APIView):
+    """POST /api/voice/rewrite_preview - Preview conversational rewrite diff."""
+
+    def post(self, request, *args, **kwargs):
+        text_val = request.data.get('text')
+        if text_val is None:
+            return Response({'detail': 'text is required'}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        try:
+            from studio.voice.lab import preview_conversational_rewrite
+            res = preview_conversational_rewrite(str(text_val))
+            return Response(res, status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ProjectTakeAcceptView(APIView):
+    """POST /api/projects/<pid>/takes/<take_id>/accept - Atomically accept voice take."""
+
+    def post(self, request, pid, take_id, *args, **kwargs):
+        try:
+            res = services.accept_voice_take_mutation(pid, take_id)
+            return Response(res, status=status.HTTP_200_OK)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+# ==============================================================================
+# 9. Frontend Serving (Stage M7)
+# ==============================================================================
+
+def serve_ui(request):
+    """Serve the React application index.html entrypoint."""
+    index_path = STATIC_DIR / 'index.html'
+    if not index_path.exists():
+        return HttpResponse('Frontend build not found', status=404)
+    return FileResponse(open(index_path, 'rb'), content_type='text/html')
+
+
+def serve_static_asset(request, filename):
+    """Serve static assets (app.js, app.css, etc.) from studio/static with path traversal protection."""
+    target_file = (STATIC_DIR / filename).resolve()
+    if not str(target_file).startswith(str(STATIC_DIR.resolve())):
+        return HttpResponse('Access denied', status=403)
+    if not target_file.is_file():
+        return HttpResponse('Asset not found', status=404)
+    content_type, _ = mimetypes.guess_type(str(target_file))
+    return FileResponse(open(target_file, 'rb'), content_type=content_type or 'application/octet-stream')
+
 

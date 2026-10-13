@@ -38,7 +38,15 @@ class LocalSecurityMiddleware(MiddlewareMixin):
             normalized_path = request.path.rstrip('/')
             is_allowed_mutation = False
             if request.method == 'POST':
-                if normalized_path in ('/api/assets', '/api/projects'):
+                if normalized_path in (
+                    '/api/assets',
+                    '/api/projects',
+                    '/api/settings',
+                    '/api/voice/normalize',
+                    '/api/voice/preview',
+                    '/api/voice/ab_compare',
+                    '/api/voice/rewrite_preview',
+                ):
                     is_allowed_mutation = True
                 elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/jobs', normalized_path):
                     is_allowed_mutation = True
@@ -54,6 +62,8 @@ class LocalSecurityMiddleware(MiddlewareMixin):
                     is_allowed_mutation = True
                 elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/pronunciation_dict', normalized_path):
                     is_allowed_mutation = True
+                elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/takes/[a-zA-Z0-9_-]+/accept', normalized_path):
+                    is_allowed_mutation = True
                 elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/jobs/[a-zA-Z0-9_-]+/apply', normalized_path):
                     is_allowed_mutation = True
                 elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/apply-job/[a-zA-Z0-9_-]+', normalized_path):
@@ -68,7 +78,7 @@ class LocalSecurityMiddleware(MiddlewareMixin):
                     is_allowed_mutation = True
 
             if not is_allowed_mutation:
-                return JsonResponse({'detail': 'Django instance does not accept this mutation during Stage M4 / Stage M5 / Stage M6'}, status=405)
+                return JsonResponse({'detail': 'Endpoint does not accept this mutation'}, status=405)
 
             # Enforce request size limit
             limit = 220 * 1024 * 1024 if normalized_path == '/api/assets' else 1024 * 1024

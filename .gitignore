@@ -8,4 +8,4 @@ __pycache__/
 backups/
 *.dump
 *.sql
-test-outputs/django-m5/
+test-outputs/

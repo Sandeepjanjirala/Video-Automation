@@ -21,8 +21,9 @@ from .models import (
     Job,
     ApplicationReceipt,
     Asset,
+    VoiceTake,
 )
-from .serializers import serialize_project_dict
+from .serializers import serialize_project_dict, serialize_voice_take_dict
 
 
 def now_utc() -> datetime:
@@ -338,3 +339,66 @@ def set_project_pronunciation_dict(pid: str, dictionary: Dict[str, str]) -> Proj
         p_data['pronunciation_dict'] = dictionary
         updated_p, _ = save_project_mutation(p_data, pid=pid, expected_revision=p.revision)
         return updated_p
+
+
+def accept_voice_take_mutation(pid: str, take_id: str) -> Dict[str, Any]:
+    """Atomically accept a voice take and update the project revision.
+    
+    Uses dedicated django_voice_writer role via voice_writer database alias.
+    """
+    with transaction.atomic(using='voice_writer'):
+        take = VoiceTake.objects.using('voice_writer').select_for_update().filter(id=take_id).first()
+        if not take or take.project_id != pid:
+            raise ValueError(f"Voice take '{take_id}' not found for project '{pid}'")
+
+        if take.scene_id:
+            VoiceTake.objects.using('voice_writer').filter(
+                project_id=pid,
+                scene_id=take.scene_id
+            ).exclude(id=take_id).update(accepted=False)
+        take.accepted = True
+        take.save(using='voice_writer', update_fields=['accepted'])
+
+        proj = Project.objects.using('voice_writer').select_for_update().filter(id=pid).first()
+        if not proj:
+            raise ValueError(f"Project '{pid}' not found")
+
+        p_data = copy.deepcopy(proj.body)
+        if take.scene_id:
+            for sc in p_data.get('scenes', []):
+                if sc.get('id') == take.scene_id:
+                    sc['take_id'] = take.id
+                    if take.asset_id:
+                        sc['audio_asset'] = take.asset_id
+                        sc['audio_text_hash'] = digest(sc.get('narration', ''))
+                    if take.spoken_text:
+                        sc['spoken_text'] = take.spoken_text
+                    sc['delivery_preset'] = take.preset
+                    break
+
+        if not p_data.get('voice_locked'):
+            p_data['tts_provider'] = take.provider
+            p_data['voice'] = take.voice_id
+            p_data['delivery_preset'] = take.preset
+
+        now_dt = now_utc()
+        new_rev = proj.revision + 1
+        validated = PydanticProject.model_validate(p_data).model_dump()
+        proj.revision = new_rev
+        proj.body = validated
+        proj.approved_revision = None  # Modifications invalidate approval
+        proj.updated_at = now_dt
+        proj.save(using='voice_writer', update_fields=['revision', 'body', 'approved_revision', 'updated_at'])
+
+        Revision.objects.using('voice_writer').create(
+            project_id=pid,
+            revision=new_rev,
+            body=validated,
+            created_at=now_dt
+        )
+
+        return {
+            'take': serialize_voice_take_dict(take),
+            'project': serialize_project_dict(proj)
+        }
+

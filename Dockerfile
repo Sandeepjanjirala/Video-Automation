@@ -17,11 +17,14 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application source code
 COPY studio/ studio/
-COPY run.py alembic.ini ./
+COPY config/ config/
+COPY core/ core/
+COPY run.py manage.py alembic.ini ./
 
 # Shared development media storage mount point
 VOLUME ["/app/data"]
 
+EXPOSE 8788
 EXPOSE 8787
 
 CMD ["python", "run.py"]

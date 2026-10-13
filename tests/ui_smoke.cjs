@@ -53,7 +53,8 @@ const fs = require('fs');
 const {JSDOM} = require('../frontend/node_modules/jsdom');
 const {fireEvent,waitFor,getByRole,getByLabelText,getByText,getAllByText} = require('../frontend/node_modules/@testing-library/dom');
 (async()=>{
- const dom=new JSDOM('<html><body><div id="root"></div></body></html>',{url:'http://127.0.0.1:8787',runScripts:'dangerously',pretendToBeVisual:true});
+ const targetUrl = process.env.STUDIO_URL || process.argv[2] || 'http://127.0.0.1:8788';
+ const dom=new JSDOM('<html><body><div id="root"></div></body></html>',{url:targetUrl,runScripts:'dangerously',pretendToBeVisual:true});
  const w=dom.window;const errors=[];w.addEventListener('error',e=>errors.push(String(e.error)));
  w.fetch=(url,opts)=>fetch(new URL(url,w.location.href),opts);w.confirm=()=>true;w.TextEncoder=TextEncoder;Object.defineProperty(w,'crypto',{value:require('crypto').webcrypto});
  w.eval(fs.readFileSync(require('path').join(__dirname,'../studio/static/app.js'),'utf8'));

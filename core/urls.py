@@ -26,6 +26,12 @@ from .views import (
     AssetMediaView,
     AssetThumbnailView,
     StockSearchView,
+    SettingsView,
+    VoiceNormalizeView,
+    VoicePreviewView,
+    VoiceABCompareView,
+    VoiceRewritePreviewView,
+    ProjectTakeAcceptView,
 )
 
 urlpatterns = [
@@ -33,8 +39,9 @@ urlpatterns = [
     path('health', HealthCheckView.as_view(), name='health'),
     path('migration/schema-status', SchemaStatusView.as_view(), name='schema_status'),
 
-    # Handshake
+    # Handshake & Settings (M3 & M7)
     path('bootstrap', BootstrapView.as_view(), name='bootstrap'),
+    path('settings', SettingsView.as_view(), name='settings'),
 
     # Projects & Revisions (M3 & M6)
     path('projects', ProjectListView.as_view(), name='project_list'),
@@ -60,9 +67,14 @@ urlpatterns = [
     path('jobs/<str:jid>/audio/<str:scene_id>', JobAudioArtifactView.as_view(), name='job_audio_artifact'),
     path('exports/<str:jid>/<str:name>', ExportArtifactView.as_view(), name='export_artifact'),
 
-    # Voice Lab & Takes
+    # Voice Lab & Takes (M3, M4 & M7)
     path('projects/<str:pid>/takes', ProjectTakesView.as_view(), name='project_takes'),
+    path('projects/<str:pid>/takes/<str:take_id>/accept', ProjectTakeAcceptView.as_view(), name='project_take_accept'),
     path('voice/capabilities', VoiceCapabilitiesView.as_view(), name='voice_capabilities'),
+    path('voice/normalize', VoiceNormalizeView.as_view(), name='voice_normalize'),
+    path('voice/preview', VoicePreviewView.as_view(), name='voice_preview'),
+    path('voice/ab_compare', VoiceABCompareView.as_view(), name='voice_ab_compare'),
+    path('voice/rewrite_preview', VoiceRewritePreviewView.as_view(), name='voice_rewrite_preview'),
 
     # Stock Provider Proxy (M4)
     path('stock', StockSearchView.as_view(), name='stock_search'),

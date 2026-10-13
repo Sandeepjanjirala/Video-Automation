@@ -116,6 +116,24 @@ if project_writer_url.startswith('postgresql+psycopg2://'):
 
 parsed_project_writer = urlparse(project_writer_url)
 
+# Stage M7: Narrowly scoped voice writer database identity
+# Used for Voice Lab take creation and take acceptance.
+voice_writer_url = os.environ.get('STUDIO_VOICE_WRITER_DATABASE_URL')
+if not voice_writer_url:
+    voice_writer_file = BASE_DIR / 'backups' / '.voice_writer_db_url'
+    if voice_writer_file.exists():
+        try:
+            voice_writer_url = voice_writer_file.read_text(encoding='utf-8').strip()
+        except Exception:
+            pass
+if not voice_writer_url:
+    voice_writer_url = db_url
+
+if voice_writer_url.startswith('postgresql+psycopg2://'):
+    voice_writer_url = voice_writer_url.replace('postgresql+psycopg2://', 'postgresql://', 1)
+
+parsed_voice_writer = urlparse(voice_writer_url)
+
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
@@ -151,6 +169,15 @@ DATABASES = {
         'PASSWORD': parsed_project_writer.password or '',
         'HOST': parsed_project_writer.hostname or '127.0.0.1',
         'PORT': str(parsed_project_writer.port or 5433),
+        'CONN_MAX_AGE': 0,
+    },
+    'voice_writer': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': parsed_voice_writer.path.lstrip('/') or 'studio',
+        'USER': parsed_voice_writer.username or 'django_voice_writer',
+        'PASSWORD': parsed_voice_writer.password or '',
+        'HOST': parsed_voice_writer.hostname or '127.0.0.1',
+        'PORT': str(parsed_voice_writer.port or 5433),
         'CONN_MAX_AGE': 0,
     },
 }

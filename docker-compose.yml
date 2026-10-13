@@ -42,9 +42,10 @@ services:
     container_name: studio-api
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8787:8787"
+      - "127.0.0.1:8788:8788"
     environment:
       - STUDIO_DISTRIBUTED=1
+      - STUDIO_DOCKER=1
       - STUDIO_DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/studio
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1

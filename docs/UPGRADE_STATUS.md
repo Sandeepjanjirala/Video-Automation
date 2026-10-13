@@ -389,8 +389,50 @@ Phase 4 is fully implemented, verified, and operational on this home laptop.
 - **M5 Reel Intact**: [`test-outputs/django-m5/20261013_200719/django_m5_reel.mp4`](file:///d:/DjangoProjects/New%20reels/Video-Automation/test-outputs/django-m5/20261013_200719/django_m5_reel.mp4) (7,423,667 bytes) intact and verified.
 - **Phase 3 Reel Intact**: [`test-outputs/phase-3-home/phase3_home_reel.mp4`](file:///d:/DjangoProjects/New%20reels/Video-Automation/test-outputs/phase-3-home/phase3_home_reel.mp4) (7,481,435 bytes) intact.
 - **Schema Authority**: Alembic revision unchanged (`0003_phase4_voice_lab`). Exactly 0 Django migrations created.
-- **Remaining on FastAPI**: `POST /api/settings`, Phase 4 Voice Lab mutations (`POST /api/voice/normalize`, `POST /api/voice/preview`, `POST /api/voice/ab_compare`, `POST /api/voice/rewrite_preview`, `POST /api/projects/{pid}/takes/{take_id}/accept`).
-- **Execution Gate**: Stage M6 COMPLETE. Awaiting user approval to proceed to Stage M7.
+- **Remaining on FastAPI**: None! All 31 routes ported to Django.
+- **Execution Gate**: Stage M7 COMPLETE.
+
+---
+
+## 4. Stage M7 Execution Summary (Port Remaining APIs + React Cutover + Full Browser-to-Video E2E)
+
+**Execution Date**: 2026-10-13  
+**Checkpoint Tag**: `django-m7-complete`  
+**Status**: Stage M7 Complete — React Points to Django (:8788), Real Browser E2E Reel Verified, Zero FastAPI Runtime Needed
+
+### Ported M7 Endpoints
+- `POST /api/settings`: Thread-safe (`SETTINGS_LOCK`), atomic disk persistence (`settings.json.tmp` -> `replace`), secret masking (`SECRETS` never exposed over HTTP), environment override preservation.
+- `POST /api/voice/normalize`: Spoken Telugu normalizer converting numbers, dates, tech terms, and user pronunciation dictionary overrides.
+- `POST /api/voice/preview`: Candidate synthesis wrapping `studio.voice.lab.generate_voice_take` with contract cache verification.
+- `POST /api/voice/ab_compare`: A/B comparison metrics and take evaluation wrapping `studio.voice.lab.compare_takes_ab`.
+- `POST /api/voice/rewrite_preview`: Colloquial spoken phrasing suggestions wrapping `studio.voice.lab.preview_conversational_rewrite`.
+- `POST /api/projects/{pid}/takes/{take_id}/accept`: Atomic take acceptance with `django_voice_writer` PostgreSQL role; project ownership verification, revision bump, scene voice lock, immutable voice take update.
+- `GET /` & static assets: Direct static serving of React `index.html`, `app.js` (276KB), `app.css` from `studio/static/` with traversal guards.
+
+### React Cutover & Network Audit
+- **Origin Strategy**: Relative same-origin `/api/...` calls across React app.
+- **Session / Token**: Bootstrap token issued by Django `GET /api/bootstrap` stored and passed in `x-studio-token` header.
+- **FastAPI Requests**: Verified **0 requests** made to port `8787` during full interactive user workflow.
+- **Console Errors**: **0 runtime errors**.
+
+### Real Browser-to-Video E2E Evidence
+- **Job ID**: `61ed24e873824a649367a4981d1256c6` (and standalone repeat `7ffc5f60ddd94679a231681d8f9f0753`)
+- **Output File**: [`test-outputs/django-m7/20261013_230623/django_m7_e2e_reel.mp4`](file:///d:/DjangoProjects/New%20reels/Video-Automation/test-outputs/django-m7/20261013_230623/django_m7_e2e_reel.mp4)
+- **Dimensions**: `1080x1920` (9:16 vertical reel)
+- **Duration**: `6.49` seconds
+- **Streams**: H.264 video (30 fps), AAC audio
+- **FFmpeg Full Decode**: Exit code 0, 0 errors
+- **Visual Inspection**: Verified moving footage, Telugu narration, Roman Telugu captions, audio ducking, clean transitions.
+
+### Standalone Django Runtime Test
+- FastAPI `:8787` stopped and verified down (`TcpTestSucceeded: False`).
+- React loaded and ran complete CRUD + Render flow against Django `:8788` with 0 errors.
+
+### Regression & Health Status
+- **Pytest Suite**: **144 passed, 2 skipped, 0 failed** in 76.81s across all 10 test suites.
+- **UI Smoke**: Passed with 0 runtime errors.
+- **Alembic Schema Authority**: Revision `0003_phase4_voice_lab` unchanged. 0 Django migrations created.
+- **FastAPI Source**: Intact and preserved in `studio/api.py`. Rollback available via `python run.py --fastapi`.
 
 
 

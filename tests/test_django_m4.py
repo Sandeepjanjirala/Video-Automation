@@ -259,13 +259,13 @@ def test_security_guards_token_enforcement():
 def test_security_guards_disallowed_mutation_paths():
     """Verify all mutating routes not permitted by the mutation allowlist remain rejected with 405."""
     resp = DJ_CLIENT.post(
-        "/api/settings",
+        "/api/unsupported_mutation",
         {},
         format='json',
         HTTP_X_STUDIO_TOKEN=DJANGO_TOKEN
     )
     assert resp.status_code == 405
-    assert 'Stage M4' in resp.json()['detail']
+    assert 'Endpoint does not accept this mutation' in resp.json()['detail']
 
 
 def test_security_guards_request_size_limit():

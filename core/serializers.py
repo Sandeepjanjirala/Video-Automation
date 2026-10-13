@@ -80,6 +80,7 @@ def serialize_voice_take_dict(vt: VoiceTake) -> Dict[str, Any]:
     """Convert VoiceTake ORM instance to exact dictionary expected by API/frontend."""
     return {
         'id': vt.id,
+        'take_id': vt.id,
         'project_id': vt.project_id,
         'scene_id': vt.scene_id or '',
         'provider': vt.provider,
