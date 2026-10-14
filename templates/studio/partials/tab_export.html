@@ -1,0 +1,55 @@
+<div id="tab-export" class="tab-panel" style="display:none;">
+  <!-- Export Settings & Subtitle Styling -->
+  <section class="panel">
+    <div class="sectionhead">
+      <h2>Reel layout &amp; subtitle margins</h2>
+      <span class="muted">Ensure Telugu and Roman subtitles stay within safe mobile viewer zones</span>
+    </div>
+
+    <div class="grid two">
+      <div class="field">
+        <span>Top safe margin (px)</span>
+        <input type="number" id="input-margin-top" min="0" max="600" value="180">
+      </div>
+      <div class="field">
+        <span>Bottom safe margin (px)</span>
+        <input type="number" id="input-margin-bottom" min="0" max="600" value="260">
+      </div>
+    </div>
+  </section>
+
+  <!-- Preflight Readiness Checklist -->
+  <section class="panel">
+    <div class="sectionhead">
+      <h2>Preflight readiness check</h2>
+      <span id="preflight-ready-badge" class="badge">Checking…</span>
+    </div>
+    <p class="muted" style="margin-top:0;">The automated preflight pipeline validates your script, rights, media codecs, and voice takes before triggering FFmpeg.</p>
+
+    <div id="preflight-checklist" class="checklist">
+      <!-- Populated dynamically by StudioProjects.updatePreflight -->
+      <div class="checkitem warn">Analyzing project readiness...</div>
+    </div>
+
+    <div class="actions" style="margin-top:20px;">
+      <button type="button" class="ghost" id="btn-render-preview" data-action="queue-job" data-kind="render" data-extra='{"resolution":"540x960"}'>
+        &#9889; Quick draft preview (540&times;960)
+      </button>
+      <button type="button" class="primary" id="btn-render-production" data-action="queue-job" data-kind="render" data-extra='{"resolution":"1080x1920"}'>
+        &#127916; Render 1080&times;1920 Reel
+      </button>
+    </div>
+  </section>
+
+  <!-- Exported Reels & Video Player -->
+  <section class="panel">
+    <div class="sectionhead">
+      <h2>Exported videos</h2>
+      <span class="muted">Completed vertical MP4 reels ready for download and publishing</span>
+    </div>
+
+    <div id="export-cards-container">
+      <p class="muted">No exported reels yet. Complete the steps above and click Render.</p>
+    </div>
+  </section>
+</div>

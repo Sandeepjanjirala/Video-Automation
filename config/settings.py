@@ -25,6 +25,7 @@ ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'testserver']
 
 # Minimal application definition for M1 (No migration-backed auth/session apps)
 INSTALLED_APPS = [
+    'django.contrib.staticfiles',
     'rest_framework',
     'core.apps.CoreConfig',
 ]
@@ -204,4 +205,26 @@ TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 
+# Django Templates Configuration (Stage M8)
+TEMPLATES = [
+    {
+        'BACKEND': 'django.template.backends.django.DjangoTemplates',
+        'DIRS': [BASE_DIR / 'templates'],
+        'APP_DIRS': True,
+        'OPTIONS': {
+            'context_processors': [
+                'django.template.context_processors.debug',
+                'django.template.context_processors.request',
+            ],
+        },
+    },
+]
+
+# Static files (CSS, JavaScript, Images)
+STATIC_URL = '/static/'
+STATICFILES_DIRS = [
+    BASE_DIR / 'studio' / 'static',
+]
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+

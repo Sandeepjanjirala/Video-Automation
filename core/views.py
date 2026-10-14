@@ -18,6 +18,7 @@ from typing import Optional
 from django.conf import settings
 from django.db import connection, transaction
 from django.http import StreamingHttpResponse, HttpResponse, FileResponse
+from django.shortcuts import render
 import redis
 from rest_framework import status
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -1220,9 +1221,25 @@ def serve_ui(request):
     return FileResponse(open(index_path, 'rb'), content_type='text/html')
 
 
+def serve_m8_ui(request):
+    """Serve the Django Templates + jQuery frontend (Stage M8)."""
+    return render(request, 'studio/index.html')
+
+
 def serve_static_asset(request, filename):
     """Serve static assets (app.js, app.css, etc.) from studio/static with path traversal protection."""
     target_file = (STATIC_DIR / filename).resolve()
+    if not str(target_file).startswith(str(STATIC_DIR.resolve())):
+        return HttpResponse('Access denied', status=403)
+    if not target_file.is_file():
+        return HttpResponse('Asset not found', status=404)
+    content_type, _ = mimetypes.guess_type(str(target_file))
+    return FileResponse(open(target_file, 'rb'), content_type=content_type or 'application/octet-stream')
+
+
+def serve_static_path(request, path):
+    """Serve static assets from studio/static subdirectories with path traversal protection."""
+    target_file = (STATIC_DIR / path).resolve()
     if not str(target_file).startswith(str(STATIC_DIR.resolve())):
         return HttpResponse('Access denied', status=403)
     if not target_file.is_file():

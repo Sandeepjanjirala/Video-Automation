@@ -1,8 +1,8 @@
 # Telugu Reel Studio — Upgrade Status & Technical Audit
 
-**Last Updated**: 2026-10-12  
-**Current Phase**: Phase 4 — Naturalness, Pronunciation, Speech Continuity & Telugu Voice Lab  
-**Status**: Phase 4 Complete — 50 Automated Tests Passing (2 skipped for pending human listener score & paid live provider approval); UI Smoke Tests Passing with 0 errors; Edge Baseline Samples Generated; Voice Lab UI Operational; Awaiting User Listening & Candidate Evaluation  
+**Last Updated**: 2026-10-14  
+**Current Phase**: Django Migration — Stage M8 Complete (Final Frontend Migration: React/TypeScript -> Django Templates + jQuery 3.7.1)  
+**Status**: Stage M8 Complete — 151 Automated Tests Passing (101 Django M1-M8 suite + 50 workflow/phase suite); UI Smoke Tests Passing with 0 errors; Two Full Browser-to-Video E2E Workflows Verified yielding real 1080x1920 MP4 reels; Root (/) cutover to Django Templates + jQuery; 0 React runtimes in production UI; 0 calls to FastAPI 8787; Alembic invariant at 0003_phase4_voice_lab.  
 
 ---
 
@@ -14,14 +14,14 @@
 | **CPU** | 13th Gen Intel Core i5-13400 (10 Cores: 6P+4E, 16 Logical Processors) | 4 worker encode threads configured |
 | **RAM** | 16 GB Total (~15.6 GB visible, ~2.7 GB free physical) | Connection pool sized at 10 (max overflow 20) |
 | **GPU / Acceleration** | Intel UHD Graphics 730 (Integrated, 128 MB dedicated RAM) | No NVIDIA GPU / No CUDA. CPU libx264 encoding |
-| **Python Runtime** | Python 3.12.10 in Windows `.venv` & Python 3.12.3 in WSL Linux `/opt/celery_venv` | Python 3.12 across Windows host and Linux WSL |
+| **Python Runtime** | Python 3.12.5 in Windows `.venv` & Python in Docker containers | Python 3.12 across Windows host and Docker |
 | **FFmpeg Version** | Windows: FFmpeg 9.0.2-full_build; Linux WSL: FFmpeg 8.0.1 | Filters available: `subtitles` (libass), `loudnorm`, `sidechaincompress` |
-| **WSL2 Runtime** | Ubuntu 24.04 (WSL 2) Active & Running | Host for Linux PostgreSQL 18, Redis 7, and Celery workers |
+| **Docker Desktop** | Docker Compose Engine Active & Running | Host for Linux PostgreSQL 18, Redis 7, Celery workers & Dispatcher |
 | **PostgreSQL Database** | PostgreSQL 18 on private port `127.0.0.1:5433` | Port 5433 prevents collision with Windows 5432 services |
 | **Redis Broker & Backend** | Redis 7 on private port `127.0.0.1:6379` | `appendonly yes` (AOF), `maxmemory 512mb`, `noeviction` |
-| **Celery Environment** | Celery 5.6.3 running on Linux (WSL / Docker) | Concurrency: Render (1 slot), Network (2 slots) |
-| **Alembic Migrations** | `0001_phase2_initial` and `0002_phase3_leases_and_outbox` applied | Tables: `workspaces`, `projects`, `revisions`, `assets`, `jobs`, `job_stages`, `drafts`, `application_receipts`, `outbox`, `usage` |
-| **Active Port** | `127.0.0.1:8787` (FastAPI / Uvicorn) | Single-user loopback binding with CSRF protection |
+| **Celery Environment** | Celery 5.6.3 running on Linux (Docker) | Concurrency: Render (1 slot), Network (2 slots) |
+| **Alembic Migrations** | `0003_phase4_voice_lab` applied (strictly invariant) | Tables: `workspaces`, `projects`, `revisions`, `assets`, `jobs`, `job_stages`, `drafts`, `application_receipts`, `outbox`, `voice_takes` |
+| **Active Port** | `127.0.0.1:8788` (Django DRF + Django Templates + jQuery) | Single-user loopback binding with CSRF and token protection. FastAPI on 8787 kept for rollback/coexistence. |
 
 ---
 

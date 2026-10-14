@@ -1,28 +1,29 @@
 # Telugu Reel Studio — Django Migration Architecture & Execution Plan
 
-**Document Version**: 1.0.0 (Phase A — Audit, Architecture Design & Migration Plan)  
-**Status**: Planning / Not Implemented — Awaiting User Approval  
-**Last Verified Baseline Commit**: `dbb89c3` ("save FastAPI project") on branch `main`  
-**Current Date**: 2026-10-12  
+**Document Version**: 2.0.0 (Stages M1 through M8 Complete)  
+**Status**: Stage M8 Complete — Full Backend & Frontend Migration to Django + Django Templates + jQuery  
+**Last Verified Baseline Tag**: `django-m7-complete` -> Final Tag: `django-m8-complete`  
+**Current Date**: 2026-10-14  
 
 ---
 
 ## Executive Summary & Guiding Mandate
 
-This document defines the comprehensive, zero-downtime, zero-data-loss migration architecture for transitioning the **Telugu Reel Studio / Video Automation** backend from **FastAPI** to **Django 5.x + Django REST Framework (DRF)**.
+This document defines the comprehensive, zero-downtime, zero-data-loss migration architecture for transitioning the **Telugu Reel Studio / Video Automation** backend from **FastAPI** to **Django 5.x + Django REST Framework (DRF)**, followed by the complete frontend transition from React/TypeScript to **Django Templates + HTML/CSS + jQuery 3.7.1** (Stage M8).
 
 Per strict operating rules:
-1. **This phase is AUDIT AND DESIGN ONLY.** No FastAPI code is removed, no database schema is altered, and no destructive migrations are executed.
+1. **Zero downtime & rollback safety:** FastAPI code is preserved as an offline rollback artifact. PostgreSQL schema authority remains strictly with Alembic (`0003_phase4_voice_lab`), and all Django models are unmanaged (`managed = False`).
 2. **Every existing capability is preserved**:
    - Both production workflows (**Workflow A**: User media to 1080x1920 reel; **Workflow B**: AI topic/storyboard to 1080x1920 reel).
-   - All 6 existing projects, 65 revisions, 25 media assets, and 46 historical jobs stored in PostgreSQL.
+   - All historical projects, revisions, media assets, and historical jobs stored in PostgreSQL.
    - All uploaded video/audio files in `data/assets/`.
    - The complete Phase 4 naturalness pipeline: Spoken Telugu normalizer, restrained delivery presets, narration blocks, contract cache, and the interactive Telugu Voice Lab.
    - Celery 5.6.3 distributed processing (Redis broker, 1-slot render worker, 2-slot network worker, transactional outbox dispatcher).
    - Docker container infrastructure and volume persistence.
-3. **Frontend Strategy**:
-   - The current React 19 / TypeScript frontend (`frontend/app.tsx`) will be preserved and run against the Django DRF API first to verify 100% backend parity.
-   - The frontend transition to **Django Templates + HTML/CSS + jQuery** is designed in detail in Section 19 as a **separate future phase** that will commence only after the Django backend passes all verification checks.
+3. **Frontend Architecture**:
+   - Pinned local jQuery 3.7.1 with 9 modular vanilla JS modules.
+   - Zero React runtimes or bundles in the active production UI at root `/`.
+   - All 47 features from `docs/M8_FRONTEND_PARITY.md` verified operational.
 
 ---
 

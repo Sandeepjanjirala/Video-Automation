@@ -424,8 +424,8 @@ def test_voice_take_acceptance_ownership_security(auth_client, test_project):
 
 def test_react_frontend_serving(anon_client):
     """Verify Django serves React index.html and static bundle assets."""
-    # Root entrypoint
-    resp_root = anon_client.get('/')
+    # Legacy React entrypoint preserved at /react-legacy/ for rollback
+    resp_root = anon_client.get('/react-legacy/')
     assert resp_root.status_code == 200
     assert resp_root['Content-Type'].startswith('text/html')
     content_root = b''.join(resp_root.streaming_content)

@@ -1,0 +1,84 @@
+<!-- Settings & Providers Modal -->
+<div id="settings-modal" class="modalback modal-backdrop-settings" style="display:none;">
+  <div class="modal">
+    <div class="sectionhead">
+      <h2>Settings &amp; providers</h2>
+      <button type="button" id="btn-close-settings" class="ghost" style="font-size:16px;">&times;</button>
+    </div>
+
+    <p class="muted">Keys stay in this local application's data folder. Blank key fields preserve saved keys. Online actions send your topic/script or search terms to the chosen provider.</p>
+
+    <label class="check">
+      <input type="checkbox" id="setting-online-enabled">
+      <span>Enable online services</span>
+    </label>
+
+    <div class="field">
+      <span>Gemini API key</span>
+      <input type="password" id="setting-gemini-key" autocomplete="off" placeholder="Enter key to update">
+      <small id="hint-gemini-key">Needed for research and AI drafts.</small>
+    </div>
+
+    <div class="field">
+      <span>Gemini model ID</span>
+      <input type="text" id="setting-gemini-model" placeholder="gemini-2.5-flash">
+      <small>Recommended: gemini-2.5-flash (supports Google Search grounding and fast drafting).</small>
+    </div>
+
+    <div class="field">
+      <span>Maximum Gemini API requests per UTC day</span>
+      <input type="number" id="setting-daily-ai-calls" min="1" max="100" value="20">
+      <small>A request-count limit, not a financial spending cap.</small>
+    </div>
+
+    <div class="field">
+      <span>Pixabay API key</span>
+      <input type="password" id="setting-pixabay-key" autocomplete="off" placeholder="Enter key to update">
+      <small id="hint-pixabay-key">Needed for stock search and downloads.</small>
+    </div>
+
+    <div class="field">
+      <span>Narration provider</span>
+      <select id="setting-tts-provider">
+        <option value="edge">Edge community integration — no key, online</option>
+        <option value="sarvam">Sarvam AI Bulbul neural — Telugu specialist</option>
+        <option value="azure">Azure Speech — official API, account required</option>
+      </select>
+    </div>
+
+    <!-- Conditional Sarvam Fields -->
+    <div class="field tts-provider-fields tts-provider-sarvam" style="display:none;">
+      <span>Sarvam API subscription key</span>
+      <input type="password" id="setting-sarvam-key" autocomplete="off" placeholder="Enter key to update">
+      <small id="hint-sarvam-key">Needed for Sarvam Bulbul neural synthesis.</small>
+    </div>
+
+    <!-- Conditional Azure Fields -->
+    <div class="field tts-provider-fields tts-provider-azure" style="display:none;">
+      <span>Azure Speech key</span>
+      <input type="password" id="setting-azure-key" autocomplete="off" placeholder="Enter key to update">
+    </div>
+    <div class="field tts-provider-fields tts-provider-azure" style="display:none;">
+      <span>Azure region</span>
+      <input type="text" id="setting-azure-region" placeholder="centralindia">
+    </div>
+
+    <div class="field">
+      <span>FFmpeg executable</span>
+      <input type="text" id="setting-ffmpeg" placeholder="Leave blank to use PATH">
+      <small>Leave blank to use PATH, or paste the full path to ffmpeg.exe.</small>
+    </div>
+
+    <div class="field">
+      <span>FFprobe executable</span>
+      <input type="text" id="setting-ffprobe" placeholder="Leave blank to use PATH">
+    </div>
+
+    <div class="actions">
+      <button type="button" class="primary" id="btn-save-settings">Save settings</button>
+      <button type="button" class="ghost" id="btn-check-health">Check saved media setup</button>
+    </div>
+
+    <pre id="settings-health-output" class="research" style="display:none;margin-top:16px;max-height:200px;"></pre>
+  </div>
+</div>

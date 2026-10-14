@@ -1,0 +1,42 @@
+<!-- Reusable Media Library & Stock Modal -->
+<div id="media-library-modal" class="modalback" style="display:none;">
+  <div class="modal wide">
+    <div class="sectionhead">
+      <h2>Media library &amp; footage manager</h2>
+      <button type="button" id="btn-close-media-modal" class="ghost" style="font-size:16px;">&times;</button>
+    </div>
+
+    <!-- Upload Section -->
+    <div style="background:#fbfcf8;border:1px solid var(--line);border-radius:8px;padding:16px;margin:16px 0;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <b>Upload new media (MP4, WebM, MP3, WAV)</b>
+          <p class="muted" style="margin:2px 0 0 0;font-size:11px;">Files are streamed directly to local storage and verified with ffprobe.</p>
+        </div>
+        <label class="filebutton primary" style="margin:0;">
+          Select file
+          <input type="file" id="file-upload-media" accept="video/*,audio/*">
+        </label>
+      </div>
+      <div id="media-upload-status" style="margin-top:10px;font-size:12px;display:none;"></div>
+    </div>
+
+    <!-- Stock Footage Search -->
+    <div style="margin:16px 0;">
+      <span style="font-size:12px;font-weight:600;">Search Pixabay stock footage:</span>
+      <div style="display:flex;gap:8px;margin-top:6px;">
+        <input type="text" id="input-stock-search" placeholder="e.g. Hyderabad, nature, technology, urban rain...">
+        <button type="button" id="btn-stock-search" class="ghost">Search stock</button>
+      </div>
+      <div id="stock-results-grid" class="stockgrid" style="display:none;"></div>
+    </div>
+
+    <!-- Library Assets Grid -->
+    <div style="margin-top:20px;">
+      <span style="font-size:12px;font-weight:600;">Project assets &amp; library clips:</span>
+      <div id="media-assets-grid" class="mediagrid">
+        <!-- Rendered by StudioMedia.renderLibraryGrid -->
+      </div>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,16 @@
+<!-- Revision History Modal -->
+<div id="history-modal" class="modalback modal-backdrop-history" style="display:none;">
+  <div class="modal">
+    <div class="sectionhead">
+      <h2>Project revision history</h2>
+      <button type="button" id="btn-close-history-modal" class="ghost" style="font-size:16px;">&times;</button>
+    </div>
+
+    <p class="muted">Immutable revisions recorded in PostgreSQL with optimistic concurrency tokens.</p>
+
+    <div id="history-revisions-list" style="margin:16px 0;max-height:400px;overflow-y:auto;">
+      <!-- Populated dynamically by StudioProjects.openHistory -->
+      <p class="muted">Loading revision log...</p>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,62 @@
+{% extends "studio/base.html" %}
+
+{% block content %}
+<div class="app">
+  <!-- Project Sidebar Navigation -->
+  {% include "studio/partials/project_sidebar.html" %}
+
+  <!-- Main Content Area -->
+  <main>
+    <!-- Loading Overlay -->
+    <div id="app-loading-state" class="loading">
+      <h2>Opening your studio&hellip;</h2>
+      <p class="muted">Connecting to Django backend and initializing state...</p>
+    </div>
+
+    <!-- Main Workspace Layout -->
+    <div id="app-main-layout" style="display:none;">
+      <!-- Project Header -->
+      {% include "studio/partials/project_header.html" %}
+
+      <!-- Notification & Alert Banners -->
+      {% include "studio/partials/alerts.html" %}
+
+      <!-- Welcome Slate (Shown when 0 projects exist) -->
+      {% include "studio/partials/welcome.html" %}
+
+      <!-- Project Editor Workspace -->
+      <div id="project-editor-workspace">
+        <!-- Workflow Step Tabs -->
+        <div class="tabs">
+          <button type="button" class="tab-btn active" data-tab="write">
+            <span>01</span> Story
+          </button>
+          <button type="button" class="tab-btn" data-tab="voice">
+            <span>02</span> Voice &amp; visuals
+          </button>
+          <button type="button" class="tab-btn" data-tab="export">
+            <span>03</span> Preview &amp; export
+          </button>
+        </div>
+
+        <!-- Tab 01: Story -->
+        {% include "studio/partials/tab_story.html" %}
+
+        <!-- Tab 02: Voice & Visuals -->
+        {% include "studio/partials/tab_voice.html" %}
+
+        <!-- Tab 03: Preview & Export -->
+        {% include "studio/partials/tab_export.html" %}
+
+        <!-- Production Background Jobs -->
+        {% include "studio/partials/job_panel.html" %}
+      </div>
+    </div>
+  </main>
+
+  <!-- Modals -->
+  {% include "studio/partials/media_library.html" %}
+  {% include "studio/partials/settings_modal.html" %}
+  {% include "studio/partials/history_modal.html" %}
+</div>
+{% endblock %}

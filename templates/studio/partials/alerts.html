@@ -1,0 +1,26 @@
+<!-- Dynamic Notification Banners -->
+<div id="alerts-container" style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px;">
+  <!-- Draft Recovery Notice -->
+  <div id="alert-draft-recovery" class="notice" style="display:none;background:#fef3c7;border-color:#fde68a;color:#92400e;">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <span>&#9888; <b>Unsaved draft found</b> from a previous session.</span>
+      <button type="button" id="btn-restore-draft" class="primary" style="font-size:11px;padding:4px 8px;">Restore draft</button>
+      <button type="button" id="btn-discard-draft" class="ghost" style="font-size:11px;padding:4px 8px;">Discard draft</button>
+    </div>
+    <button type="button" class="alert-dismiss ghost">&times;</button>
+  </div>
+
+  <!-- Conflict Notice -->
+  <div id="alert-conflict" class="notice error" style="display:none;">
+    <div id="alert-conflict-content">
+      <b>Revision Conflict:</b> Your edits conflicted with a concurrent change.
+    </div>
+    <button type="button" class="alert-dismiss ghost">&times;</button>
+  </div>
+
+  <!-- General Notice -->
+  <div id="alert-general-notice" class="notice" style="display:none;">
+    <span id="alert-notice-text"></span>
+    <button type="button" class="alert-dismiss ghost">&times;</button>
+  </div>
+</div>

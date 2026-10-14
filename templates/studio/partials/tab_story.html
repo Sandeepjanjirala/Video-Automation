@@ -1,0 +1,116 @@
+<div id="tab-write" class="tab-panel">
+  <!-- Story Brief Panel -->
+  <section class="panel">
+    <div class="sectionhead">
+      <h2>Brief &amp; storyboard planning</h2>
+      <span class="muted">Outline your narrative or let AI draft scenes</span>
+    </div>
+
+    <div class="grid two">
+      <div class="field">
+        <span>Project title</span>
+        <input type="text" id="input-project-title" placeholder="e.g. 3 Hidden Features in Android">
+      </div>
+      <div class="field">
+        <span>Editorial preset</span>
+        <select id="select-project-category">
+          <option value="Storytelling">Storytelling</option>
+          <option value="Facts">Facts</option>
+          <option value="Mystery">Mystery</option>
+          <option value="History">History</option>
+          <option value="Actors news">Actors news</option>
+          <option value="Cricket news">Cricket news</option>
+          <option value="AI">AI</option>
+          <option value="Technology">Technology</option>
+          <option value="Other">Other</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="field">
+      <span>Topic or core idea</span>
+      <textarea id="input-project-topic" rows="3" placeholder="Enter your topic, key facts, or instructions for the AI storyboard..."></textarea>
+    </div>
+
+    <div class="grid two">
+      <div class="field">
+        <span>Tone &amp; style</span>
+        <select id="select-project-tone">
+          <option value="conversational">Conversational (Natural spoken Telugu)</option>
+          <option value="enthusiastic">Enthusiastic &amp; energetic</option>
+          <option value="dramatic">Dramatic &amp; engaging</option>
+          <option value="factual">Factual &amp; informative</option>
+        </select>
+      </div>
+      <div class="field">
+        <span>Target duration</span>
+        <select id="select-project-duration">
+          <option value="30">30 seconds (~60 words, 3 scenes)</option>
+          <option value="45">45 seconds (~90 words, 4 scenes)</option>
+          <option value="60">60 seconds (~120 words, 5 scenes)</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="actions">
+      <button type="button" class="ghost" data-action="queue-job" data-kind="research">
+        &#128269; Research topic (Gemini + Google Search)
+      </button>
+      <button type="button" class="primary" data-action="queue-job" data-kind="draft">
+        &#9889; Generate AI storyboard draft
+      </button>
+    </div>
+  </section>
+
+  <!-- Script Importer -->
+  <section class="panel">
+    <div class="sectionhead">
+      <h2>Quick script importer</h2>
+      <span class="muted">Paste full Telugu text to auto-split into scenes</span>
+    </div>
+    <div class="field">
+      <textarea id="input-import-script" rows="3" placeholder="Paste full Telugu paragraph or multi-line script here..."></textarea>
+    </div>
+    <div class="actions">
+      <button type="button" id="btn-import-split" class="ghost">
+        &#9986; Split into scenes
+      </button>
+    </div>
+  </section>
+
+  <!-- Scenes Editor -->
+  <section class="panel">
+    <div class="sectionhead">
+      <h2>Storyboard scenes</h2>
+      <button type="button" id="btn-add-scene" class="ghost" style="font-size:12px;">+ Add scene</button>
+    </div>
+    
+    <div id="scenes-list">
+      <!-- Populated dynamically by StudioScenes.renderScenes -->
+    </div>
+
+    <div class="actions" style="margin-top:20px;">
+      <button type="button" id="btn-add-scene-bottom" class="ghost">+ Add scene</button>
+    </div>
+  </section>
+
+  <!-- Evidence & editorial review -->
+  <section class="panel">
+    <div class="sectionhead">
+      <div>
+        <h2>Evidence &amp; editorial review</h2>
+        <span class="muted">Record factual review notes or label content as fictional before approval</span>
+      </div>
+      <button type="button" class="ghost" id="btn-toggle-research">Show research</button>
+    </div>
+    <div id="research-review-container" style="display:none; margin-bottom:14px;">
+      <pre class="research" id="research-report-view">No research report applied yet.</pre>
+      <div class="sources" id="research-sources-view"></div>
+    </div>
+    <label class="field">
+      <span>Your review notes / source links</span>
+      <textarea id="textarea-evidence-notes" rows="3" placeholder="Sources checked, corrections made, or fiction label…"></textarea>
+      <small class="muted">Record what you checked, unresolved claims, or that the story is fictional. Approval records your review.</small>
+    </label>
+  </section>
+</div>

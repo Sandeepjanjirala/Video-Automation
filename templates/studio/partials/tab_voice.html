@@ -1,0 +1,207 @@
+<div id="tab-voice" class="tab-panel" style="display:none;">
+  <!-- Voice Profile & Synthesis Configuration -->
+  <section class="panel">
+    <div class="sectionhead">
+      <h2>Voice profile &amp; narration engine</h2>
+      <span class="muted">Select neural Telugu voice model and pacing</span>
+    </div>
+
+    <div class="grid two">
+      <div class="field">
+        <span>Narration provider</span>
+        <select id="select-voice-provider">
+          <option value="edge">Edge Neural (Free community TTS)</option>
+          <option value="sarvam">Sarvam AI Bulbul (Telugu Specialist)</option>
+          <option value="azure">Azure Cognitive Speech (Official)</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <span>Voice model</span>
+        <select id="select-voice-speaker">
+          <!-- Populated dynamically based on provider -->
+        </select>
+      </div>
+    </div>
+
+    <div class="grid two">
+      <div class="field">
+        <span>Delivery style preset</span>
+        <select id="select-delivery-preset">
+          <option value="storyteller">Expressive Storyteller (Dynamic pitch &amp; cadence)</option>
+          <option value="explainer">Clear Explainer (Balanced, educational)</option>
+          <option value="urgent">High-Energy Reel (Fast, hook-focused)</option>
+          <option value="custom">Custom pacing</option>
+        </select>
+      </div>
+
+      <div class="field">
+        <span>Speech pacing (Rate: <span id="label-speech-rate">1.00x</span>)</span>
+        <input type="range" id="range-speech-rate" min="0.75" max="1.35" step="0.05" value="1.00">
+      </div>
+    </div>
+
+    <!-- Provider Capabilities Strip -->
+    <div style="margin:12px 0;">
+      <span class="muted" style="font-size:11px;display:block;margin-bottom:4px;">ENGINE CAPABILITIES:</span>
+      <div id="voice-cap-badges" class="cap-badges">
+        <!-- Rendered by StudioVoice.renderCapabilities -->
+      </div>
+    </div>
+
+    <!-- Voice Lock Checkbox -->
+    <label class="check">
+      <input type="checkbox" id="check-voice-lock">
+      <span><b>Lock voice settings</b> (Prevent automatic preset overrides when editing project script)</span>
+    </label>
+
+    <div class="actions">
+      <button type="button" class="primary" data-action="queue-job" data-kind="voice">
+        &#127897; Prepare narration for all scenes
+      </button>
+    </div>
+  </section>
+
+  <!-- Phase 4 Voice Lab (A/B Testing, Polish, Dictionary) -->
+  <section class="panel voicelab">
+    <div class="sectionhead">
+      <h3>&#129302; Voice Lab &mdash; Telugu Pronunciation &amp; A/B Polish</h3>
+      <span class="muted">Colloquial rewrites, dictionary overrides, and take audition</span>
+    </div>
+
+    <div class="grid two" style="margin-bottom:16px;">
+      <div class="field">
+        <span>Target audition scene</span>
+        <select id="select-voicelab-scene">
+          <!-- Populated with scene options -->
+        </select>
+      </div>
+
+      <div class="field" style="justify-content:flex-end;">
+        <button type="button" id="btn-preview-candidate" class="ghost" style="height:42px;">
+          &#9654; Audition candidate take (A/B Preview)
+        </button>
+      </div>
+    </div>
+
+    <!-- Colloquial Rewrite Polish -->
+    <div style="background:#fff;border:1px solid var(--line);border-radius:8px;padding:16px;margin:12px 0;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <b>Colloquial spoken phrasing polish</b>
+        <button type="button" id="btn-check-rewrite" class="ghost" style="font-size:11px;padding:4px 8px;">Check colloquial cadence</button>
+      </div>
+      <div id="rewrite-diff-container" style="display:none;margin-top:10px;">
+        <div id="rewrite-diff-display" class="diff-container"></div>
+        <div class="actions">
+          <button type="button" id="btn-apply-rewrite" class="primary" style="font-size:11px;padding:4px 8px;">Apply spoken rewrite to scene</button>
+          <button type="button" id="btn-dismiss-rewrite" class="ghost" style="font-size:11px;padding:4px 8px;">Dismiss</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- A/B Comparison Cards -->
+    <div class="ab-grid">
+      <div class="ab-card" id="ab-card-active">
+        <h4><span>Active scene take</span> <span class="badge approved">Current</span></h4>
+        <div id="active-take-body">
+          <p class="muted" style="font-size:12px;">No rendered audio take currently assigned.</p>
+        </div>
+      </div>
+
+      <div class="ab-card" id="ab-card-candidate">
+        <h4><span>Candidate take</span> <span class="badge" id="candidate-take-badge">Audition</span></h4>
+        <div id="candidate-take-body">
+          <p class="muted" style="font-size:12px;">Click "Audition candidate take" to synthesize a preview.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Pronunciation Dictionary & Normalizer -->
+    <details style="margin-top:16px;">
+      <summary><b>Pronunciation dictionary &amp; phonetic overrides</b></summary>
+      <div style="padding:10px 0;">
+        <p class="muted" style="font-size:12px;">Specify exact phonetic replacements for English terms, technical words, or brand names.</p>
+        <div id="pronunciation-dict-list"></div>
+        <div class="dict-row">
+          <input type="text" id="input-dict-key" placeholder="Original word (e.g. WiFi, AI)">
+          <input type="text" id="input-dict-val" placeholder="Phonetic Telugu (e.g. వైఫై, ఏఐ)">
+          <button type="button" id="btn-add-dict-entry" class="ghost">+ Add rule</button>
+        </div>
+
+        <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px;">
+          <span style="font-size:12px;font-weight:600;">Test phonetic normalizer:</span>
+          <div style="display:flex;gap:8px;margin-top:6px;">
+            <input type="text" id="input-norm-test" placeholder="Test sentence with numbers or English terms...">
+            <button type="button" id="btn-test-norm" class="ghost">Normalize</button>
+          </div>
+          <div id="output-norm-test" style="margin-top:8px;font-size:12px;color:var(--green);font-weight:500;"></div>
+        </div>
+      </div>
+    </details>
+
+    <!-- Take History -->
+    <details style="margin-top:10px;">
+      <summary><b>Project voice take history</b></summary>
+      <div id="voice-takes-history" style="padding:10px 0;">
+        <p class="muted" style="font-size:12px;">Past synthesis takes for this project are retained durable.</p>
+      </div>
+    </details>
+  </section>
+
+  <!-- Scene Visuals & Footage Assignment -->
+  <section class="panel">
+    <div class="sectionhead">
+      <h2>Scene visual footage</h2>
+      <div style="display:flex;gap:8px;">
+        <button type="button" class="ghost" data-action="queue-job" data-kind="stock_all">
+          &#128269; Find all stock footage (Pixabay)
+        </button>
+        <button type="button" id="btn-open-media-library" class="ghost">
+          &#128451; Media library
+        </button>
+      </div>
+    </div>
+
+    <div id="scenes-visuals-container">
+      <!-- Populated dynamically by StudioScenes.renderVisuals -->
+    </div>
+  </section>
+
+  <!-- Background Music & Ducking -->
+  <section class="panel">
+    <div class="sectionhead">
+      <div>
+        <h2>Background music &amp; audio ducking</h2>
+        <span class="muted">Add subtle atmospheric music beneath the Telugu narration</span>
+      </div>
+      <button type="button" class="ghost" id="btn-remove-music" style="display:none;">Remove music</button>
+    </div>
+
+    <div id="music-player-container" style="display:none;margin-bottom:12px;"></div>
+
+    <div id="music-controls-container">
+      <div class="grid two">
+        <div class="field">
+          <span>Music track (MP3)</span>
+          <div style="display:flex;gap:10px;align-items:center;">
+            <input type="text" id="input-music-asset" readonly placeholder="No background track selected" style="flex:1;">
+            <label class="filebutton ghost" style="margin:0;">
+              Upload MP3
+              <input type="file" id="file-upload-music" accept="audio/*">
+            </label>
+          </div>
+        </div>
+
+        <div class="field">
+          <span>Music volume (<span id="music-gain-label">12%</span>)</span>
+          <input type="range" id="range-music-gain" min="0" max="0.5" step="0.02" value="0.12">
+        </div>
+      </div>
+
+      <label class="check" style="margin-top:12px;">
+        <input type="checkbox" id="check-music-rights">
+        <b>I reviewed and confirmed commercial / attribution rights for this background track</b>
+      </label>
+    </div>
+  </section>
+</div>
