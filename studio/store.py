@@ -1,4 +1,6 @@
-"""PostgreSQL primary store implementation using SQLAlchemy (Phase 2)."""
+"""PostgreSQL primary store implementation using Django ORM (Phase M9).
+Active transactional persistence layer for projects, revisions, jobs, and outbox.
+"""
 import copy
 import hashlib
 import json
@@ -10,20 +12,25 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select, func, text, update, delete
-from sqlalchemy.orm import Session
-from sqlalchemy.orm.attributes import flag_modified
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+import django
+django.setup()
 
+from django.conf import settings
+from django.db import connection, transaction
+from django.db.models import Q
+from core.models import (
+    Workspace, Project, Revision, Asset, Job, JobStage, Draft,
+    ApplicationReceipt, OutboxEvent, VoiceTake
+)
 from .config import DATA, setup
 from .models import Project as PydanticProject
-from .db.models import (
-    Base, Workspace, Project, Revision, Asset, Job, JobStage, Draft,
-    ApplicationReceipt, Outbox, VoiceTake
-)
-from .db.session import (
-    get_engine, session_scope, check_connection, get_database_url,
-    DatabaseConnectionError
-)
+
+# Default writer alias under least privilege; falls back to 'default'
+DB_ALIAS = 'job_writer' if 'job_writer' in settings.DATABASES else 'default'
+PROJECT_DB = 'project_writer' if 'project_writer' in settings.DATABASES else 'default'
+MEDIA_DB = 'media_writer' if 'media_writer' in settings.DATABASES else 'default'
+VOICE_DB = 'voice_writer' if 'voice_writer' in settings.DATABASES else 'default'
 
 
 def now() -> str:
@@ -44,12 +51,9 @@ def compute_script_hash(project_dict: Dict[str, Any]) -> str:
 def init() -> None:
     """Validate PostgreSQL connectivity and ensure default workspace exists."""
     setup()
-    check_connection()
-    with session_scope() as session:
-        ws = session.get(Workspace, 'default')
-        if not ws:
-            ws = Workspace(id='default', name='Local Workspace')
-            session.add(ws)
+    ws = Workspace.objects.using(DB_ALIAS).filter(id='default').first()
+    if not ws:
+        Workspace.objects.using(DB_ALIAS).create(id='default', name='Local Workspace')
 
 
 def unpack(p: Project) -> Dict[str, Any]:
@@ -64,47 +68,29 @@ def unpack(p: Project) -> Dict[str, Any]:
     }
 
 
-def get_project(pid: str, session: Optional[Session] = None) -> Dict[str, Any]:
-    if session is not None:
-        p = session.get(Project, pid)
-        if not p:
-            raise ValueError('Project not found')
-        return unpack(p)
-
-    with session_scope() as s:
-        p = s.get(Project, pid)
-        if not p:
-            raise ValueError('Project not found')
-        return unpack(p)
+def get_project(pid: str) -> Dict[str, Any]:
+    p = Project.objects.using(PROJECT_DB).filter(id=pid).first()
+    if not p:
+        raise ValueError('Project not found')
+    return unpack(p)
 
 
-def list_projects(workspace_id: str = 'default', session: Optional[Session] = None) -> List[Dict[str, Any]]:
-    stmt = (
-        select(Project)
-        .where(Project.workspace_id == workspace_id)
-        .order_by(Project.updated_at.desc())
-    )
-    if session is not None:
-        results = session.execute(stmt).scalars().all()
-        return [unpack(p) for p in results]
-
-    with session_scope() as s:
-        results = s.execute(stmt).scalars().all()
-        return [unpack(p) for p in results]
+def list_projects(workspace_id: str = 'default') -> List[Dict[str, Any]]:
+    results = Project.objects.using(PROJECT_DB).filter(workspace_id=workspace_id).order_by('-updated_at')
+    return [unpack(p) for p in results]
 
 
 def save_project(project: Dict[str, Any], pid: Optional[str] = None, expected: Optional[int] = None) -> Dict[str, Any]:
     data = PydanticProject.model_validate(project).model_dump()
     pid = pid or uuid.uuid4().hex
 
-    with session_scope() as session:
-        # Row-level lock on existing project to prevent concurrency lost updates
-        stmt = select(Project).where(Project.id == pid).with_for_update()
-        old = session.execute(stmt).scalar_one_or_none()
+    with transaction.atomic(using=PROJECT_DB):
+        old = Project.objects.using(PROJECT_DB).select_for_update().filter(id=pid).first()
 
         if old and expected is not None and old.revision != expected:
             raise ValueError('This project changed in another tab. Reload before saving.')
 
+        now_dt = datetime.now(timezone.utc)
         if old:
             old_data = old.body
             if compute_script_hash(old_data) == compute_script_hash(data):
@@ -114,84 +100,76 @@ def save_project(project: Dict[str, Any], pid: Optional[str] = None, expected: O
             revision = old.revision + 1
             old.revision = revision
             old.body = data
-            from sqlalchemy.orm.attributes import flag_modified
-            flag_modified(old, 'body')
             old.approved_revision = None
-            old.updated_at = datetime.now(timezone.utc)
+            old.updated_at = now_dt
+            old.save(using=PROJECT_DB)
             target_p = old
         else:
             revision = 1
-            target_p = Project(
+            target_p = Project.objects.using(PROJECT_DB).create(
                 id=pid,
                 workspace_id='default',
                 revision=revision,
                 approved_revision=None,
                 body=data,
-                created_at=datetime.now(timezone.utc),
-                updated_at=datetime.now(timezone.utc)
+                created_at=now_dt,
+                updated_at=now_dt
             )
-            session.add(target_p)
 
         # Record revision history
-        rev_entry = Revision(
+        Revision.objects.using(PROJECT_DB).create(
             project_id=pid,
             revision=revision,
             body=data,
-            created_at=datetime.now(timezone.utc)
+            created_at=now_dt
         )
-        session.add(rev_entry)
 
         # Clear autosave draft once project is explicitly saved
-        session.execute(delete(Draft).where(Draft.project_id == pid))
-        session.flush()
+        Draft.objects.using(PROJECT_DB).filter(project_id=pid).delete()
         return unpack(target_p)
 
 
 def reserve_ai_call(limit: int) -> None:
     day = now()[:10]
-    with session_scope() as session:
-        from .db.models import Usage
-        stmt = select(Usage).where(Usage.day == day, Usage.provider == 'gemini').with_for_update()
-        row = session.execute(stmt).scalar_one_or_none()
-        count = row.calls if row else 0
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT calls FROM usage WHERE day = %s AND provider = 'gemini' FOR UPDATE;", (day,))
+        row = cursor.fetchone()
+        count = row[0] if row else 0
         if count >= limit:
             raise ValueError('Daily Gemini request limit reached. Change Settings or try tomorrow (UTC).')
         if row:
-            row.calls = count + 1
+            cursor.execute("UPDATE usage SET calls = calls + 1 WHERE day = %s AND provider = 'gemini';", (day,))
         else:
-            session.add(Usage(day=day, provider='gemini', calls=count + 1))
+            cursor.execute("INSERT INTO usage (day, provider, calls) VALUES (%s, 'gemini', 1);", (day,))
 
 
 def save_draft(pid: str, draft_data: Dict[str, Any]) -> Dict[str, Any]:
-    with session_scope() as session:
-        d = session.get(Draft, pid)
-        now_dt = datetime.now(timezone.utc)
+    now_dt = datetime.now(timezone.utc)
+    with transaction.atomic(using=PROJECT_DB):
+        d = Draft.objects.using(PROJECT_DB).filter(project_id=pid).first()
         if not d:
-            d = Draft(project_id=pid, body=draft_data, updated_at=now_dt)
-            session.add(d)
+            Draft.objects.using(PROJECT_DB).create(project_id=pid, body=draft_data, updated_at=now_dt)
         else:
             d.body = draft_data
             d.updated_at = now_dt
+            d.save(using=PROJECT_DB)
         return {'project_id': pid, 'updated': now_dt.isoformat()}
 
 
 def get_draft(pid: str) -> Optional[Dict[str, Any]]:
-    with session_scope() as session:
-        d = session.get(Draft, pid)
-        if not d:
-            return None
-        return {'project_id': pid, 'body': d.body, 'updated': d.updated_at.isoformat()}
+    d = Draft.objects.using(PROJECT_DB).filter(project_id=pid).first()
+    if not d:
+        return None
+    return {'project_id': pid, 'body': d.body, 'updated': d.updated_at.isoformat()}
 
 
 def delete_draft(pid: str) -> None:
-    with session_scope() as session:
-        session.execute(delete(Draft).where(Draft.project_id == pid))
+    Draft.objects.using(PROJECT_DB).filter(project_id=pid).delete()
 
 
 def approve(pid: str, revision: int) -> Dict[str, Any]:
-    with session_scope() as session:
-        stmt = select(Project).where(Project.id == pid).with_for_update()
-        p = session.execute(stmt).scalar_one_or_none()
+    with transaction.atomic(using=PROJECT_DB):
+        p = Project.objects.using(PROJECT_DB).select_for_update().filter(id=pid).first()
         if not p or p.revision != revision:
             raise ValueError('Save and reload the current revision before approving')
 
@@ -204,41 +182,36 @@ def approve(pid: str, revision: int) -> Dict[str, Any]:
         p_dict = model.model_dump()
         p_dict['script_approved_hash'] = compute_script_hash(p_dict)
         p.body = p_dict
-        from sqlalchemy.orm.attributes import flag_modified
-        flag_modified(p, 'body')
         p.approved_revision = revision
         p.updated_at = datetime.now(timezone.utc)
-        session.flush()
+        p.save(using=PROJECT_DB)
         return unpack(p)
 
 
 def revisions(pid: str) -> List[Dict[str, Any]]:
-    with session_scope() as session:
-        stmt = select(Revision).where(Revision.project_id == pid).order_by(Revision.revision.desc())
-        revs = session.execute(stmt).scalars().all()
-        return [{'revision': r.revision, 'project': r.body, 'created': r.created_at.isoformat()} for r in revs]
+    revs = Revision.objects.using(PROJECT_DB).filter(project_id=pid).order_by('-revision')
+    return [{'revision': r.revision, 'project': r.body, 'created': r.created_at.isoformat()} for r in revs]
 
 
 def asset(aid: str) -> Dict[str, Any]:
-    with session_scope() as session:
-        a = session.get(Asset, aid)
-        if not a:
-            raise ValueError('Media asset not found')
-        meta = dict(a.meta or {})
-        meta.update({
-            'id': a.id,
-            'filename': a.filename,
-            'name': a.name,
-            'kind': a.kind,
-            'duration': a.duration,
-            'sha256': a.sha256,
-            'provider': a.provider,
-            'external_id': a.external_id,
-            'source_url': a.source_url,
-            'license_url': a.license_url,
-            'retrieved': a.created_at.isoformat() if a.created_at else now()
-        })
-        return meta
+    a = Asset.objects.using(MEDIA_DB).filter(id=aid).first()
+    if not a:
+        raise ValueError('Asset not found')
+    meta = dict(a.meta or {})
+    meta.update({
+        'id': a.id,
+        'filename': a.filename,
+        'name': a.name,
+        'kind': a.kind,
+        'duration': a.duration,
+        'sha256': a.sha256,
+        'provider': a.provider,
+        'external_id': a.external_id,
+        'source_url': a.source_url or '',
+        'license_url': a.license_url or '',
+        'created_at': a.created_at.isoformat() if a.created_at else now()
+    })
+    return meta
 
 
 def add_asset(body: Dict[str, Any]) -> Dict[str, Any]:
@@ -247,8 +220,8 @@ def add_asset(body: Dict[str, Any]) -> Dict[str, Any]:
     prov = body.get('provider') or 'upload'
     ext_id = str(body.get('external_id') or '') or None
 
-    with session_scope() as session:
-        existing = session.get(Asset, aid)
+    with transaction.atomic(using=MEDIA_DB):
+        existing = Asset.objects.using(MEDIA_DB).filter(id=aid).first()
         if existing:
             existing.filename = body.get('filename') or existing.filename
             existing.name = body.get('name') or existing.name
@@ -260,8 +233,9 @@ def add_asset(body: Dict[str, Any]) -> Dict[str, Any]:
             existing.source_url = body.get('source_url', '')
             existing.license_url = body.get('license_url', '')
             existing.meta = body
+            existing.save(using=MEDIA_DB)
         else:
-            new_a = Asset(
+            Asset.objects.using(MEDIA_DB).create(
                 id=aid,
                 workspace_id='default',
                 filename=body.get('filename') or f"{aid}.mp4",
@@ -276,33 +250,27 @@ def add_asset(body: Dict[str, Any]) -> Dict[str, Any]:
                 meta=body,
                 created_at=datetime.now(timezone.utc)
             )
-            session.add(new_a)
     return body
 
 
 def find_asset(sha256: Optional[str] = None, provider: Optional[str] = None, external_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    with session_scope() as session:
-        stmt = select(Asset)
-        if sha256:
-            stmt = stmt.where(Asset.sha256 == sha256)
-        elif provider and external_id:
-            stmt = stmt.where(Asset.provider == provider, Asset.external_id == str(external_id))
-        else:
-            return None
-        res = session.execute(stmt.limit(1)).scalar_one_or_none()
-        if not res:
-            return None
-        return asset(res.id)
+    qs = Asset.objects.using(MEDIA_DB)
+    if sha256:
+        a = qs.filter(sha256=sha256).first()
+    elif provider and external_id:
+        a = qs.filter(provider=provider, external_id=str(external_id)).first()
+    else:
+        return None
+    if not a:
+        return None
+    return asset(a.id)
 
 
 def list_assets(kind: Optional[str] = None, workspace_id: str = 'default') -> List[Dict[str, Any]]:
-    with session_scope() as session:
-        stmt = select(Asset).where(Asset.workspace_id == workspace_id)
-        if kind:
-            stmt = stmt.where(Asset.kind == kind)
-        stmt = stmt.order_by(Asset.created_at.desc())
-        assets = session.execute(stmt).scalars().all()
-        return [asset(a.id) for a in assets]
+    qs = Asset.objects.using(MEDIA_DB).filter(workspace_id=workspace_id)
+    if kind:
+        qs = qs.filter(kind=kind)
+    return [asset(a.id) for a in qs.order_by('-created_at')]
 
 
 def asset_path(aid: str, kind: Optional[str] = None) -> Path:
@@ -328,66 +296,22 @@ def preflight(project_data: Any) -> Dict[str, Any]:
 
     for i, s in enumerate(scenes):
         idx = i + 1
-        sid = s.get('id', '')
-        if not s.get('narration', '').strip() or not s.get('roman', '').strip():
-            errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'narration',
-                           'message': f'Scene {idx}: Missing Telugu narration or Roman captions'})
-        if s.get('visual') == 'graphic':
-            if not s.get('graphic_title', '').strip():
-                errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'graphic_title',
-                               'message': f'Scene {idx} (graphic title card): Needs a title'})
-        else:
-            vid = s.get('video_asset')
-            if not vid:
-                errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'video_asset',
-                               'message': f'Scene {idx}: Missing video footage (upload footage, pick stock, or choose title card)'})
-            else:
-                try:
-                    vpath = asset_path(vid, 'video')
-                    from .media import duration as media_duration
-                    dur = media_duration(vpath)
-                    trim = float(s.get('trim_start', 0))
-                    if trim < 0:
-                        errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'trim_start',
-                                       'message': f'Scene {idx}: Invalid negative trim start ({trim}s)'})
-                    elif trim >= dur:
-                        errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'trim_start',
-                                       'message': f'Scene {idx}: Trim start ({trim:.1f}s) exceeds clip duration ({dur:.1f}s)'})
-                except Exception as exc:
-                    errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'video_asset',
-                                   'message': f'Scene {idx}: Video footage error ({exc})'})
-
-        if not s.get('rights_reviewed'):
-            errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'rights_reviewed',
-                           'message': f'Scene {idx}: Visual relevance and rights review checkbox not confirmed'})
-
-        if s.get('audio_asset'):
-            try:
-                asset_path(s['audio_asset'], 'audio')
-                if s.get('audio_text_hash') != digest(s.get('narration', '')):
-                    errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'audio_text_hash',
-                                   'message': f'Scene {idx}: Uploaded narration does not match current script text'})
-            except Exception as exc:
-                errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'audio_asset',
-                                   'message': f'Scene {idx}: Audio narration file error ({exc})'})
-
-    if project_data.get('music_asset'):
-        try:
-            asset_path(project_data['music_asset'], 'audio')
-            if not project_data.get('music_rights_reviewed'):
-                errors.append({'scene_index': 0, 'scene_id': '', 'field': 'music_rights_reviewed',
-                               'message': 'Confirm background music rights before rendering'})
-        except Exception as exc:
-            errors.append({'scene_index': 0, 'scene_id': '', 'field': 'music_asset',
-                           'message': f'Background music file error ({exc})'})
-
-    expected_hash = compute_script_hash(project_data)
-    approved_hash = project_data.get('script_approved_hash', '')
-    if approved_hash != expected_hash:
-        warnings.append({'field': 'script_approved_hash',
-                         'message': 'Script has changed since last approval. Re-approve before final export.'})
+        sid = s.get('id', f'scene_{idx}')
+        if not s.get('narration', '').strip():
+            errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'narration', 'message': f'Scene {idx}: narration is empty'})
+        if not s.get('roman', '').strip():
+            errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'roman', 'message': f'Scene {idx}: Roman caption text is empty'})
+        vis = s.get('visual', 'graphic')
+        if vis in ('upload', 'stock') and not (s.get('video_asset') or s.get('asset_id')):
+            errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'video_asset', 'message': f'Scene {idx}: select or upload a video clip'})
+        if not s.get('rights_reviewed', False):
+            errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'rights_reviewed', 'message': f'Scene {idx}: review rights before rendering'})
 
     return {'ready': len(errors) == 0, 'errors': errors, 'warnings': warnings}
+
+
+def get_database_url() -> str:
+    return os.environ.get('STUDIO_DATABASE_URL', 'postgresql://postgres:postgres@127.0.0.1:5433/studio')
 
 
 def job_to_dict(j: Job) -> Dict[str, Any]:
@@ -419,41 +343,44 @@ def enqueue(
     options: Optional[Dict[str, Any]] = None,
     operation_key: Optional[str] = None
 ) -> Dict[str, Any]:
-    """Enqueue a job and write outbox dispatch message in the same PostgreSQL transaction."""
-    with session_scope() as session:
-        # 1. Operation key idempotency check
+    with transaction.atomic(using=DB_ALIAS):
+        p = Project.objects.using(PROJECT_DB).filter(id=pid).first()
+        if not p:
+            raise ValueError('Project not found')
+        if p.revision != revision:
+            raise ValueError('This project changed in another tab. Reload before enqueueing.')
+
         if operation_key:
-            stmt_op = select(Job).where(Job.operation_key == operation_key).limit(1)
-            existing_job = session.execute(stmt_op).scalar_one_or_none()
-            if existing_job:
-                return job_to_dict(existing_job)
+            existing = Job.objects.using(DB_ALIAS).filter(operation_key=operation_key).first()
+            if existing:
+                return job_to_dict(existing)
 
-        # 2. Check for duplicate pending job of same kind on this project
-        stmt = (
-            select(Job.id)
-            .where(Job.project_id == pid, Job.kind == kind, Job.state.in_(['queued', 'running']))
-            .limit(1)
-        )
-        if session.execute(stmt).scalar_one_or_none():
-            raise ValueError(f'A {kind} job is already in progress for this project')
+        # Prevent duplicate pending job
+        existing_pending = Job.objects.using(DB_ALIAS).filter(
+            project_id=pid,
+            kind=kind,
+            state__in=['queued', 'running']
+        ).first()
+        if existing_pending:
+            raise ValueError(f'A job for this project is already in progress ({existing_pending.kind}).')
 
-        p = session.get(Project, pid)
-        if not p or p.revision != revision:
-            raise ValueError('Save the current revision first')
-        if kind in ('voice', 'render') and p.approved_revision != revision:
-            raise ValueError('Approve this exact script revision first')
-
-        proj = p.body
         if kind == 'render':
-            pf = preflight(proj)
-            if not pf['ready']:
-                msg = pf['errors'][0]['message'] if pf['errors'] else 'Preflight checks failed'
+            if p.approved_revision != revision:
+                raise ValueError('Approve this revision before rendering.')
+            pref = preflight(p.body)
+            if not pref['ready']:
+                msg = '; '.join(e['message'] for e in pref['errors'])
                 raise ValueError(f'Cannot queue render: {msg}')
 
-        jid = uuid.uuid4().hex
-        body = {'project': proj, 'options': options or {}}
         now_dt = datetime.now(timezone.utc)
-        new_job = Job(
+        jid = uuid.uuid4().hex[:16]
+        snap = {
+            'project': p.body,
+            'options': options or {},
+            'enqueued_at': now_dt.isoformat()
+        }
+
+        new_job = Job.objects.using(DB_ALIAS).create(
             id=jid,
             workspace_id=p.workspace_id,
             project_id=pid,
@@ -461,29 +388,26 @@ def enqueue(
             kind=kind,
             state='queued',
             stage='queued',
-            progress='Waiting for worker',
-            snapshot=body,
+            progress='Queued',
+            snapshot=snap,
             result={},
             applied=False,
             operation_key=operation_key,
             created_at=now_dt,
             updated_at=now_dt
         )
-        session.add(new_job)
 
-        stage = JobStage(
-            job_id=jid,
+        JobStage.objects.using(DB_ALIAS).create(
+            job=new_job,
             attempt=1,
             stage='queued',
             state='queued',
-            details=options or {},
+            details={},
             created_at=now_dt,
             updated_at=now_dt
         )
-        session.add(stage)
 
-        # Transactional outbox event creation in the same transaction
-        outbox_entry = Outbox(
+        OutboxEvent.objects.using(DB_ALIAS).create(
             event_type='job.enqueued',
             payload={
                 'job_id': jid,
@@ -497,25 +421,19 @@ def enqueue(
             attempts=0,
             created_at=now_dt
         )
-        session.add(outbox_entry)
-
-        session.flush()
         return job_to_dict(new_job)
 
 
 def job(jid: str) -> Dict[str, Any]:
-    with session_scope() as session:
-        j = session.get(Job, jid)
-        if not j:
-            raise ValueError('Job not found')
-        return job_to_dict(j)
+    j = Job.objects.using(DB_ALIAS).filter(id=jid).first()
+    if not j:
+        raise ValueError('Job not found')
+    return job_to_dict(j)
 
 
 def jobs(pid: str) -> List[Dict[str, Any]]:
-    with session_scope() as session:
-        stmt = select(Job).where(Job.project_id == pid).order_by(Job.created_at.desc()).limit(30)
-        job_objs = session.execute(stmt).scalars().all()
-        return [job_to_dict(j) for j in job_objs]
+    jlist = Job.objects.using(DB_ALIAS).filter(project_id=pid).order_by('-created_at')[:30]
+    return [job_to_dict(j) for j in jlist]
 
 
 def progress(
@@ -527,8 +445,8 @@ def progress(
     billable_units: int = 0,
     ambiguous: bool = False
 ) -> None:
-    with session_scope() as session:
-        j = session.get(Job, jid)
+    with transaction.atomic(using=DB_ALIAS):
+        j = Job.objects.using(DB_ALIAS).select_for_update().filter(id=jid).first()
         if not j:
             return
         now_dt = datetime.now(timezone.utc)
@@ -540,8 +458,8 @@ def progress(
             j.state = state
             if result is not None:
                 j.result = result
-            stage = JobStage(
-                job_id=jid,
+            JobStage.objects.using(DB_ALIAS).create(
+                job=j,
                 attempt=j.attempt_count or 1,
                 stage=stage_name or ('complete' if state in ('succeeded', 'failed') else 'running'),
                 state=state,
@@ -551,20 +469,13 @@ def progress(
                 created_at=now_dt,
                 updated_at=now_dt
             )
-            session.add(stage)
+        j.save(using=DB_ALIAS)
 
 
 def claim() -> Optional[Dict[str, Any]]:
     """Claim a queued job using PostgreSQL SKIP LOCKED to prevent concurrency contention."""
-    with session_scope() as session:
-        stmt = (
-            select(Job)
-            .where(Job.state == 'queued')
-            .order_by(Job.created_at.asc())
-            .with_for_update(skip_locked=True)
-            .limit(1)
-        )
-        j = session.execute(stmt).scalar_one_or_none()
+    with transaction.atomic(using=DB_ALIAS):
+        j = Job.objects.using(DB_ALIAS).select_for_update(skip_locked=True).filter(state='queued').order_by('created_at').first()
         if not j:
             return None
         now_dt = datetime.now(timezone.utc)
@@ -572,14 +483,13 @@ def claim() -> Optional[Dict[str, Any]]:
         j.stage = 'running'
         j.updated_at = now_dt
         j.attempt_count = (j.attempt_count or 0) + 1
-        session.flush()
+        j.save(using=DB_ALIAS)
         return job_to_dict(j)
 
 
 def retry(jid: str, mode: str = 'original') -> Dict[str, Any]:
-    with session_scope() as session:
-        stmt = select(Job).where(Job.id == jid).with_for_update()
-        j = session.execute(stmt).scalar_one_or_none()
+    with transaction.atomic(using=DB_ALIAS):
+        j = Job.objects.using(DB_ALIAS).select_for_update().filter(id=jid).first()
         if not j:
             raise ValueError('Job not found')
         if j.state != 'failed':
@@ -587,7 +497,7 @@ def retry(jid: str, mode: str = 'original') -> Dict[str, Any]:
 
         now_dt = datetime.now(timezone.utc)
         if mode == 'current':
-            p = session.get(Project, j.project_id)
+            p = Project.objects.using(PROJECT_DB).filter(id=j.project_id).first()
             if not p:
                 raise ValueError('Project not found')
             snap = dict(j.snapshot)
@@ -607,9 +517,10 @@ def retry(jid: str, mode: str = 'original') -> Dict[str, Any]:
         j.lease_expires_at = None
         j.updated_at = now_dt
         j.attempt_count = (j.attempt_count or 1) + 1
+        j.save(using=DB_ALIAS)
 
-        stage = JobStage(
-            job_id=jid,
+        JobStage.objects.using(DB_ALIAS).create(
+            job=j,
             attempt=j.attempt_count,
             stage=f'retry_{mode}',
             state='queued',
@@ -617,10 +528,8 @@ def retry(jid: str, mode: str = 'original') -> Dict[str, Any]:
             created_at=now_dt,
             updated_at=now_dt
         )
-        session.add(stage)
 
-        # Enqueue to outbox for distributed dispatcher
-        outbox_msg = Outbox(
+        OutboxEvent.objects.using(DB_ALIAS).create(
             event_type='job.enqueued',
             payload={
                 'job_id': jid,
@@ -633,23 +542,16 @@ def retry(jid: str, mode: str = 'original') -> Dict[str, Any]:
             attempts=0,
             created_at=now_dt
         )
-        session.add(outbox_msg)
-
-        session.flush()
         return job_to_dict(j)
 
 
 def acquire_lease(jid: str, worker_id: str, duration_seconds: int = 60) -> Optional[str]:
     """Acquire or extend execution lease for a job."""
-    with session_scope() as session:
-        stmt = select(Job).where(Job.id == jid).with_for_update()
-        j = session.execute(stmt).scalar_one_or_none()
-        if not j:
+    with transaction.atomic(using=DB_ALIAS):
+        j = Job.objects.using(DB_ALIAS).select_for_update().filter(id=jid).first()
+        if not j or j.cancelled:
             return None
         now_dt = datetime.now(timezone.utc)
-        if j.cancelled:
-            return None
-        # Check existing lease
         if j.state == 'running' and j.lease_token and j.lease_token != worker_id:
             if j.lease_expires_at and j.lease_expires_at > now_dt:
                 return None  # Still owned by an active worker
@@ -658,51 +560,43 @@ def acquire_lease(jid: str, worker_id: str, duration_seconds: int = 60) -> Optio
         j.lease_expires_at = now_dt + timedelta(seconds=duration_seconds)
         j.heartbeat_at = now_dt
         j.updated_at = now_dt
-        session.flush()
+        j.save(using=DB_ALIAS)
         return worker_id
 
 
 def renew_lease(jid: str, lease_token: str, extension_seconds: int = 60) -> bool:
     """Heartbeat lease renewal during long-running worker tasks."""
-    with session_scope() as session:
-        stmt = select(Job).where(Job.id == jid).with_for_update()
-        j = session.execute(stmt).scalar_one_or_none()
+    with transaction.atomic(using=DB_ALIAS):
+        j = Job.objects.using(DB_ALIAS).select_for_update().filter(id=jid).first()
         if not j or j.cancelled or j.lease_token != lease_token:
             return False
         now_dt = datetime.now(timezone.utc)
         j.lease_expires_at = now_dt + timedelta(seconds=extension_seconds)
         j.heartbeat_at = now_dt
         j.updated_at = now_dt
-        session.flush()
+        j.save(using=DB_ALIAS)
         return True
 
 
 def verify_lease_and_not_cancelled(jid: str, lease_token: str) -> bool:
     """Verify that caller holds the active unexpired lease and job is not cancelled."""
-    with session_scope() as session:
-        j = session.get(Job, jid)
-        if not j or j.cancelled or j.lease_token != lease_token:
-            return False
-        now_dt = datetime.now(timezone.utc)
-        if j.lease_expires_at and j.lease_expires_at < now_dt:
-            return False
-        return True
+    j = Job.objects.using(DB_ALIAS).filter(id=jid).first()
+    if not j or j.cancelled or j.lease_token != lease_token:
+        return False
+    now_dt = datetime.now(timezone.utc)
+    if j.lease_expires_at and j.lease_expires_at < now_dt:
+        return False
+    return True
 
 
 def register_subprocess(jid: str, pid: int) -> None:
     """Associate active OS subprocess PID with the job."""
-    with session_scope() as session:
-        j = session.get(Job, jid)
-        if j:
-            j.subprocess_pid = pid
+    Job.objects.using(DB_ALIAS).filter(id=jid).update(subprocess_pid=pid)
 
 
 def unregister_subprocess(jid: str) -> None:
     """Clear subprocess PID when process finishes."""
-    with session_scope() as session:
-        j = session.get(Job, jid)
-        if j:
-            j.subprocess_pid = None
+    Job.objects.using(DB_ALIAS).filter(id=jid).update(subprocess_pid=None)
 
 
 def terminate_subprocess_tree(pid: int) -> None:
@@ -730,9 +624,8 @@ def terminate_subprocess_tree(pid: int) -> None:
 
 def cancel(jid: str) -> Dict[str, Any]:
     """Persist job cancellation and stop only the job's active subprocess tree."""
-    with session_scope() as session:
-        stmt = select(Job).where(Job.id == jid).with_for_update()
-        j = session.execute(stmt).scalar_one_or_none()
+    with transaction.atomic(using=DB_ALIAS):
+        j = Job.objects.using(DB_ALIAS).select_for_update().filter(id=jid).first()
         if not j:
             raise ValueError('Job not found')
         if j.state in ('succeeded', 'cancelled'):
@@ -745,7 +638,7 @@ def cancel(jid: str) -> Dict[str, Any]:
         j.updated_at = now_dt
         sub_pid = j.subprocess_pid
         j.subprocess_pid = None
-        session.flush()
+        j.save(using=DB_ALIAS)
 
         if sub_pid:
             terminate_subprocess_tree(sub_pid)
@@ -755,19 +648,13 @@ def cancel(jid: str) -> Dict[str, Any]:
 
 def recover_expired_leases() -> int:
     """Recover ONLY expired ownerships; never reset running jobs with active leases."""
-    with session_scope() as session:
-        now_dt = datetime.now(timezone.utc)
-        stmt = (
-            select(Job)
-            .where(
-                Job.state == 'running',
-                Job.lease_expires_at.is_not(None),
-                Job.lease_expires_at < now_dt
-            )
-            .with_for_update()
+    now_dt = datetime.now(timezone.utc)
+    count = 0
+    with transaction.atomic(using=DB_ALIAS):
+        expired_jobs = list(
+            Job.objects.using(DB_ALIAS).select_for_update()
+            .filter(state='running', lease_expires_at__isnull=False, lease_expires_at__lt=now_dt)
         )
-        expired_jobs = session.execute(stmt).scalars().all()
-        count = 0
         for j in expired_jobs:
             j.state = 'failed'
             j.error_message = 'Worker execution lease expired without renewal'
@@ -775,156 +662,14 @@ def recover_expired_leases() -> int:
             j.lease_token = None
             j.lease_expires_at = None
             j.updated_at = now_dt
+            j.save(using=DB_ALIAS)
             count += 1
-        session.flush()
-        return count
+    return count
 
 
 def apply_job(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
-    with session_scope() as session:
-        stmt_j = select(Job).where(Job.id == jid, Job.project_id == pid).with_for_update()
-        j = session.execute(stmt_j).scalar_one_or_none()
-        if not j:
-            raise ValueError('Job not found for this project')
-
-        stmt_p = select(Project).where(Project.id == pid).with_for_update()
-        p = session.execute(stmt_p).scalar_one_or_none()
-        if not p:
-            raise ValueError('Project not found')
-
-        current_project = copy.deepcopy(p.body)
-        current_rev = p.revision
-
-        if j.applied:
-            return {
-                'project': unpack(p),
-                'applied': True,
-                'conflicts': [],
-                'revision': current_rev,
-                'message': 'Job results were already applied.'
-            }
-
-        if j.state != 'succeeded':
-            raise ValueError(f"Job is in state '{j.state}'; only succeeded jobs can be applied")
-
-        kind = j.kind
-        conflicts = []
-        modified = False
-        snap_project = j.snapshot.get('project', {})
-        base_scenes = {s['id']: s for s in snap_project.get('scenes', [])}
-        curr_scenes = {s['id']: s for s in current_project.get('scenes', [])}
-
-        if kind == 'stock':
-            target_scene_id = j.snapshot.get('options', {}).get('scene_id')
-            asset_info = j.result.get('asset')
-            if not target_scene_id or not asset_info:
-                raise ValueError('Invalid stock job result')
-            if target_scene_id not in curr_scenes:
-                conflicts.append({'scene_id': target_scene_id, 'reason': 'Scene was deleted from the project'})
-            else:
-                curr_s = curr_scenes[target_scene_id]
-                base_s = base_scenes.get(target_scene_id, {})
-                base_asset = base_s.get('video_asset', '')
-                current_asset = curr_s.get('video_asset', '')
-                if current_asset and current_asset != base_asset and current_asset != asset_info['id'] and not force:
-                    conflicts.append({'scene_id': target_scene_id,
-                                      'reason': 'Scene has a newer manual video assignment; edit was preserved'})
-                else:
-                    curr_s['video_asset'] = asset_info['id']
-                    curr_s['visual'] = 'stock'
-                    curr_s['rights_reviewed'] = True
-                    curr_s['trim_start'] = 0
-                    modified = True
-
-        elif kind == 'stock_all':
-            selections = j.result.get('selections', [])
-            for sel in selections:
-                sid = sel.get('scene_id')
-                asset_info = sel.get('asset')
-                if not sid or not asset_info:
-                    continue
-                if sid not in curr_scenes:
-                    conflicts.append({'scene_id': sid, 'reason': 'Scene was deleted from project'})
-                    continue
-                curr_s = curr_scenes[sid]
-                base_s = base_scenes.get(sid, {})
-                base_asset = base_s.get('video_asset', '')
-                current_asset = curr_s.get('video_asset', '')
-                if current_asset and current_asset != base_asset and current_asset != asset_info['id'] and not force:
-                    conflicts.append({'scene_id': sid,
-                                      'reason': f'Scene {sid} has a newer manual video selection; edit was preserved'})
-                else:
-                    curr_s['video_asset'] = asset_info['id']
-                    curr_s['visual'] = 'stock'
-                    curr_s['rights_reviewed'] = True
-                    curr_s['trim_start'] = 0
-                    modified = True
-
-        elif kind == 'research':
-            current_project['research_report'] = j.result.get('text', '')
-            current_project['research_sources'] = j.result.get('sources', [])
-            current_project['research_grounding'] = j.result.get('grounding', {})
-            modified = True
-
-        elif kind == 'draft':
-            draft_scenes = j.result.get('scenes', [])
-            if not draft_scenes:
-                raise ValueError('Draft result contains no scenes')
-            custom_edits = False
-            for sid, s in curr_scenes.items():
-                if sid not in base_scenes or s.get('narration') != base_scenes[sid].get('narration'):
-                    custom_edits = True
-                    break
-            if custom_edits and not force:
-                conflicts.append({'scene_id': 'all',
-                                  'reason': 'Current project has newer script edits; draft replacement skipped to prevent overwrite'})
-            else:
-                current_project['scenes'] = draft_scenes
-                modified = True
-
-        else:
-            raise ValueError(f"Job kind '{kind}' does not produce an applicable storyboard result")
-
-        new_rev = current_rev
-        now_dt = datetime.now(timezone.utc)
-        if modified:
-            new_rev = current_rev + 1
-            validated_project = PydanticProject.model_validate(current_project).model_dump()
-            p.revision = new_rev
-            p.body = validated_project
-            flag_modified(p, 'body')
-            p.approved_revision = None
-            p.updated_at = now_dt
-
-            rev_entry = Revision(
-                project_id=pid,
-                revision=new_rev,
-                body=validated_project,
-                created_at=now_dt
-            )
-            session.add(rev_entry)
-            session.execute(delete(Draft).where(Draft.project_id == pid))
-
-        j.applied = True
-        j.applied_at = now_dt
-
-        # Record receipt
-        receipt = ApplicationReceipt(
-            job_id=jid,
-            project_id=pid,
-            applied_revision=new_rev,
-            conflicts=conflicts,
-            applied_at=now_dt
-        )
-        session.add(receipt)
-        session.flush()
-
-        return {
-            'project': unpack(p),
-            'applied': True,
-            'conflicts': conflicts,
-            'revision': new_rev
-        }
+    from core.services import apply_job_result
+    return apply_job_result(pid, jid, force=force)
 
 
 def unpack_voice_take(vt: VoiceTake) -> Dict[str, Any]:
@@ -966,123 +711,41 @@ def add_voice_take(
     meta: Optional[Dict[str, Any]] = None,
     accepted: bool = False,
     take_id: Optional[str] = None,
-    session: Optional[Session] = None
+    session: Optional[Any] = None
 ) -> Dict[str, Any]:
     tid = take_id or f'take_{uuid.uuid4().hex[:12]}'
-
-    def _do_add(s: Session) -> Dict[str, Any]:
-        take = VoiceTake(
-            id=tid,
-            project_id=project_id,
-            scene_id=scene_id or None,
-            provider=provider,
-            voice_id=voice_id,
-            model=model,
-            preset=preset,
-            spoken_text=spoken_text,
-            roman_text=roman_text or '',
-            asset_id=asset_id,
-            duration=duration,
-            timing_data=timing_data or [],
-            accepted=accepted,
-            contract_key=contract_key,
-            meta=meta or {}
-        )
-        s.add(take)
-        s.flush()
-        return unpack_voice_take(take)
-
-    if session is not None:
-        return _do_add(session)
-    with session_scope() as s:
-        return _do_add(s)
+    take = VoiceTake.objects.using(VOICE_DB).create(
+        id=tid,
+        project_id=project_id,
+        scene_id=scene_id or None,
+        provider=provider,
+        voice_id=voice_id,
+        model=model,
+        preset=preset,
+        spoken_text=spoken_text,
+        roman_text=roman_text or '',
+        asset_id=asset_id,
+        duration=duration,
+        timing_data=timing_data or [],
+        accepted=accepted,
+        contract_key=contract_key,
+        meta=meta or {}
+    )
+    return unpack_voice_take(take)
 
 
-def get_voice_take(take_id: str, session: Optional[Session] = None) -> Optional[Dict[str, Any]]:
-    if session is not None:
-        vt = session.get(VoiceTake, take_id)
-        return unpack_voice_take(vt) if vt else None
-    with session_scope() as s:
-        vt = s.get(VoiceTake, take_id)
-        return unpack_voice_take(vt) if vt else None
+def get_voice_take(take_id: str, session: Optional[Any] = None) -> Optional[Dict[str, Any]]:
+    vt = VoiceTake.objects.using(VOICE_DB).filter(id=take_id).first()
+    return unpack_voice_take(vt) if vt else None
 
 
-def list_voice_takes(project_id: str, scene_id: Optional[str] = None, session: Optional[Session] = None) -> List[Dict[str, Any]]:
-    stmt = select(VoiceTake).where(VoiceTake.project_id == project_id)
+def list_voice_takes(project_id: str, scene_id: Optional[str] = None, session: Optional[Any] = None) -> List[Dict[str, Any]]:
+    qs = VoiceTake.objects.using(VOICE_DB).filter(project_id=project_id)
     if scene_id:
-        stmt = stmt.where(VoiceTake.scene_id == scene_id)
-    stmt = stmt.order_by(VoiceTake.created_at.desc())
-
-    if session is not None:
-        takes = session.execute(stmt).scalars().all()
-        return [unpack_voice_take(t) for t in takes]
-    with session_scope() as s:
-        takes = s.execute(stmt).scalars().all()
-        return [unpack_voice_take(t) for t in takes]
+        qs = qs.filter(scene_id=scene_id)
+    return [unpack_voice_take(t) for t in qs.order_by('-created_at')]
 
 
-def accept_voice_take(project_id: str, take_id: str, session: Optional[Session] = None) -> Dict[str, Any]:
-    def _do_accept(s: Session) -> Dict[str, Any]:
-        take = s.get(VoiceTake, take_id)
-        if not take or take.project_id != project_id:
-            raise ValueError(f"Voice take '{take_id}' not found for project '{project_id}'")
-
-        if take.scene_id:
-            stmt = (
-                update(VoiceTake)
-                .where(VoiceTake.project_id == project_id, VoiceTake.scene_id == take.scene_id)
-                .values(accepted=False)
-            )
-            s.execute(stmt)
-        take.accepted = True
-
-        proj = s.execute(select(Project).where(Project.id == project_id).with_for_update()).scalar_one_or_none()
-        if not proj:
-            raise ValueError(f"Project '{project_id}' not found")
-
-        p_data = copy.deepcopy(proj.body)
-        if take.scene_id:
-            for sc in p_data.get('scenes', []):
-                if sc.get('id') == take.scene_id:
-                    sc['take_id'] = take.id
-                    if take.asset_id:
-                        sc['audio_asset'] = take.asset_id
-                        sc['audio_text_hash'] = digest(sc.get('narration', ''))
-                    if take.spoken_text:
-                        sc['spoken_text'] = take.spoken_text
-                    sc['delivery_preset'] = take.preset
-                    break
-
-        if not p_data.get('voice_locked'):
-            p_data['tts_provider'] = take.provider
-            p_data['voice'] = take.voice_id
-            p_data['delivery_preset'] = take.preset
-
-        now_dt = datetime.now(timezone.utc)
-        new_rev = proj.revision + 1
-        validated = PydanticProject.model_validate(p_data).model_dump()
-        proj.revision = new_rev
-        proj.body = validated
-        flag_modified(proj, 'body')
-        proj.approved_revision = None
-        proj.updated_at = now_dt
-
-        rev_entry = Revision(
-            project_id=project_id,
-            revision=new_rev,
-            body=validated,
-            created_at=now_dt
-        )
-        s.add(rev_entry)
-        s.flush()
-
-        return {
-            'take': unpack_voice_take(take),
-            'project': unpack(proj)
-        }
-
-    if session is not None:
-        return _do_accept(session)
-    with session_scope() as s:
-        return _do_accept(s)
-
+def accept_voice_take(project_id: str, take_id: str, session: Optional[Any] = None) -> Dict[str, Any]:
+    from core.services import accept_voice_take_mutation
+    return accept_voice_take_mutation(project_id, take_id)

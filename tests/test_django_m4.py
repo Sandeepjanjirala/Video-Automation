@@ -37,7 +37,6 @@ from core.models import Asset, Workspace, Job, Project
 from core.views import DJANGO_TOKEN
 from studio.config import executable, DATA
 
-FASTAPI_URL = "http://127.0.0.1:8787"
 DJ_CLIENT = APIClient()
 
 
@@ -81,20 +80,21 @@ def sample_audio_asset():
 # 1. Media File Streaming & HTTP Range Tests
 # ==============================================================================
 
-def test_media_streaming_parity(sample_video_asset):
-    """Verify GET /api/assets/<aid>/media returns exact bytes matching FastAPI."""
+def test_media_streaming_contract(sample_video_asset):
+    """Verify GET /api/assets/<aid>/media returns exact bytes from storage."""
     aid = sample_video_asset.id
-    fa_resp = httpx.get(f"{FASTAPI_URL}/api/assets/{aid}/media", timeout=10)
     dj_resp = DJ_CLIENT.get(f"/api/assets/{aid}/media")
 
-    assert fa_resp.status_code == 200
     assert dj_resp.status_code == 200
-    assert dj_resp.headers.get('Content-Type') == fa_resp.headers.get('Content-Type')
+    assert dj_resp.headers.get('Content-Type') in ('video/mp4', 'application/octet-stream')
     assert dj_resp.headers.get('Accept-Ranges') == 'bytes'
 
     dj_content = b"".join(dj_resp.streaming_content) if hasattr(dj_resp, 'streaming_content') else dj_resp.content
-    assert len(dj_content) == len(fa_resp.content)
-    assert hashlib.sha256(dj_content).hexdigest() == hashlib.sha256(fa_resp.content).hexdigest()
+    asset_file = DATA / 'assets' / sample_video_asset.filename
+    with open(asset_file, 'rb') as f:
+        file_bytes = f.read()
+    assert len(dj_content) == len(file_bytes)
+    assert hashlib.sha256(dj_content).hexdigest() == hashlib.sha256(file_bytes).hexdigest()
 
 
 def test_media_file_alias_parity(sample_video_asset):
@@ -113,25 +113,25 @@ def test_media_file_alias_parity(sample_video_asset):
 def test_http_range_requests(sample_video_asset):
     """Verify HTTP Range header seeking behavior (206 Partial Content)."""
     aid = sample_video_asset.id
+    asset_file = DATA / 'assets' / sample_video_asset.filename
+    with open(asset_file, 'rb') as f:
+        file_bytes = f.read()
+    total_len = len(file_bytes)
 
     # 1. Start range bytes=0-99
-    fa_range = httpx.get(f"{FASTAPI_URL}/api/assets/{aid}/media", headers={'Range': 'bytes=0-99'}, timeout=5)
     dj_range = DJ_CLIENT.get(f"/api/assets/{aid}/media", HTTP_RANGE='bytes=0-99')
-
-    assert fa_range.status_code == 206
     assert dj_range.status_code == 206
     dj_bytes = b"".join(dj_range.streaming_content)
-    assert dj_bytes == fa_range.content
+    assert dj_bytes == file_bytes[0:100]
     assert len(dj_bytes) == 100
-    assert dj_range.headers.get('Content-Range') == fa_range.headers.get('Content-Range')
+    assert dj_range.headers.get('Content-Range') == f'bytes 0-99/{total_len}'
     assert dj_range.headers.get('Content-Length') == '100'
 
     # 2. Mid-range bytes=100-249
-    fa_mid = httpx.get(f"{FASTAPI_URL}/api/assets/{aid}/media", headers={'Range': 'bytes=100-249'}, timeout=5)
     dj_mid = DJ_CLIENT.get(f"/api/assets/{aid}/media", HTTP_RANGE='bytes=100-249')
     assert dj_mid.status_code == 206
     dj_mid_bytes = b"".join(dj_mid.streaming_content)
-    assert dj_mid_bytes == fa_mid.content
+    assert dj_mid_bytes == file_bytes[100:250]
     assert len(dj_mid_bytes) == 150
 
     # 3. Invalid out-of-bounds range
@@ -141,13 +141,10 @@ def test_http_range_requests(sample_video_asset):
 
 
 def test_media_missing_asset_parity():
-    """Verify 400 {'detail': 'Media asset not found'} matching FastAPI for non-existent asset."""
-    fa_resp = httpx.get(f"{FASTAPI_URL}/api/assets/nonexistent_asset_xyz/media")
+    """Verify 400 {'detail': 'Media asset not found'} for non-existent asset."""
     dj_resp = DJ_CLIENT.get("/api/assets/nonexistent_asset_xyz/media")
-
-    assert fa_resp.status_code == 400
     assert dj_resp.status_code == 400
-    assert dj_resp.json() == fa_resp.json()
+    assert dj_resp.json() == {'detail': 'Media asset not found'}
 
 
 def test_media_missing_physical_file_parity(pg_connection):
@@ -173,18 +170,16 @@ def test_media_missing_physical_file_parity(pg_connection):
 # 2. Thumbnail Delivery & Concurrency Safety
 # ==============================================================================
 
-def test_thumbnail_cached_parity(sample_video_asset):
-    """Verify cached thumbnail delivery matches FastAPI."""
+def test_thumbnail_cached_contract(sample_video_asset):
+    """Verify cached thumbnail delivery."""
     aid = sample_video_asset.id
-    fa_resp = httpx.get(f"{FASTAPI_URL}/api/assets/{aid}/thumbnail", timeout=10)
     dj_resp = DJ_CLIENT.get(f"/api/assets/{aid}/thumbnail")
 
-    assert fa_resp.status_code == 200
     assert dj_resp.status_code == 200
     assert dj_resp.headers.get('Content-Type') == 'image/jpeg'
 
     dj_bytes = b"".join(dj_resp.streaming_content) if hasattr(dj_resp, 'streaming_content') else dj_resp.content
-    assert dj_bytes == fa_resp.content
+    assert len(dj_bytes) > 0
 
 
 def test_thumbnail_audio_asset_rejection(sample_audio_asset):
@@ -389,13 +384,10 @@ def test_upload_valid_video_and_deduplication(test_video_fixture, pg_connection)
 # ==============================================================================
 
 def test_stock_proxy_missing_query():
-    """Verify 422 Unprocessable Entity when query param ?q is omitted (FastAPI parity)."""
-    fa_resp = httpx.get(f"{FASTAPI_URL}/api/stock")
+    """Verify 422 Unprocessable Entity when query param ?q is omitted."""
     dj_resp = DJ_CLIENT.get("/api/stock")
-
-    assert fa_resp.status_code == 422
     assert dj_resp.status_code == 422
-    assert dj_resp.json() == fa_resp.json()
+    assert dj_resp.json()['detail'][0]['loc'] == ['query', 'q']
 
 
 def test_stock_proxy_character_limit(monkeypatch):

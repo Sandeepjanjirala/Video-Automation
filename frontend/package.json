@@ -1,17 +1,15 @@
 {
+  "name": "telugu-reel-studio-test-tooling",
+  "private": true,
+  "description": "Headless browser testing harnesses for Django Templates + jQuery UI",
   "dependencies": {
     "@testing-library/dom": "10.4.2",
-    "esbuild": "0.28.2",
     "jquery": "^3.7.1",
-    "jsdom": "30.1.2",
-    "react": "19.3.0",
-    "react-dom": "19.3.0",
-    "typescript": "7.0.2"
+    "jsdom": "30.1.2"
   },
-  "name": "telugu-reel-studio-ui",
-  "private": true,
   "scripts": {
-    "build": "node -e \"require('esbuild').buildSync({entryPoints: ['app.tsx'], bundle: true, minify: true, format: 'esm', outfile: '../studio/static/app.js'})\"",
-    "test:ui": "node ../tests/ui_smoke.cjs"
+    "test:smoke": "node ../tests/jquery_ui_smoke.cjs",
+    "test:workflow_a": "node ../tests/m8_e2e_workflow_a.cjs",
+    "test:workflow_b": "node ../tests/m8_e2e_workflow_b.cjs"
   }
 }

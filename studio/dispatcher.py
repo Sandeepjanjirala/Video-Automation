@@ -1,4 +1,4 @@
-"""Outbox dispatcher for Telugu Reel Studio (Phase 3).
+"""Outbox dispatcher for Telugu Reel Studio (Phase 3/M9).
 Reliably bridges PostgreSQL transactional outbox to Celery/Redis.
 Ensures broker outages or crashes never lose accepted jobs.
 """
@@ -11,15 +11,23 @@ import sys
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Optional
-from sqlalchemy import select, or_, and_
+
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+import django
+django.setup()
+
+from django.conf import settings
+from django.db import transaction
+from django.db.models import Q
+from core.models import OutboxEvent, Job
 from .celery_app import app
-from .db.session import session_scope, check_connection
-from .db.models import Outbox, Job
 from . import store
 from .tasks import (
     task_research, task_draft, task_stock, task_stock_all,
     task_voice_pipeline, task_render_pipeline
 )
+
+DB_ALIAS = 'job_writer' if 'job_writer' in settings.DATABASES else 'default'
 
 logging.basicConfig(
     level=logging.INFO,
@@ -74,18 +82,13 @@ def dispatch_pending_outbox(batch_size: int = 25) -> int:
     now_dt = datetime.now(timezone.utc)
     dispatched_count = 0
 
-    with session_scope() as session:
-        stmt = (
-            select(Outbox)
-            .where(
-                Outbox.processed == False,
-                or_(Outbox.locked_until.is_(None), Outbox.locked_until <= now_dt)
-            )
-            .order_by(Outbox.created_at.asc())
-            .limit(batch_size)
-            .with_for_update(skip_locked=True)
+    with transaction.atomic(using=DB_ALIAS):
+        records = list(
+            OutboxEvent.objects.using(DB_ALIAS).select_for_update(skip_locked=True)
+            .filter(processed=False)
+            .filter(Q(locked_until__isnull=True) | Q(locked_until__lte=now_dt))
+            .order_by('created_at')[:batch_size]
         )
-        records = session.execute(stmt).scalars().all()
 
         for record in records:
             try:
@@ -94,6 +97,7 @@ def dispatch_pending_outbox(batch_size: int = 25) -> int:
                 record.error = None
                 record.last_attempt_at = now_dt
                 record.locked_until = None
+                record.save(using=DB_ALIAS, update_fields=['processed', 'error', 'last_attempt_at', 'locked_until'])
                 dispatched_count += 1
                 logger.info(f"Dispatched outbox event {record.id} ({record.event_type} for job {record.payload.get('job_id')})")
             except Exception as exc:
@@ -103,12 +107,11 @@ def dispatch_pending_outbox(batch_size: int = 25) -> int:
                 # Exponential backoff with jitter (capped at 60 seconds)
                 backoff = min(60.0, (2.0 ** min(record.attempts, 6)) + random.uniform(0.1, 1.5))
                 record.locked_until = now_dt + timedelta(seconds=backoff)
+                record.save(using=DB_ALIAS, update_fields=['attempts', 'error', 'last_attempt_at', 'locked_until'])
                 logger.warning(
                     f"Broker dispatch failed for outbox {record.id} (attempt {record.attempts}): {exc}. "
                     f"Retrying in {backoff:.1f}s."
                 )
-
-        session.flush()
 
     return dispatched_count
 
@@ -125,31 +128,24 @@ def reconcile_orphaned_jobs() -> int:
     now_dt = datetime.now(timezone.utc)
     threshold = now_dt - timedelta(seconds=15)
 
-    with session_scope() as session:
+    with transaction.atomic(using=DB_ALIAS):
         # Queued jobs created at least 15 seconds ago
-        stmt = (
-            select(Job)
-            .where(Job.state == 'queued', Job.created_at <= threshold)
-            .order_by(Job.created_at.asc())
-            .limit(10)
+        queued_jobs = list(
+            Job.objects.using(DB_ALIAS).filter(state='queued', created_at__lte=threshold)
+            .order_by('created_at')[:10]
         )
-        queued_jobs = session.execute(stmt).scalars().all()
 
         for j in queued_jobs:
             # Check if there is already an unprocessed outbox message
-            outbox_exists = session.execute(
-                select(Outbox.id)
-                .where(
-                    Outbox.event_type == 'job.enqueued',
-                    Outbox.processed == False,
-                    Outbox.payload['job_id'].as_string() == j.id
-                )
-                .limit(1)
-            ).scalar_one_or_none()
+            outbox_exists = OutboxEvent.objects.using(DB_ALIAS).filter(
+                event_type='job.enqueued',
+                processed=False,
+                payload__job_id=j.id
+            ).exists()
 
             if not outbox_exists:
                 # Create reconciliation outbox message
-                session.add(Outbox(
+                OutboxEvent.objects.using(DB_ALIAS).create(
                     event_type='job.enqueued',
                     payload={
                         'job_id': j.id,
@@ -163,11 +159,9 @@ def reconcile_orphaned_jobs() -> int:
                     processed=False,
                     attempts=0,
                     created_at=now_dt
-                ))
+                )
                 reconciled += 1
                 logger.info(f"Reconciled missing outbox event for queued job {j.id}")
-
-        session.flush()
 
     return reconciled
 

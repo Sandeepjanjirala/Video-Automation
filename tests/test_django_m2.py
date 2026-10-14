@@ -56,13 +56,13 @@ def pg_connection():
 # ==============================================================================
 
 def test_models_are_unmanaged():
-    """All M2 models must have managed = False to protect Alembic authority."""
+    """All application models have managed = True under Django schema ownership (Stage M9)."""
     models = [
         Workspace, Project, Revision, Asset, Job, JobStage,
         Draft, ApplicationReceipt, OutboxEvent, VoiceTake
     ]
     for m in models:
-        assert not m._meta.managed, f"Model {m.__name__} must be unmanaged (managed=False)!"
+        assert m._meta.managed, f"Model {m.__name__} must be managed (managed=True)!"
 
 
 def test_primary_key_mappings():
@@ -336,7 +336,7 @@ def test_diagnostic_schema_status_endpoint():
 # ==============================================================================
 
 def test_database_state_and_alembic_invariance(pg_connection):
-    """Verify that Alembic revision is untouched and zero Django internal tables exist."""
+    """Verify that Alembic revision is preserved and Django migrations table owns the schema."""
     cur = pg_connection.cursor()
     cur.execute("SELECT version_num FROM alembic_version")
     rev = cur.fetchone()[0]
@@ -347,6 +347,6 @@ def test_database_state_and_alembic_invariance(pg_connection):
         FROM information_schema.tables 
         WHERE table_schema = 'public' AND table_name LIKE 'django_%';
     """)
-    django_tables = cur.fetchall()
-    assert len(django_tables) == 0, f"Unexpected Django tables created: {django_tables}"
+    django_tables = [r[0] for r in cur.fetchall()]
+    assert 'django_migrations' in django_tables, f"django_migrations must exist: {django_tables}"
 

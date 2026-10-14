@@ -253,9 +253,9 @@ const { waitFor } = require('../frontend/node_modules/@testing-library/dom');
   console.log('[M8 Workflow B] Assigning real stock footage (Pixabay) to Scene 1...');
   const assets = await w.StudioApi.request('/assets');
   // Find a verified stock video asset from Pixabay
-  const stockAsset = assets.find(a => a.kind === 'video' && a.filename && a.filename.includes('b56989af')) ||
-                     assets.find(a => a.kind === 'video' && a.id !== '40f00a6114b640fb9b9978d353eb5aa8');
-  if (!stockAsset) throw new Error('No stock video assets available in system');
+  const stockAsset = assets.find(a => a.kind === 'video' && a.provider === 'pixabay' && a.filename && fs.existsSync(path.join(process.cwd(), 'data', 'assets', a.filename))) ||
+                     assets.find(a => a.kind === 'video' && a.filename && fs.existsSync(path.join(process.cwd(), 'data', 'assets', a.filename)));
+  if (!stockAsset) throw new Error('No stock video assets available in system with file on disk');
   console.log(`[M8 Workflow B] Using stock video asset: ${stockAsset.id} (${stockAsset.filename || stockAsset.id})`);
 
   // Assign via StudioMedia
@@ -268,7 +268,7 @@ const { waitFor } = require('../frontend/node_modules/@testing-library/dom');
   console.log('[M8 Workflow B] ✓ Stock video asset assigned to scene');
 
   // Assign background music (matching Pydantic hex pattern ^[a-f0-9]{0,32}$)
-  const musicAsset = assets.find(a => a.kind === 'audio' && /^[a-f0-9]{1,32}$/.test(a.id));
+  const musicAsset = assets.find(a => a.kind === 'audio' && /^[a-f0-9]{1,32}$/.test(a.id) && a.filename && fs.existsSync(path.join(process.cwd(), 'data', 'assets', a.filename)) && fs.statSync(path.join(process.cwd(), 'data', 'assets', a.filename)).size > 1000);
   if (musicAsset) {
     console.log(`[M8 Workflow B] Attaching background music track: ${musicAsset.id}`);
     w.StudioState.current.project.music_asset = musicAsset.id;

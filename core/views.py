@@ -57,7 +57,7 @@ DJANGO_TOKEN = secrets.token_urlsafe(32)
 # Thread lock for safe atomic settings writes
 SETTINGS_LOCK = threading.Lock()
 
-# Static root directory for serving React frontend
+# Static root directory for studio static files
 STATIC_DIR = Path(settings.BASE_DIR) / 'studio' / 'static'
 
 
@@ -1210,19 +1210,11 @@ class ProjectTakeAcceptView(APIView):
 
 
 # ==============================================================================
-# 9. Frontend Serving (Stage M7)
+# 9. Frontend Serving (Django Templates + jQuery)
 # ==============================================================================
 
-def serve_ui(request):
-    """Serve the React application index.html entrypoint."""
-    index_path = STATIC_DIR / 'index.html'
-    if not index_path.exists():
-        return HttpResponse('Frontend build not found', status=404)
-    return FileResponse(open(index_path, 'rb'), content_type='text/html')
-
-
 def serve_m8_ui(request):
-    """Serve the Django Templates + jQuery frontend (Stage M8)."""
+    """Serve the Django Templates + jQuery frontend (Stage M8/M9)."""
     return render(request, 'studio/index.html')
 
 

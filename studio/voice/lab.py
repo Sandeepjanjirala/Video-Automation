@@ -11,8 +11,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from ..config import DATA, settings
-from ..db.session import session_scope
-from ..db.models import Asset, Project, VoiceTake
+from django.db import transaction
+from django.conf import settings as django_settings
+from core.models import Asset, Project, VoiceTake
+
+VOICE_DB = 'voice_writer' if 'voice_writer' in django_settings.DATABASES else 'default'
+MEDIA_DB = 'media_writer' if 'media_writer' in django_settings.DATABASES else 'default'
 from .cache import compute_synthesis_contract_key, get_cached_synthesis, store_cached_synthesis
 from .edge_adapter import EdgeTTSAdapter
 from .sarvam_adapter import SarvamTTSAdapter
@@ -100,8 +104,8 @@ def generate_voice_take(
     shutil.copy2(audio_file, dest_path)
 
     # Register in PostgreSQL Asset table and VoiceTake table
-    with session_scope() as session:
-        a = Asset(
+    with transaction.atomic(using=VOICE_DB):
+        Asset.objects.using(MEDIA_DB).create(
             id=asset_id,
             workspace_id="default",
             filename=asset_filename,
@@ -121,12 +125,11 @@ def generate_voice_take(
                 "boundaries": boundaries
             }
         )
-        session.add(a)
 
         # Persist VoiceTake if project exists
-        proj = session.get(Project, project_id) if project_id else None
+        proj = Project.objects.using(VOICE_DB).filter(id=project_id).first() if project_id else None
         if proj:
-            vt = VoiceTake(
+            VoiceTake.objects.using(VOICE_DB).create(
                 id=take_id,
                 project_id=project_id,
                 scene_id=scene_id or None,
@@ -150,7 +153,6 @@ def generate_voice_take(
                     "overrides_applied": norm.overrides_applied
                 }
             )
-            session.add(vt)
 
     return {
         "take_id": take_id,

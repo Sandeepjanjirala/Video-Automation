@@ -6,6 +6,7 @@ Safe coexistence settings:
 - Local loopback binding only (127.0.0.1, localhost).
 """
 import os
+import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -41,23 +42,30 @@ ROOT_URLCONF = 'config.urls'
 WSGI_APPLICATION = 'config.wsgi.application'
 ASGI_APPLICATION = 'config.asgi.application'
 
-# Database Configuration (Connects to existing PostgreSQL instance)
-# Prefer read-only connection if configured or locally available for M2 safety
-db_url = os.environ.get('STUDIO_READONLY_DATABASE_URL')
-if not db_url:
-    readonly_file = BASE_DIR / 'backups' / '.readonly_db_url'
-    if readonly_file.exists():
-        try:
-            db_url = readonly_file.read_text(encoding='utf-8').strip()
-        except Exception:
-            pass
-if not db_url:
-    db_url = os.environ.get(
-        'STUDIO_DATABASE_URL',
-        'postgresql://postgres:postgres@127.0.0.1:5433/studio'
-    )
+# Database Configuration (Connects to PostgreSQL instance)
+# Section 20: Dedicated migration/admin DB credential for manage.py migrate; least-privilege for runtime.
+admin_db_url = os.environ.get(
+    'STUDIO_MIGRATION_DATABASE_URL',
+    os.environ.get('STUDIO_DATABASE_URL', 'postgresql://postgres:postgres@127.0.0.1:5433/studio')
+)
 
-# Handle sqlalchemy-style postgresql+psycopg2:// if passed
+is_migration_command = len(sys.argv) > 1 and sys.argv[1] in ('migrate', 'makemigrations', 'showmigrations', 'sqlmigrate', 'inspectdb')
+
+if is_migration_command or 'STUDIO_DATABASE_URL' in os.environ or 'STUDIO_MIGRATION_DATABASE_URL' in os.environ:
+    db_url = admin_db_url
+else:
+    db_url = os.environ.get('STUDIO_READONLY_DATABASE_URL')
+    if not db_url:
+        readonly_file = BASE_DIR / 'backups' / '.readonly_db_url'
+        if readonly_file.exists():
+            try:
+                db_url = readonly_file.read_text(encoding='utf-8').strip()
+            except Exception:
+                pass
+    if not db_url:
+        db_url = admin_db_url
+
+# Normalize postgresql+psycopg2:// if passed
 if db_url.startswith('postgresql+psycopg2://'):
     db_url = db_url.replace('postgresql+psycopg2://', 'postgresql://', 1)
 
@@ -180,6 +188,20 @@ DATABASES = {
         'HOST': parsed_voice_writer.hostname or '127.0.0.1',
         'PORT': str(parsed_voice_writer.port or 5433),
         'CONN_MAX_AGE': 0,
+    },
+    'admin': {
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': urlparse(admin_db_url).path.lstrip('/') or 'studio',
+        'USER': urlparse(admin_db_url).username or 'postgres',
+        'PASSWORD': urlparse(admin_db_url).password or 'postgres',
+        'HOST': urlparse(admin_db_url).hostname or '127.0.0.1',
+        'PORT': str(urlparse(admin_db_url).port or 5433),
+        'CONN_MAX_AGE': 0,
+        'CONN_HEALTH_CHECKS': False,
+        'OPTIONS': {},
+        'TIME_ZONE': None,
+        'AUTOCOMMIT': True,
+        'ATOMIC_REQUESTS': False,
     },
 }
 

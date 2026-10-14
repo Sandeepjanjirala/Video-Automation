@@ -1,14 +1,20 @@
-"""Distributed rate limiting and provider budget controls for Telugu Reel Studio (Phase 3)."""
+"""Distributed rate limiting and provider budget controls for Telugu Reel Studio (Phase 3/M9)."""
 import os
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 import redis
-from sqlalchemy import select, update
-from sqlalchemy.dialects.postgresql import insert as pg_insert
+from django.db import connection, connections
+from django.conf import settings as django_settings
 from .config import settings
-from .db.session import session_scope
-from .db.models import Usage
+
+def _get_db_conn():
+    if 'admin' in django_settings.DATABASES:
+        return connections['admin']
+    elif 'job_writer' in django_settings.DATABASES:
+        return connections['job_writer']
+    return connection
+
 
 DEFAULT_REDIS_CACHE_URL = 'redis://127.0.0.1:6379/2'
 
@@ -86,58 +92,53 @@ def record_usage(
     day = datetime.now(timezone.utc).strftime('%Y-%m-%d')
     now_dt = datetime.now(timezone.utc)
 
-    with session_scope() as session:
-        stmt = (
-            pg_insert(Usage)
-            .values(
-                day=day,
-                provider=provider,
-                calls=1,
-                estimated_billable_units=estimated_units,
-                actual_billable_units=actual_units,
-                uncertain_calls=1 if uncertain else 0,
-                last_call_at=now_dt
-            )
-            .on_conflict_do_update(
-                index_elements=['day', 'provider'],
-                set_={
-                    'calls': Usage.calls + 1,
-                    'estimated_billable_units': Usage.estimated_billable_units + estimated_units,
-                    'actual_billable_units': Usage.actual_billable_units + actual_units,
-                    'uncertain_calls': Usage.uncertain_calls + (1 if uncertain else 0),
-                    'last_call_at': now_dt
-                }
-            )
-        )
-        session.execute(stmt)
-        session.flush()
-
-        usage_row = session.get(Usage, (day, provider))
+    query = """
+    INSERT INTO usage (day, provider, calls, estimated_billable_units, actual_billable_units, uncertain_calls, last_call_at)
+    VALUES (%s, %s, 1, %s, %s, %s, %s)
+    ON CONFLICT (day, provider) DO UPDATE SET
+        calls = usage.calls + 1,
+        estimated_billable_units = usage.estimated_billable_units + EXCLUDED.estimated_billable_units,
+        actual_billable_units = usage.actual_billable_units + EXCLUDED.actual_billable_units,
+        uncertain_calls = usage.uncertain_calls + EXCLUDED.uncertain_calls,
+        last_call_at = EXCLUDED.last_call_at
+    RETURNING day, provider, calls, estimated_billable_units, actual_billable_units, uncertain_calls, last_call_at;
+    """
+    with _get_db_conn().cursor() as cursor:
+        cursor.execute(query, (day, provider, estimated_units, actual_units, 1 if uncertain else 0, now_dt))
+        row = cursor.fetchone()
         return {
-            'day': usage_row.day,
-            'provider': usage_row.provider,
-            'calls': usage_row.calls,
-            'estimated_billable_units': usage_row.estimated_billable_units,
-            'actual_billable_units': usage_row.actual_billable_units,
-            'uncertain_calls': usage_row.uncertain_calls,
-            'last_call_at': usage_row.last_call_at.isoformat() if usage_row.last_call_at else None
+            'day': row[0],
+            'provider': row[1],
+            'calls': row[2],
+            'estimated_billable_units': row[3],
+            'actual_billable_units': row[4],
+            'uncertain_calls': row[5],
+            'last_call_at': row[6].isoformat() if row[6] else None
         }
 
 
-def get_usage_summary(provider: Optional[str] = None) -> list:
+def get_usage_summary(provider: Optional[str] = None) -> List[Dict[str, Any]]:
     """Retrieve usage stats across providers for today."""
     day = datetime.now(timezone.utc).strftime('%Y-%m-%d')
-    with session_scope() as session:
-        stmt = select(Usage).where(Usage.day == day)
-        if provider:
-            stmt = stmt.where(Usage.provider == provider)
-        rows = session.execute(stmt).scalars().all()
+    query = """
+    SELECT day, provider, calls, estimated_billable_units, actual_billable_units, uncertain_calls, last_call_at
+    FROM usage
+    WHERE day = %s
+    """
+    params: List[Any] = [day]
+    if provider:
+        query += " AND provider = %s"
+        params.append(provider)
+
+    with _get_db_conn().cursor() as cursor:
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
         return [{
-            'day': r.day,
-            'provider': r.provider,
-            'calls': r.calls,
-            'estimated_billable_units': r.estimated_billable_units,
-            'actual_billable_units': r.actual_billable_units,
-            'uncertain_calls': r.uncertain_calls,
-            'last_call_at': r.last_call_at.isoformat() if r.last_call_at else None
+            'day': r[0],
+            'provider': r[1],
+            'calls': r[2],
+            'estimated_billable_units': r[3],
+            'actual_billable_units': r[4],
+            'uncertain_calls': r[5],
+            'last_call_at': r[6].isoformat() if r[6] else None
         } for r in rows]

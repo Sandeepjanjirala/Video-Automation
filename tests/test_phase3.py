@@ -18,47 +18,71 @@ import time
 import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+import psycopg2
 import pytest
-from sqlalchemy import select, text
+from django.conf import settings
+from django.db import connections
+from core.models import Job, OutboxEvent, Project, Revision, Asset, Draft, Workspace
+from studio.store import DB_ALIAS
 
 
 @pytest.fixture()
 def phase3_env(tmp_path, monkeypatch):
     monkeypatch.setenv('REEL_DATA_DIR', str(tmp_path / 'data'))
-    test_db_url = os.environ.get('STUDIO_TEST_DATABASE_URL') or 'postgresql+psycopg2://postgres:postgres@127.0.0.1:5433/studio_test'
+    test_db_url = os.environ.get('STUDIO_TEST_DATABASE_URL') or 'postgresql://postgres:postgres@127.0.0.1:5433/studio_test'
     monkeypatch.setenv('STUDIO_DATABASE_URL', test_db_url)
     monkeypatch.setenv('CELERY_BROKER_URL', 'redis://127.0.0.1:6379/0')
     monkeypatch.setenv('CELERY_RESULT_BACKEND', 'redis://127.0.0.1:6379/1')
     monkeypatch.setenv('STUDIO_CACHE_REDIS_URL', 'redis://127.0.0.1:6379/2')
 
-    import studio.config, studio.store, studio.media, studio.providers, studio.api, studio.db
+    import studio.config, studio.store, studio.media, studio.providers
     import studio.celery_app, studio.tasks, studio.dispatcher, studio.ratelimit
-    from studio.db.session import get_engine
 
     for mod in (
-        studio.config, studio.db.session, studio.store, studio.media, studio.providers,
-        studio.api, studio.celery_app, studio.tasks, studio.dispatcher, studio.ratelimit
+        studio.config, studio.store, studio.media, studio.providers,
+        studio.celery_app, studio.tasks, studio.dispatcher, studio.ratelimit
     ):
         importlib.reload(mod)
 
-    eng = get_engine(test_db_url)
-    with eng.begin() as conn:
-        conn.execute(text(
-            'TRUNCATE TABLE application_receipts, outbox, job_stages, drafts, jobs, revisions, projects, assets, usage CASCADE;'
-        ))
-        conn.execute(text("INSERT INTO workspaces (id, name) VALUES ('default', 'Local Workspace') ON CONFLICT (id) DO NOTHING;"))
+    orig_names = {k: v['NAME'] for k, v in settings.DATABASES.items()}
+    orig_users = {k: v.get('USER') for k, v in settings.DATABASES.items()}
+    orig_passes = {k: v.get('PASSWORD') for k, v in settings.DATABASES.items()}
+    for alias in list(settings.DATABASES.keys()):
+        settings.DATABASES[alias]['NAME'] = 'studio_test'
+        settings.DATABASES[alias]['USER'] = 'postgres'
+        settings.DATABASES[alias]['PASSWORD'] = 'postgres'
+    connections._settings = connections.configure_settings(settings.DATABASES)
+    connections.close_all()
+
+    clean_url = test_db_url.replace('+psycopg2', '')
+    conn = psycopg2.connect(clean_url)
+    with conn.cursor() as cur:
+        cur.execute(
+            'TRUNCATE TABLE application_receipts, outbox, job_stages, drafts, jobs, revisions, projects, assets, voice_takes, usage CASCADE;'
+        )
+        cur.execute("INSERT INTO workspaces (id, name) VALUES ('default', 'Local Workspace') ON CONFLICT (id) DO NOTHING;")
+    conn.commit()
+    conn.close()
 
     studio.store.init()
-    return {
-        'store': studio.store,
-        'media': studio.media,
-        'providers': studio.providers,
-        'tasks': studio.tasks,
-        'dispatcher': studio.dispatcher,
-        'ratelimit': studio.ratelimit,
-        'db_url': test_db_url,
-        'tmp_path': tmp_path
-    }
+    try:
+        yield {
+            'store': studio.store,
+            'media': studio.media,
+            'providers': studio.providers,
+            'tasks': studio.tasks,
+            'dispatcher': studio.dispatcher,
+            'ratelimit': studio.ratelimit,
+            'db_url': test_db_url,
+            'tmp_path': tmp_path
+        }
+    finally:
+        for alias, name in orig_names.items():
+            settings.DATABASES[alias]['NAME'] = name
+            settings.DATABASES[alias]['USER'] = orig_users[alias]
+            settings.DATABASES[alias]['PASSWORD'] = orig_passes[alias]
+        connections._settings = connections.configure_settings(settings.DATABASES)
+        connections.close_all()
 
 
 def make_test_project():
@@ -91,18 +115,14 @@ def test_phase3_redis_outage_during_enqueue(phase3_env, monkeypatch):
     assert job['id'] is not None
 
     # Verify both Job and Outbox exist in PostgreSQL
-    with store.session_scope() as session:
-        from studio.db.models import Job, Outbox
-        db_job = session.get(Job, job['id'])
-        assert db_job is not None
-        assert db_job.state == 'queued'
+    db_job = Job.objects.using(DB_ALIAS).get(id=job['id'])
+    assert db_job is not None
+    assert db_job.state == 'queued'
 
-        outbox_entry = session.execute(
-            select(Outbox).where(Outbox.payload['job_id'].as_string() == job['id'])
-        ).scalar_one_or_none()
-        assert outbox_entry is not None
-        assert not outbox_entry.processed
-        assert outbox_entry.attempts == 0
+    outbox_entry = OutboxEvent.objects.using(DB_ALIAS).filter(payload__job_id=job['id']).first()
+    assert outbox_entry is not None
+    assert not outbox_entry.processed
+    assert outbox_entry.attempts == 0
 
     # Simulate broker outage during dispatch
     def mock_broken_apply_async(*args, **kwargs):
@@ -114,15 +134,11 @@ def test_phase3_redis_outage_during_enqueue(phase3_env, monkeypatch):
     dispatched = dispatcher.dispatch_pending_outbox()
     assert dispatched == 0
 
-    with store.session_scope() as session:
-        from studio.db.models import Outbox
-        outbox_entry = session.execute(
-            select(Outbox).where(Outbox.payload['job_id'].as_string() == job['id'])
-        ).scalar_one()
-        assert not outbox_entry.processed
-        assert outbox_entry.attempts == 1
-        assert "Redis broker is offline" in outbox_entry.error
-        assert outbox_entry.locked_until is not None
+    outbox_entry = OutboxEvent.objects.using(DB_ALIAS).get(payload__job_id=job['id'])
+    assert not outbox_entry.processed
+    assert outbox_entry.attempts == 1
+    assert "Redis broker is offline" in outbox_entry.error
+    assert outbox_entry.locked_until is not None
 
     # Now simulate broker recovery
     dispatched_events = []
@@ -132,25 +148,18 @@ def test_phase3_redis_outage_during_enqueue(phase3_env, monkeypatch):
     monkeypatch.setattr('studio.tasks.task_render_pipeline.apply_async', mock_successful_apply_async)
 
     # Unlock the record for immediate retry
-    with store.session_scope() as session:
-        from studio.db.models import Outbox
-        outbox_entry = session.execute(
-            select(Outbox).where(Outbox.payload['job_id'].as_string() == job['id'])
-        ).scalar_one()
-        outbox_entry.locked_until = None
+    outbox_entry = OutboxEvent.objects.using(DB_ALIAS).get(payload__job_id=job['id'])
+    outbox_entry.locked_until = None
+    outbox_entry.save(using=DB_ALIAS, update_fields=['locked_until'])
 
     # Dispatcher runs again and succeeds
     dispatched_count = dispatcher.dispatch_pending_outbox()
     assert dispatched_count == 1
     assert len(dispatched_events) == 1
 
-    with store.session_scope() as session:
-        from studio.db.models import Outbox
-        outbox_entry = session.execute(
-            select(Outbox).where(Outbox.payload['job_id'].as_string() == job['id'])
-        ).scalar_one()
-        assert outbox_entry.processed
-        assert outbox_entry.error is None
+    outbox_entry = OutboxEvent.objects.using(DB_ALIAS).get(payload__job_id=job['id'])
+    assert outbox_entry.processed
+    assert outbox_entry.error is None
 
 
 def test_phase3_operation_key_and_duplicate_delivery(phase3_env):
@@ -192,10 +201,9 @@ def test_phase3_worker_death_and_artifact_publication(phase3_env):
     store.acquire_lease(j['id'], 'worker_crashed', duration_seconds=1)
 
     # Simulate worker 1 dying and its lease expiring
-    with store.session_scope() as session:
-        from studio.db.models import Job
-        db_job = session.get(Job, j['id'])
-        db_job.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+    db_job = Job.objects.using(DB_ALIAS).get(id=j['id'])
+    db_job.lease_expires_at = datetime.now(timezone.utc) - timedelta(seconds=10)
+    db_job.save(using=DB_ALIAS, update_fields=['lease_expires_at'])
 
     # Expired lease recovery routine runs
     recovered = store.recover_expired_leases()
@@ -239,10 +247,9 @@ def test_phase3_stale_completion_fencing(phase3_env):
     assert token_1 == 'token_worker_1'
 
     # Worker 2 takes over ownership (e.g. after failover)
-    with store.session_scope() as session:
-        from studio.db.models import Job
-        db_job = session.get(Job, j['id'])
-        db_job.lease_token = 'token_worker_2'
+    db_job = Job.objects.using(DB_ALIAS).get(id=j['id'])
+    db_job.lease_token = 'token_worker_2'
+    db_job.save(using=DB_ALIAS, update_fields=['lease_token'])
 
     # Worker 1 checks ownership before publishing results
     assert not store.verify_lease_and_not_cancelled(j['id'], 'token_worker_1')
@@ -310,11 +317,6 @@ def test_phase3_concurrent_identical_speech_requests(phase3_env, monkeypatch):
     def do_synth():
         return providers.synthesize(text, voice, rate, 'edge')
 
-    # Mock edge-tts generate to write valid mp3-like bytes
-    async def mock_communicate(self_comm):
-        yield {'type': 'audio', 'data': b'ID3\x03\x00\x00\x00\x00\x00#TSSE'}
-        yield {'type': 'WordBoundary', 'offset': 1000000, 'duration': 5000000, 'text': 'ఇది'}
-
     import edge_tts
     class MockCommunicate:
         def __init__(self, *args, **kwargs):
@@ -350,23 +352,18 @@ def test_phase3_dispatcher_reconstruction_after_crash(phase3_env):
     j = store.enqueue(p['id'], 1, 'render', {'quality': 'draft'})
 
     # Simulate outbox record being deleted/lost in a crash
-    with store.session_scope() as session:
-        from studio.db.models import Outbox
-        session.execute(text("DELETE FROM outbox WHERE payload->>'job_id' = :jid"), {'jid': j['id']})
-        # Backdate the job creation so reconcile_orphaned_jobs picks it up
-        from studio.db.models import Job
-        db_job = session.get(Job, j['id'])
-        db_job.created_at = datetime.now(timezone.utc) - timedelta(seconds=20)
+    OutboxEvent.objects.using('admin').filter(payload__job_id=j['id']).delete()
+
+    # Backdate the job creation so reconcile_orphaned_jobs picks it up
+    db_job = Job.objects.using('admin').get(id=j['id'])
+    db_job.created_at = datetime.now(timezone.utc) - timedelta(seconds=20)
+    db_job.save(using='admin', update_fields=['created_at'])
 
     # Reconcile runs
     reconciled_count = dispatcher.reconcile_orphaned_jobs()
     assert reconciled_count == 1
 
     # Verify a new outbox entry was reconstructed
-    with store.session_scope() as session:
-        from studio.db.models import Outbox
-        outbox_entry = session.execute(
-            select(Outbox).where(Outbox.payload['job_id'].as_string() == j['id'])
-        ).scalar_one_or_none()
-        assert outbox_entry is not None
-        assert outbox_entry.payload.get('reconciled') is True
+    outbox_entry = OutboxEvent.objects.using(DB_ALIAS).filter(payload__job_id=j['id']).first()
+    assert outbox_entry is not None
+    assert outbox_entry.payload.get('reconciled') is True

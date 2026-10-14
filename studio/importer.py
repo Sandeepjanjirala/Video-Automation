@@ -1,4 +1,4 @@
-"""Resumable, verifiable SQLite to PostgreSQL importer for Phase 2."""
+"""Resumable, verifiable SQLite to PostgreSQL importer (Django/psycopg2 architecture)."""
 import argparse
 import hashlib
 import json
@@ -9,20 +9,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from sqlalchemy import create_engine, select, func, text
-from sqlalchemy.orm import Session, sessionmaker
+import psycopg2
+from psycopg2.extras import Json
 
 from .config import DATA, ROOT
-from .db.models import (
-    Base, Workspace, Project, Revision, Asset, Job, JobStage, Draft,
-    ApplicationReceipt
-)
+
 
 def parse_iso_dt(val: Optional[str]) -> Optional[datetime]:
     if not val:
         return None
     try:
-        # Normalize ISO strings
         dt = datetime.fromisoformat(val)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)
@@ -97,18 +93,19 @@ def import_sqlite_to_pg(
     s_cur = s_conn.cursor()
 
     # 2. Connect to PostgreSQL
-    engine = create_engine(pg_url, echo=False)
-    SessionFactory = sessionmaker(bind=engine, autoflush=False)
-    session: Session = SessionFactory()
+    clean_url = pg_url.replace('postgresql+psycopg2://', 'postgresql://', 1)
+    pg_conn = psycopg2.connect(clean_url)
+    pg_cur = pg_conn.cursor()
 
     try:
         if not dry_run:
-            # Ensure workspace exists
-            ws = session.get(Workspace, workspace_id)
-            if not ws:
-                ws = Workspace(id=workspace_id, name='Local Workspace')
-                session.add(ws)
-                session.commit()
+            pg_cur.execute("SELECT id FROM workspaces WHERE id = %s;", (workspace_id,))
+            if not pg_cur.fetchone():
+                pg_cur.execute(
+                    "INSERT INTO workspaces (id, name, created_at, updated_at) VALUES (%s, %s, %s, %s);",
+                    (workspace_id, 'Local Workspace', datetime.now(timezone.utc), datetime.now(timezone.utc))
+                )
+                pg_conn.commit()
 
         # --- A. Import Assets & verify media files on disk ---
         s_cur.execute("SELECT * FROM assets")
@@ -128,33 +125,30 @@ def import_sqlite_to_pg(
             ext_id = str(a_row['external_id']) if 'external_id' in a_row.keys() and a_row['external_id'] else str(body.get('external_id') or '')
 
             if not dry_run:
-                existing_asset = session.get(Asset, aid)
+                pg_cur.execute("SELECT id FROM assets WHERE id = %s;", (aid,))
+                existing_asset = pg_cur.fetchone()
                 if not existing_asset:
-                    asset_obj = Asset(
-                        id=aid,
-                        workspace_id=workspace_id,
-                        filename=filename,
-                        name=body.get('name') or aid,
-                        kind=body.get('kind', 'video'),
-                        duration=float(body.get('duration', 0.0)),
-                        sha256=sha256,
-                        provider=provider,
-                        external_id=ext_id if ext_id else None,
-                        source_url=body.get('source_url', ''),
-                        license_url=body.get('license_url', ''),
-                        meta=body,
-                        created_at=parse_iso_dt(body.get('retrieved')) or datetime.now(timezone.utc)
-                    )
-                    session.add(asset_obj)
+                    pg_cur.execute("""
+                        INSERT INTO assets (
+                            id, workspace_id, filename, name, kind, duration, sha256,
+                            provider, external_id, source_url, license_url, meta, created_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                    """, (
+                        aid, workspace_id, filename, body.get('name') or aid,
+                        body.get('kind', 'video'), float(body.get('duration', 0.0)),
+                        sha256, provider, ext_id if ext_id else None,
+                        body.get('source_url', ''), body.get('license_url', ''),
+                        Json(body), parse_iso_dt(body.get('retrieved')) or datetime.now(timezone.utc)
+                    ))
                     report.assets_inserted += 1
                 else:
-                    existing_asset.sha256 = sha256
-                    existing_asset.provider = provider
-                    existing_asset.meta = body
+                    pg_cur.execute("""
+                        UPDATE assets SET sha256 = %s, provider = %s, meta = %s WHERE id = %s;
+                    """, (sha256, provider, Json(body), aid))
                     report.assets_updated += 1
 
         if not dry_run:
-            session.commit()
+            pg_conn.commit()
 
         # --- B. Import Projects ---
         s_cur.execute("SELECT * FROM projects")
@@ -168,40 +162,35 @@ def import_sqlite_to_pg(
             app_rev = p_row['approved']
             updated_dt = parse_iso_dt(p_row['updated']) or datetime.now(timezone.utc)
 
-            # Verification: representative hash
             sqlite_hash = compute_hash(body_dict)
 
             if not dry_run:
-                existing_p = session.get(Project, pid)
+                pg_cur.execute("SELECT revision, approved_revision, body FROM projects WHERE id = %s;", (pid,))
+                existing_p = pg_cur.fetchone()
                 if not existing_p:
-                    p_obj = Project(
-                        id=pid,
-                        workspace_id=workspace_id,
-                        revision=rev,
-                        approved_revision=app_rev,
-                        body=body_dict,
-                        created_at=updated_dt,
-                        updated_at=updated_dt
-                    )
-                    session.add(p_obj)
+                    pg_cur.execute("""
+                        INSERT INTO projects (
+                            id, workspace_id, revision, approved_revision, body, created_at, updated_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s);
+                    """, (pid, workspace_id, rev, app_rev, Json(body_dict), updated_dt, updated_dt))
                     report.projects_inserted += 1
                 else:
-                    if existing_p.revision < rev:
-                        existing_p.revision = rev
-                        existing_p.approved_revision = app_rev
-                        existing_p.body = body_dict
-                        existing_p.updated_at = updated_dt
+                    ex_rev = existing_p[0]
+                    if ex_rev < rev:
+                        pg_cur.execute("""
+                            UPDATE projects SET revision = %s, approved_revision = %s, body = %s, updated_at = %s
+                            WHERE id = %s;
+                        """, (rev, app_rev, Json(body_dict), updated_dt, pid))
                         report.projects_updated += 1
-                    elif existing_p.revision > rev:
+                    elif ex_rev > rev:
                         report.conflicts.append(
-                            f"Project {pid}: PostgreSQL revision {existing_p.revision} is newer than SQLite revision {rev}; kept newer."
+                            f"Project {pid}: PostgreSQL revision {ex_rev} is newer than SQLite revision {rev}; kept newer."
                         )
 
-            # Compare hash for verification
             report.snapshot_hash_matches += 1
 
         if not dry_run:
-            session.commit()
+            pg_conn.commit()
 
         # --- C. Import Revisions ---
         s_cur.execute("SELECT * FROM revisions ORDER BY project_id, revision ASC")
@@ -215,23 +204,18 @@ def import_sqlite_to_pg(
             created_dt = parse_iso_dt(r_row['created']) or datetime.now(timezone.utc)
 
             if not dry_run:
-                # Check unique constraint (project_id, revision)
-                stmt = select(Revision).where(Revision.project_id == pid, Revision.revision == rev_num)
-                existing_rev = session.execute(stmt).scalar_one_or_none()
-                if not existing_rev:
-                    rev_obj = Revision(
-                        project_id=pid,
-                        revision=rev_num,
-                        body=body_dict,
-                        created_at=created_dt
-                    )
-                    session.add(rev_obj)
+                pg_cur.execute("SELECT 1 FROM revisions WHERE project_id = %s AND revision = %s;", (pid, rev_num))
+                if not pg_cur.fetchone():
+                    pg_cur.execute("""
+                        INSERT INTO revisions (project_id, revision, body, created_at)
+                        VALUES (%s, %s, %s, %s);
+                    """, (pid, rev_num, Json(body_dict), created_dt))
                     report.revisions_inserted += 1
                 else:
                     report.revisions_skipped += 1
 
         if not dry_run:
-            session.commit()
+            pg_conn.commit()
 
         # --- D. Import Jobs ---
         s_cur.execute("SELECT * FROM jobs ORDER BY created ASC")
@@ -252,8 +236,6 @@ def import_sqlite_to_pg(
             applied = bool(j_row['applied']) if 'applied' in j_row.keys() and j_row['applied'] else False
             applied_at = parse_iso_dt(j_row['applied_at']) if 'applied_at' in j_row.keys() and j_row['applied_at'] else None
 
-            # Execution path translation check:
-            # Check if any audio_path or local video paths are stored in result/snapshot
             translated_details = {}
             if 'voices' in result_dict:
                 for v in result_dict.get('voices', []):
@@ -264,55 +246,41 @@ def import_sqlite_to_pg(
                         }
 
             if not dry_run:
-                existing_job = session.get(Job, jid)
+                pg_cur.execute("SELECT id FROM jobs WHERE id = %s;", (jid,))
+                existing_job = pg_cur.fetchone()
                 if not existing_job:
-                    job_obj = Job(
-                        id=jid,
-                        workspace_id=workspace_id,
-                        project_id=pid,
-                        revision=rev,
-                        kind=kind,
-                        state=state,  # Preserves completed/failed state, never auto-requeues
-                        progress=progress,
-                        snapshot=snap_dict,  # Verbatim immutable snapshot
-                        result=result_dict,
-                        applied=applied,
-                        applied_at=applied_at,
-                        created_at=created_dt,
-                        updated_at=updated_dt
-                    )
-                    session.add(job_obj)
+                    pg_cur.execute("""
+                        INSERT INTO jobs (
+                            id, workspace_id, project_id, revision, kind, state,
+                            progress, snapshot, result, applied, applied_at, created_at, updated_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+                    """, (
+                        jid, workspace_id, pid, rev, kind, state, progress,
+                        Json(snap_dict), Json(result_dict), applied, applied_at, created_dt, updated_dt
+                    ))
 
-                    # Add job stage record representing original execution
-                    stage = JobStage(
-                        job_id=jid,
-                        attempt=1,
-                        stage='legacy_execution',
-                        state=state,
-                        details=translated_details,
-                        created_at=created_dt
-                    )
-                    session.add(stage)
+                    pg_cur.execute("""
+                        INSERT INTO job_stages (
+                            job_id, attempt, stage, state, details, created_at, updated_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s);
+                    """, (jid, 1, 'legacy_execution', state, Json(translated_details), created_dt, created_dt))
 
                     if applied:
-                        receipt = ApplicationReceipt(
-                            job_id=jid,
-                            project_id=pid,
-                            applied_revision=rev,
-                            conflicts=[],
-                            applied_at=applied_at or updated_dt
-                        )
-                        session.add(receipt)
+                        pg_cur.execute("""
+                            INSERT INTO application_receipts (
+                                job_id, project_id, applied_revision, conflicts, applied_at
+                            ) VALUES (%s, %s, %s, %s, %s);
+                        """, (jid, pid, rev, Json([]), applied_at or updated_dt))
 
                     report.jobs_inserted += 1
                 else:
-                    existing_job.state = state
-                    existing_job.applied = applied
-                    existing_job.applied_at = applied_at
+                    pg_cur.execute("""
+                        UPDATE jobs SET state = %s, applied = %s, applied_at = %s WHERE id = %s;
+                    """, (state, applied, applied_at, jid))
                     report.jobs_updated += 1
 
         if not dry_run:
-            session.commit()
+            pg_conn.commit()
 
         # --- E. Import Drafts ---
         try:
@@ -326,42 +294,39 @@ def import_sqlite_to_pg(
                 updated_dt = parse_iso_dt(d_row['updated']) or datetime.now(timezone.utc)
 
                 if not dry_run:
-                    existing_draft = session.get(Draft, pid)
-                    if not existing_draft:
-                        draft_obj = Draft(
-                            project_id=pid,
-                            body=body_dict,
-                            updated_at=updated_dt
-                        )
-                        session.add(draft_obj)
+                    pg_cur.execute("SELECT project_id FROM drafts WHERE project_id = %s;", (pid,))
+                    if not pg_cur.fetchone():
+                        pg_cur.execute("""
+                            INSERT INTO drafts (project_id, body, updated_at) VALUES (%s, %s, %s);
+                        """, (pid, Json(body_dict), updated_dt))
                         report.drafts_inserted += 1
                     else:
-                        existing_draft.body = body_dict
-                        existing_draft.updated_at = updated_dt
+                        pg_cur.execute("""
+                            UPDATE drafts SET body = %s, updated_at = %s WHERE project_id = %s;
+                        """, (Json(body_dict), updated_dt, pid))
 
             if not dry_run:
-                session.commit()
+                pg_conn.commit()
         except sqlite3.OperationalError:
-            # Table might not exist in older SQLite schemas
             pass
 
     finally:
-        session.close()
+        pg_cur.close()
+        pg_conn.close()
         s_conn.close()
 
     return report
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Resumable SQLite to PostgreSQL Importer (Phase 2)")
+    parser = argparse.ArgumentParser(description="Resumable SQLite to PostgreSQL Importer (Django Architecture)")
     parser.add_argument("--source", type=Path, default=DATA / "studio.sqlite3", help="Source SQLite database file")
     parser.add_argument("--dest", type=str, default=None, help="Destination PostgreSQL connection URL")
     parser.add_argument("--workspace", type=str, default="default", help="Target workspace ID")
     parser.add_argument("--dry-run", action="store_true", help="Perform verification and dry-run without writing to PostgreSQL")
     args = parser.parse_args()
 
-    from .db.session import get_database_url
-    dest_url = args.dest or get_database_url()
+    dest_url = args.dest or os.environ.get('STUDIO_DATABASE_URL', 'postgresql://postgres:postgres@127.0.0.1:5433/studio')
 
     print(f"=== Telugu Reel Studio — SQLite to PostgreSQL Importer ===")
     print(f"Source: {args.source}")

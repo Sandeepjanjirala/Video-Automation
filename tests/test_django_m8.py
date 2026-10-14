@@ -149,4 +149,4 @@ def test_m8_schema_authority_and_alembic_invariance(pg_connection):
     cur.close()
 
     for model_cls in (Job, JobStage, OutboxEvent, Project, Revision, Asset, VoiceTake):
-        assert model_cls._meta.managed is False, f"{model_cls.__name__} must be unmanaged"
+        assert model_cls._meta.managed is True, f"{model_cls.__name__} must be managed"

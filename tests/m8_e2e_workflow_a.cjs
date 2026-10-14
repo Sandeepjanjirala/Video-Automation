@@ -265,8 +265,8 @@ const { waitFor } = require('../frontend/node_modules/@testing-library/dom');
   console.log('[M8 Workflow A] Assigning real MP4 footage to Scene 1...');
   // Find available video asset
   const assets = await w.StudioApi.request('/assets');
-  const videoAsset = assets.find(a => a.kind === 'video');
-  if (!videoAsset) throw new Error('No video assets available in system');
+  const videoAsset = assets.find(a => a.kind === 'video' && a.filename && fs.existsSync(path.join(process.cwd(), 'data', 'assets', a.filename)));
+  if (!videoAsset) throw new Error('No video assets available in system with file on disk');
   console.log(`[M8 Workflow A] Using video asset: ${videoAsset.id} (${videoAsset.filename || videoAsset.id})`);
 
   // Assign via StudioMedia
@@ -279,7 +279,7 @@ const { waitFor } = require('../frontend/node_modules/@testing-library/dom');
   console.log('[M8 Workflow A] ✓ Video asset assigned to scene');
 
   // Assign background music (matching Pydantic hex pattern ^[a-f0-9]{0,32}$)
-  const musicAsset = assets.find(a => a.kind === 'audio' && /^[a-f0-9]{1,32}$/.test(a.id));
+  const musicAsset = assets.find(a => a.kind === 'audio' && /^[a-f0-9]{1,32}$/.test(a.id) && a.filename && fs.existsSync(path.join(process.cwd(), 'data', 'assets', a.filename)) && fs.statSync(path.join(process.cwd(), 'data', 'assets', a.filename)).size > 1000);
   if (musicAsset) {
     console.log(`[M8 Workflow A] Attaching background music track: ${musicAsset.id}`);
     w.StudioState.current.project.music_asset = musicAsset.id;

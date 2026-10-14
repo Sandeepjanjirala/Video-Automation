@@ -423,24 +423,16 @@ def test_voice_take_acceptance_ownership_security(auth_client, test_project):
 # ==============================================================================
 
 def test_react_frontend_serving(anon_client):
-    """Verify Django serves React index.html and static bundle assets."""
-    # Legacy React entrypoint preserved at /react-legacy/ for rollback
-    resp_root = anon_client.get('/react-legacy/')
-    assert resp_root.status_code == 200
-    assert resp_root['Content-Type'].startswith('text/html')
-    content_root = b''.join(resp_root.streaming_content)
-    assert b'<div id="root"></div>' in content_root
-    assert b'/app.js' in content_root
-    assert b'/app.css' in content_root
+    """Verify legacy React routes and bundles are retired, and static assets remain protected."""
+    # Legacy React entrypoint retired
+    resp_legacy = anon_client.get('/react-legacy/')
+    assert resp_legacy.status_code == 404
 
-    # app.js JavaScript bundle
+    # app.js React bundle retired
     resp_js = anon_client.get('/app.js')
-    assert resp_js.status_code == 200
-    assert 'javascript' in resp_js['Content-Type'].lower()
-    content_js = b''.join(resp_js.streaming_content)
-    assert len(content_js) > 100000
+    assert resp_js.status_code == 404
 
-    # app.css stylesheet
+    # app.css stylesheet remains served
     resp_css = anon_client.get('/app.css')
     assert resp_css.status_code == 200
     assert 'text/css' in resp_css['Content-Type'].lower()

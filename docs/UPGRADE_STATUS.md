@@ -1,8 +1,8 @@
 # Telugu Reel Studio — Upgrade Status & Technical Audit
 
 **Last Updated**: 2026-10-14  
-**Current Phase**: Django Migration — Stage M8 Complete (Final Frontend Migration: React/TypeScript -> Django Templates + jQuery 3.7.1)  
-**Status**: Stage M8 Complete — 151 Automated Tests Passing (101 Django M1-M8 suite + 50 workflow/phase suite); UI Smoke Tests Passing with 0 errors; Two Full Browser-to-Video E2E Workflows Verified yielding real 1080x1920 MP4 reels; Root (/) cutover to Django Templates + jQuery; 0 React runtimes in production UI; 0 calls to FastAPI 8787; Alembic invariant at 0003_phase4_voice_lab.  
+**Current Phase**: Django Migration — Stage M9 Complete (Final Architecture Cleanup + Django Schema Ownership)  
+**Status**: Stage M9 Complete — Codebase genuinely converted to pure Django + Django Templates + jQuery + Django ORM + Django Migrations + PostgreSQL + Redis + Celery + FFmpeg. All legacy React, ReactDOM, TypeScript/TSX, FastAPI, and SQLAlchemy implementations deleted. PostgreSQL schema authority transferred 100% to Django migrations (`core/migrations/0001_initial.py`). Alembic frozen and retired. 151 automated tests passing; jQuery UI smoke passing with 0 errors; Workflow A and B real 1080x1920 E2E video reels rendered and verified; 0 React runtimes, 0 FastAPI processes, 0 SQLAlchemy runtime dependencies.  
 
 ---
 
@@ -20,8 +20,8 @@
 | **PostgreSQL Database** | PostgreSQL 18 on private port `127.0.0.1:5433` | Port 5433 prevents collision with Windows 5432 services |
 | **Redis Broker & Backend** | Redis 7 on private port `127.0.0.1:6379` | `appendonly yes` (AOF), `maxmemory 512mb`, `noeviction` |
 | **Celery Environment** | Celery 5.6.3 running on Linux (Docker) | Concurrency: Render (1 slot), Network (2 slots) |
-| **Alembic Migrations** | `0003_phase4_voice_lab` applied (strictly invariant) | Tables: `workspaces`, `projects`, `revisions`, `assets`, `jobs`, `job_stages`, `drafts`, `application_receipts`, `outbox`, `voice_takes` |
-| **Active Port** | `127.0.0.1:8788` (Django DRF + Django Templates + jQuery) | Single-user loopback binding with CSRF and token protection. FastAPI on 8787 kept for rollback/coexistence. |
+| **Django Migrations** | Sole Schema Authority (`core/migrations/0001_initial.py`) | All models `managed = True`; Alembic retired and frozen; usage composite key preserved |
+| **Active Port** | `127.0.0.1:8788` (Django DRF + Django Templates + jQuery) | Single-user loopback binding with CSRF and token protection. Port 8787 and FastAPI retired. |
 
 ---
 
@@ -433,6 +433,41 @@ Phase 4 is fully implemented, verified, and operational on this home laptop.
 - **UI Smoke**: Passed with 0 runtime errors.
 - **Alembic Schema Authority**: Revision `0003_phase4_voice_lab` unchanged. 0 Django migrations created.
 - **FastAPI Source**: Intact and preserved in `studio/api.py`. Rollback available via `python run.py --fastapi`.
+
+---
+
+## 5. Stage M9 Execution Summary (Final Architecture Cleanup + Django Schema Ownership)
+
+**Execution Date**: 2026-10-14  
+**Checkpoint Tag**: `django-m9-complete`  
+**Status**: Stage M9 Complete — Codebase genuinely converted to pure Django + Django Templates + jQuery + Django ORM + Django Migrations + PostgreSQL + Redis + Celery + FFmpeg.
+
+### 1. Safety Checkpoint & Verified Backup
+- Clean git state verified at `django-m8-complete` (`3466cc5`).
+- Pre-migration PostgreSQL backup taken via `pg_dump`: `backups/studio_pre_m9_20261014T142517Z.dump` (130,597 bytes, SHA-256: `6df5a58e864beb741ce36ababb6b006c2a77e1fee1e157dd61b42969f04437a9`).
+- Dump restored into disposable DB `studio_m9_disposable` and verified table row counts and Telugu scripts before touching live schema.
+
+### 2. Legacy Removals
+- **React UI Removed**: Deleted `frontend/app.tsx`, `frontend/style.css`, `studio/static/app.js`, `studio/static/index.html`, `tests/browser_e2e_render.cjs`, `tests/ui_smoke.cjs`. Removed `/react-legacy/` route from `config/urls.py` and `core/views.py`.
+- **TypeScript Removed**: Zero `.tsx`, `.jsx`, or application `.ts` files remain in repository. Cleaned `frontend/package.json` to keep only test harness dependencies (`jsdom`, `@testing-library/dom`, `jquery`).
+- **FastAPI Removed**: Deleted `studio/api.py`. Removed `--fastapi`, `STUDIO_SERVER=fastapi`, and uvicorn startup from `run.py`. Uninstalled `fastapi`, `uvicorn`, `python-multipart`. Retired port 8787 from active architecture.
+- **SQLAlchemy Removed**: Migrated `studio/store.py`, `studio/dispatcher.py`, `studio/ratelimit.py`, `studio/importer.py`, `studio/voice/lab.py` to Django ORM / psycopg2. Uninstalled `sqlalchemy`, `alembic`, `starlette`, `Mako`. Deleted `alembic.ini` and `studio/db/`.
+
+### 3. Django Schema Ownership Transfer
+- Live catalog vs Django models compared: 100% column/type equivalence. Documented in `docs/M9_SCHEMA_DIFF.md`.
+- Usage table composite key `(day, provider)` preserved faithfully via raw SQL repository.
+- Baseline migration `core/migrations/0001_initial.py` created and tested against fresh empty DB `studio_m9_fresh` with 0 schema differences.
+- Tested against restored DB `studio_m9_disposable` with `--fake-initial`.
+- Applied `--fake-initial` to live PostgreSQL `studio` database. All models set to `managed = True`. Alembic retired.
+
+### 4. Regression & Verification Evidence
+- **Pytest Suite**: **151 passed, 2 skipped, 0 failed** across all test suites.
+- **jQuery Browser Smoke**: Passed with 0 errors, 0 React runtime, 0 FastAPI requests.
+- **Workflow A Reel (Uploaded MP4)**: Real 1080x1920 MP4 generated (`test-outputs/django-m8/20261014160455/uploaded_mp4_workflow.mp4`, 2,021,221 bytes, 6.49s). FFmpeg full decode: 0 errors.
+- **Workflow B Reel (Topic/Storyboard)**: Real 1080x1920 MP4 generated (`test-outputs/django-m8/20261014160523/topic_storyboard_workflow.mp4`, 6,019,526 bytes, 5.09s). FFmpeg full decode: 0 errors.
+- **Manual Playback Verification**: Both videos show moving footage, authentic Telugu narration, synchronized Roman Telugu captions, background music with sidechain ducking, and 0 corrupt frames.
+- **Legacy Source Audit**: Repository-wide regex audit confirms **ZERO** active legacy patterns in application source code.
+
 
 
 

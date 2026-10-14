@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0\.."
 echo [Telugu Reel Studio] Checking PostgreSQL database connectivity...
 
-".venv\Scripts\python.exe" -c "from studio.db import check_connection; check_connection()" >nul 2>&1
+".venv\Scripts\python.exe" -c "import psycopg2, os; psycopg2.connect(os.environ.get('STUDIO_DATABASE_URL', 'postgresql://postgres:postgres@127.0.0.1:5433/studio').replace('+psycopg2', ''), connect_timeout=2)" >nul 2>&1
 if not errorlevel 1 (
     echo [OK] PostgreSQL is already running and reachable at 127.0.0.1:5433
     goto done
@@ -12,7 +12,7 @@ if not errorlevel 1 (
 echo [INFO] Attempting to start PostgreSQL via WSL Ubuntu service...
 wsl -u root -d Ubuntu -- service postgresql start >nul 2>&1
 
-".venv\Scripts\python.exe" -c "from studio.db import check_connection; check_connection()" >nul 2>&1
+".venv\Scripts\python.exe" -c "import psycopg2, os; psycopg2.connect(os.environ.get('STUDIO_DATABASE_URL', 'postgresql://postgres:postgres@127.0.0.1:5433/studio').replace('+psycopg2', ''), connect_timeout=2)" >nul 2>&1
 if not errorlevel 1 (
     echo [OK] PostgreSQL started successfully in WSL Ubuntu.
     goto done
@@ -21,7 +21,7 @@ if not errorlevel 1 (
 echo [INFO] Attempting to start PostgreSQL via Docker Compose...
 docker compose up -d postgres >nul 2>&1
 
-".venv\Scripts\python.exe" -c "from studio.db import check_connection; check_connection()" >nul 2>&1
+".venv\Scripts\python.exe" -c "import psycopg2, os; psycopg2.connect(os.environ.get('STUDIO_DATABASE_URL', 'postgresql://postgres:postgres@127.0.0.1:5433/studio').replace('+psycopg2', ''), connect_timeout=2)" >nul 2>&1
 if not errorlevel 1 (
     echo [OK] PostgreSQL started successfully via Docker Compose.
     goto done

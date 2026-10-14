@@ -96,20 +96,20 @@ def test_health_check_does_not_mutate_data(db_baseline_counts):
     conn.close()
 
 
-def test_fastapi_coexistence_and_accessibility():
-    """Verify FastAPI on 127.0.0.1:8787 remains completely accessible."""
+def test_django_accessibility():
+    """Verify Django on 127.0.0.1:8788 is accessible and serves bootstrap."""
     try:
-        res = httpx.get('http://127.0.0.1:8787/api/bootstrap', timeout=5.0)
+        res = httpx.get('http://127.0.0.1:8788/api/bootstrap', timeout=5.0)
         assert res.status_code == 200
         data = res.json()
         assert "token" in data
         assert "projects" in data
     except httpx.ConnectError:
-        pytest.fail("FastAPI server on 127.0.0.1:8787 is not reachable!")
+        pytest.fail("Django server on 127.0.0.1:8788 is not reachable!")
 
 
 def test_alembic_schema_authority_intact(db_baseline_counts):
-    """Verify Alembic remains sole authority and no Django migrations table exists."""
+    """Verify Django migrations owns schema authority in Stage M9."""
     conn = psycopg2.connect("postgresql://postgres:postgres@127.0.0.1:5433/studio")
     cur = conn.cursor()
     cur.execute("""
@@ -118,8 +118,7 @@ def test_alembic_schema_authority_intact(db_baseline_counts):
         WHERE table_schema = 'public';
     """)
     current_tables = {r[0] for r in cur.fetchall()}
-    # Crucial: Django's internal django_migrations table must NOT exist in studio database
-    assert "django_migrations" not in current_tables, "django_migrations was created in studio database!"
+    assert "django_migrations" in current_tables, "django_migrations must exist in studio database!"
     assert "alembic_version" in current_tables
 
     cur.close()

@@ -19,11 +19,12 @@ for key in ('online_enabled', 'tts_provider', 'gemini_key_configured', 'pixabay_
     print(key + ':', cfg[key])
 
 try:
-    from studio.db import check_connection, get_database_url
-    check_connection()
-    url = get_database_url()
-    safe_url = url.split('@')[-1] if '@' in url else url
-    print('postgresql: connected (' + safe_url + ')')
+    from django.db import connection
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT 1;")
+    db_name = connection.settings_dict.get('NAME')
+    db_host = connection.settings_dict.get('HOST') or '127.0.0.1'
+    print(f'postgresql: connected ({db_host}/{db_name})')
 except Exception as exc:
     print('postgresql: ERROR (' + str(exc).splitlines()[0] + ')')
 

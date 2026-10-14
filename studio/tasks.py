@@ -17,8 +17,6 @@ from celery import shared_task
 from .celery_app import app
 from .config import DATA, executable, settings
 from . import store
-from .db.session import session_scope
-from .db.models import Job
 
 
 class FencingError(RuntimeError):

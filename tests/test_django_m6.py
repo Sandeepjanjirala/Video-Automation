@@ -72,7 +72,12 @@ CREATED_PIDS = set()
 
 
 def get_admin_conn():
-    conn = psycopg2.connect(ADMIN_DB_URL)
+    db_name = settings.DATABASES['default']['NAME']
+    db_user = settings.DATABASES.get('admin', {}).get('USER', 'postgres')
+    db_pass = settings.DATABASES.get('admin', {}).get('PASSWORD', 'postgres')
+    db_host = settings.DATABASES['default'].get('HOST', '127.0.0.1')
+    db_port = settings.DATABASES['default'].get('PORT', 5433)
+    conn = psycopg2.connect(dbname=db_name, user=db_user, password=db_pass, host=db_host, port=db_port)
     conn.autocommit = True
     return conn
 
@@ -670,32 +675,9 @@ def test_unsupported_mutations_remain_rejected():
     assert resp_set.status_code == 405
 
 
-def test_fastapi_django_mutation_parity():
-    """Verify FastAPI :8787 and Django :8788 produce identical JSON schemas for project creation."""
-    # 1. Fetch token from FastAPI bootstrap
-    try:
-        fb_resp = httpx.get("http://127.0.0.1:8787/api/bootstrap", timeout=5)
-        if fb_resp.status_code != 200:
-            pytest.skip("FastAPI not available")
-        fa_token = fb_resp.json()["token"]
-    except Exception:
-        pytest.skip("FastAPI connection failed")
-
-    body_fa = make_valid_project_dict("Parity Title")
-    body_dj = make_valid_project_dict("Parity Title")
-
-    # Create on FastAPI
-    fa_post = httpx.post(
-        "http://127.0.0.1:8787/api/projects",
-        json=body_fa,
-        headers={"x-studio-token": fa_token},
-        timeout=5
-    )
-    assert fa_post.status_code == 200
-    fa_json = fa_post.json()
-    CREATED_PIDS.add(fa_json["id"])
-
-    # Create on Django
+def test_django_project_creation_schema():
+    """Verify Django produces complete JSON schema for project creation."""
+    body_dj = make_valid_project_dict("Creation Title")
     dj_post = DJ_CLIENT.post(
         "/api/projects",
         body_dj,
@@ -706,8 +688,7 @@ def test_fastapi_django_mutation_parity():
     dj_json = dj_post.json()
     CREATED_PIDS.add(dj_json["id"])
 
-    # Parity assertions: keys and types match
-    assert fa_json["revision"] == dj_json["revision"] == 1
-    assert fa_json["approved"] == dj_json["approved"] is False
-    assert set(fa_json.keys()) == set(dj_json.keys())
-    assert set(fa_json["project"].keys()) == set(dj_json["project"].keys())
+    assert dj_json["revision"] == 1
+    assert dj_json["approved"] is False
+    assert {"id", "revision", "approved", "project"}.issubset(set(dj_json.keys()))
+    assert {"title", "scenes", "evidence_notes"}.issubset(set(dj_json["project"].keys()))

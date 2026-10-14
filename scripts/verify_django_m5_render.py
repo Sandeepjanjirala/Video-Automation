@@ -201,13 +201,7 @@ else:
     print(f"[FAIL] FFmpeg decode errors: {decode_res.stderr}")
     sys.exit(1)
 
-# 10. Verify FastAPI read API can see this Django-created job
-print("\n[Step 8] Verifying FastAPI :8787 read API sees the Django-created job...")
-fa_resp = httpx.get(f"http://127.0.0.1:8787/api/projects/{PROJECT_ID}/jobs", timeout=10.0)
-assert fa_resp.status_code == 200
-matching_fa = [j for j in fa_resp.json() if j['id'] == jid]
-assert len(matching_fa) == 1, "FastAPI could not see the Django-created job!"
-print(f"[OK] FastAPI verified seeing job {jid} with state: {matching_fa[0]['state']}")
+
 
 # 11. Verify Django export serving endpoint (GET /api/exports/<jid>/reel.mp4)
 print("\n[Step 9] Verifying Django HTTP export streaming endpoint...")

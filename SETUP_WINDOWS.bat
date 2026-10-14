@@ -45,6 +45,6 @@ if errorlevel 1 (
   exit /b 1
 )
 echo.
-echo Setup complete. Run START_WINDOWS.bat, then open http://127.0.0.1:8787
+echo Setup complete. Run START_WINDOWS.bat, then open http://127.0.0.1:8788
 echo Set FFmpeg and FFprobe paths in the app's Settings if they are not on PATH.
 pause

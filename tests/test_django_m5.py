@@ -63,7 +63,6 @@ from core.views import DJANGO_TOKEN
 from core.serializers import serialize_job_dict
 from studio.config import DATA
 
-FASTAPI_URL = "http://127.0.0.1:8787"
 DJANGO_URL = "http://127.0.0.1:8788"
 DJ_CLIENT = APIClient()
 
@@ -720,6 +719,6 @@ def test_m5_schema_authority_and_alembic_invariance(pg_connection):
     assert alembic_rev == '0003_phase4_voice_lab'
     cur.close()
 
-    # Verify unmanaged status on all core models
+    # Verify managed status on all core models under Django schema ownership (Stage M9)
     for model_cls in (Job, JobStage, OutboxEvent, Project, Revision, Asset):
-        assert model_cls._meta.managed is False, f"{model_cls.__name__} must be unmanaged"
+        assert model_cls._meta.managed is True, f"{model_cls.__name__} must be managed"

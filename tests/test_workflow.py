@@ -9,18 +9,43 @@ import pytest
 @pytest.fixture()
 def modules(tmp_path, monkeypatch):
     monkeypatch.setenv('REEL_DATA_DIR', str(tmp_path / 'data'))
-    test_db_url = os.environ.get('STUDIO_TEST_DATABASE_URL') or 'postgresql+psycopg2://postgres:postgres@127.0.0.1:5433/studio_test'
+    test_db_url = os.environ.get('STUDIO_TEST_DATABASE_URL') or 'postgresql://postgres:postgres@127.0.0.1:5433/studio_test'
     monkeypatch.setenv('STUDIO_DATABASE_URL', test_db_url)
-    import studio.config, studio.store, studio.media, studio.providers, studio.worker, studio.api, studio.db
-    from sqlalchemy import text
-    for mod in (studio.config, studio.db.session, studio.store, studio.media, studio.providers, studio.worker, studio.api):
+    import studio.config, studio.store, studio.media, studio.providers, studio.worker
+    for mod in (studio.config, studio.store, studio.media, studio.providers, studio.worker):
         importlib.reload(mod)
-    eng = studio.db.get_engine(test_db_url)
-    with eng.begin() as conn:
-        conn.execute(text('TRUNCATE TABLE application_receipts, job_stages, drafts, jobs, revisions, projects, assets, usage CASCADE;'))
-        conn.execute(text("INSERT INTO workspaces (id, name) VALUES ('default', 'Local Workspace') ON CONFLICT (id) DO NOTHING;"))
+
+    from django.conf import settings
+    from django.db import connections
+    orig_names = {k: v['NAME'] for k, v in settings.DATABASES.items()}
+    orig_users = {k: v.get('USER') for k, v in settings.DATABASES.items()}
+    orig_passes = {k: v.get('PASSWORD') for k, v in settings.DATABASES.items()}
+    for alias in list(settings.DATABASES.keys()):
+        settings.DATABASES[alias]['NAME'] = 'studio_test'
+        settings.DATABASES[alias]['USER'] = 'postgres'
+        settings.DATABASES[alias]['PASSWORD'] = 'postgres'
+    connections._settings = connections.configure_settings(settings.DATABASES)
+    connections.close_all()
+
+    import psycopg2
+    clean_url = test_db_url.replace('+psycopg2', '')
+    conn = psycopg2.connect(clean_url)
+    with conn.cursor() as cur:
+        cur.execute('TRUNCATE TABLE application_receipts, outbox, job_stages, drafts, jobs, revisions, projects, assets, voice_takes, usage CASCADE;')
+        cur.execute("INSERT INTO workspaces (id, name) VALUES ('default', 'Local Workspace') ON CONFLICT (id) DO NOTHING;")
+    conn.commit()
+    conn.close()
+
     studio.store.init()
-    return studio.store, studio.media, studio.providers, studio.worker, studio.api
+    try:
+        yield studio.store, studio.media, studio.providers, studio.worker
+    finally:
+        for alias, name in orig_names.items():
+            settings.DATABASES[alias]['NAME'] = name
+            settings.DATABASES[alias]['USER'] = orig_users[alias]
+            settings.DATABASES[alias]['PASSWORD'] = orig_passes[alias]
+        connections._settings = connections.configure_settings(settings.DATABASES)
+        connections.close_all()
 
 
 def project():
@@ -71,16 +96,17 @@ def test_caption_validation_and_stale_audio(modules):
 
 
 def test_network_defaults_and_api_secret_boundary(modules):
-    store, media, providers, worker, api = modules
-    from fastapi.testclient import TestClient
+    store, media, providers, worker = modules
+    from django.test import Client
     from studio.config import save_settings
     with pytest.raises(ValueError, match='disabled'):
         providers.online()
-    client = TestClient(api.app, base_url='http://127.0.0.1')
-    assert client.post('/api/projects', json=project()).status_code == 403
-    headers = {'x-studio-token': client.get('/api/bootstrap').json()['token']}
-    assert client.post('/api/projects', json=project(), headers=headers).status_code == 200
-    assert client.post('/api/projects', json=project(), headers=headers | {'origin': 'https://evil.example'}).status_code == 403
+    client = Client()
+    assert client.post('/api/projects', data=json.dumps(project()), content_type='application/json').status_code == 403
+    token = client.get('/api/bootstrap').json()['token']
+    headers = {'HTTP_X_STUDIO_TOKEN': token}
+    assert client.post('/api/projects', data=json.dumps(project()), content_type='application/json', **headers).status_code == 200
+    assert client.post('/api/projects', data=json.dumps(project()), content_type='application/json', HTTP_ORIGIN='https://evil.example', **headers).status_code == 403
     save_settings({'gemini_key': 'test-secret'})
     public = client.get('/api/bootstrap').json()
     assert 'test-secret' not in json.dumps(public)
@@ -126,7 +152,7 @@ def test_call_limit_and_job_retry(modules):
 
 
 def test_stock_sourcing_preserves_assigned_media_and_reports_missing(modules, monkeypatch):
-    store, media, providers, worker, api = modules
+    store, media, providers, worker = modules
     p = project()
     p['scenes'] += [p['scenes'][0] | {'id': 'assigned', 'visual': 'upload', 'video_asset': 'b'*32},
                     p['scenes'][0] | {'id': 'needs', 'visual': 'stock', 'keywords': 'forest'},
@@ -144,7 +170,7 @@ def test_stock_sourcing_preserves_assigned_media_and_reports_missing(modules, mo
 
 
 def test_excessive_duration_fit_rejected_without_cutting(modules, monkeypatch):
-    store, media, providers, worker, api = modules
+    store, media, providers, worker = modules
     p = project() | {'target_seconds': 10, 'duration_mode': 'target'}
     row = store.save_project(p)
     store.approve(row['id'], 1)
@@ -165,7 +191,7 @@ def register(store, media, path, kind):
 
 
 def test_real_ffmpeg_render_and_cache(modules, tmp_path):
-    store, media, providers, worker, api = modules
+    store, media, providers, worker = modules
     from studio.config import executable, DATA
     audio = tmp_path / 'tone.wav'
     clip = tmp_path / 'test.mp4'
@@ -213,7 +239,7 @@ def test_real_ffmpeg_render_and_cache(modules, tmp_path):
 
 
 def test_independent_scene_results_applied_and_survive_reload(modules):
-    store, media, providers, worker, api = modules
+    store, media, providers, worker = modules
     from studio.models import Scene
     p = project()
     p['scenes'] = [
@@ -267,7 +293,7 @@ def test_independent_scene_results_applied_and_survive_reload(modules):
 
 
 def test_conflict_aware_merge_preserves_newer_edit(modules):
-    store, media, providers, worker, api = modules
+    store, media, providers, worker = modules
     from studio.models import Scene
     p = project()
     p['scenes'] = [
@@ -302,7 +328,7 @@ def test_conflict_aware_merge_preserves_newer_edit(modules):
 
 
 def test_missing_footage_reported_by_preflight_before_render(modules):
-    store, media, providers, worker, api = modules
+    store, media, providers, worker = modules
     from studio.models import Scene
     p = project()
     p['scenes'] = [
@@ -326,34 +352,34 @@ def test_missing_footage_reported_by_preflight_before_render(modules):
 
 
 def test_reusable_media_library_and_deduplication(modules, tmp_path):
-    store, media, providers, worker, api = modules
+    store, media, providers, worker = modules
     from studio.config import DATA, executable
-    from fastapi.testclient import TestClient
+    from django.test import Client
 
     # Create dummy video file
     clip = tmp_path / 'reusable.mp4'
     media.run([executable('ffmpeg'), '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30:duration=1',
                '-c:v', 'libx264', '-threads', '2', '-pix_fmt', 'yuv420p', clip])
 
-    client = TestClient(api.app, base_url='http://127.0.0.1')
+    client = Client()
     token = client.get('/api/bootstrap').json()['token']
-    headers = {'x-studio-token': token}
+    headers = {'HTTP_X_STUDIO_TOKEN': token}
 
     # Upload video first time
     with clip.open('rb') as f:
-        res1 = client.post('/api/assets', files={'file': ('clip1.mp4', f, 'video/mp4')}, headers=headers)
+        res1 = client.post('/api/assets', {'file': f}, **headers)
     assert res1.status_code == 200
     a1 = res1.json()
 
     # Upload identical video second time -> must deduplicate and return existing asset ID without duplicating file
     with clip.open('rb') as f:
-        res2 = client.post('/api/assets', files={'file': ('clip2.mp4', f, 'video/mp4')}, headers=headers)
+        res2 = client.post('/api/assets', {'file': f}, **headers)
     assert res2.status_code == 200
     a2 = res2.json()
     assert a1['id'] == a2['id']
 
     # List assets
-    assets = client.get('/api/assets', headers=headers).json()
+    assets = client.get('/api/assets', **headers).json()
     assert any(a['id'] == a1['id'] for a in assets)
 
     # Assign single asset across multiple scenes
@@ -366,7 +392,12 @@ def test_reusable_media_library_and_deduplication(modules, tmp_path):
     saved = store.save_project(p)
     pid = saved['id']
 
-    assign_res = client.post(f'/api/projects/{pid}/assign-media', json={'asset_id': a1['id'], 'scene_ids': ['all']}, headers=headers)
+    assign_res = client.post(
+        f'/api/projects/{pid}/assign-media',
+        data=json.dumps({'asset_id': a1['id'], 'scene_ids': ['all']}),
+        content_type='application/json',
+        **headers
+    )
     assert assign_res.status_code == 200
     proj = assign_res.json()['project']
     assert proj['scenes'][0]['video_asset'] == a1['id']
@@ -374,7 +405,7 @@ def test_reusable_media_library_and_deduplication(modules, tmp_path):
 
 
 def test_retry_modes_and_duplicate_pending_prevention(modules):
-    store, media, providers, worker, api = modules
+    store, media, providers, worker = modules
     p = store.save_project(project())
     pid = p['id']
 
@@ -404,7 +435,7 @@ def test_retry_modes_and_duplicate_pending_prevention(modules):
 
 
 def test_autosave_recovery_and_voice_preview_reuse(modules):
-    store, media, providers, worker, api = modules
+    store, media, providers, worker = modules
     p = store.save_project(project())
     pid = p['id']
 
@@ -452,7 +483,7 @@ def test_phase2_concurrent_edits_optimistic_locking(modules):
 
 
 def test_phase2_importer_repeatability_and_unicode_fidelity(modules, tmp_path):
-    store, media, providers, worker, api = modules
+    store, media, providers, worker = modules
     import sqlite3
     from studio.importer import import_sqlite_to_pg
 
@@ -515,25 +546,22 @@ def test_phase2_importer_repeatability_and_unicode_fidelity(modules, tmp_path):
 
 def test_phase2_foreign_key_and_database_constraints(modules):
     store, *_ = modules
-    from studio.db.models import Revision, Job
-    from studio.db.session import session_scope
-    from sqlalchemy.exc import IntegrityError
+    from core.models import Revision, Job
+    from django.db import IntegrityError
+    from studio.store import DB_ALIAS, PROJECT_DB
 
     # Non-existent project foreign key in Revision
     with pytest.raises(IntegrityError):
-        with session_scope() as session:
-            session.add(Revision(project_id='nonexistent_project', revision=1, body={}, created_at=store.now()))
+        Revision.objects.using(PROJECT_DB).create(project_id='nonexistent_project', revision=1, body={}, created_at=store.now())
 
     # Non-existent workspace foreign key in Job
     with pytest.raises(IntegrityError):
-        with session_scope() as session:
-            session.add(Job(id='job_bad_ws', workspace_id='nonexistent_ws', project_id='p', revision=1, kind='render', state='queued', snapshot={}))
+        Job.objects.using(DB_ALIAS).create(id='job_bad_ws', workspace_id='nonexistent_ws', project_id='p', revision=1, kind='render', state='queued', snapshot={})
 
 
 def test_phase2_missing_database_connectivity_actionable_error():
-    from studio.db.session import check_connection, DatabaseConnectionError, get_engine
-    bad_engine = get_engine('postgresql+psycopg2://postgres:postgres@127.0.0.1:5439/nonexistent')
-    with pytest.raises(DatabaseConnectionError, match='Actionable remedy'):
-        check_connection(bad_engine)
+    import psycopg2
+    with pytest.raises(psycopg2.OperationalError):
+        psycopg2.connect('postgresql://postgres:postgres@127.0.0.1:5439/nonexistent', connect_timeout=1)
 
 

@@ -25,10 +25,8 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from sqlalchemy import select, text
+import psycopg2
 from studio.config import DATA, settings
-from studio.db.models import VoiceTake, Project, Asset, Workspace
-from studio.db.session import get_engine, session_scope
 from studio.models import Project as PydanticProject
 import studio.store as store
 
@@ -77,12 +75,15 @@ def phase4_db_env(tmp_path, monkeypatch):
     test_db_url = os.environ.get('STUDIO_TEST_DATABASE_URL') or 'postgresql+psycopg2://postgres:postgres@127.0.0.1:5433/studio_test'
     monkeypatch.setenv('STUDIO_DATABASE_URL', test_db_url)
 
-    eng = get_engine(test_db_url)
-    with eng.begin() as conn:
-        conn.execute(text(
+    pg_url = test_db_url.replace('+psycopg2', '')
+    conn = psycopg2.connect(pg_url)
+    with conn.cursor() as cur:
+        cur.execute(
             'TRUNCATE TABLE voice_takes, application_receipts, outbox, job_stages, drafts, jobs, revisions, projects, assets, usage CASCADE;'
-        ))
-        conn.execute(text("INSERT INTO workspaces (id, name) VALUES ('default', 'Local Workspace') ON CONFLICT (id) DO NOTHING;"))
+        )
+        cur.execute("INSERT INTO workspaces (id, name) VALUES ('default', 'Local Workspace') ON CONFLICT (id) DO NOTHING;")
+    conn.commit()
+    conn.close()
 
     store.init()
     return {'db_url': test_db_url, 'tmp_path': tmp_path}
