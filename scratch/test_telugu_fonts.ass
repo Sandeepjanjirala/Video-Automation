@@ -1,0 +1,17 @@
+[Script Info]
+Title: Telugu Script Test
+ScriptType: v4.00+
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+PlayResX: 1080
+PlayResY: 1920
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: TeluguStyle,Nirmala UI,50,&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,1,0,1,6,3,2,60,60,320,1
+Style: RomanStyle,Arial Black,52,&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,-1,0,0,0,100,100,1,0,1,6,3,2,60,60,420,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:00.00,0:00:02.00,RomanStyle,,0,0,0,,VISWAM {\c&H0000FFFF&}PRARAMBHANNI{\c&H00FFFFFF&}
+Dialogue: 0,0:00:00.00,0:00:02.00,TeluguStyle,,0,0,0,,విశ్వం {\c&H0000FFFF&}ప్రారంభాన్ని{\c&H00FFFFFF&}
