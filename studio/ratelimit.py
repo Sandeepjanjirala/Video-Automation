@@ -1,6 +1,7 @@
 """Distributed rate limiting and provider budget controls for Telugu Reel Studio (Phase 3/M9)."""
 import os
 import time
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 import redis
@@ -59,18 +60,15 @@ def acquire_rate_slot(provider: str, wait_timeout: float = 5.0) -> bool:
 
     while time.time() <= deadline:
         try:
-            p = r.pipeline()
-            # Remove timestamps older than window
-            p.zremrangebyscore(key, 0, now - window)
-            # Count remaining requests in current window
-            p.zcard(key)
-            # Execute pipeline
-            _, count = p.execute()
-
-            if count < limit:
-                # Add current request timestamp
-                r.zadd(key, {f"{now}:{time.time_ns()}": now})
-                r.expire(key, int(window) * 2)
+            # Count and reserve in one Redis operation across all workers.
+            allowed = r.eval("""
+                redis.call('ZREMRANGEBYSCORE', KEYS[1], '-inf', ARGV[1])
+                if redis.call('ZCARD', KEYS[1]) >= tonumber(ARGV[2]) then return 0 end
+                redis.call('ZADD', KEYS[1], ARGV[3], ARGV[4])
+                redis.call('EXPIRE', KEYS[1], ARGV[5])
+                return 1
+            """, 1, key, now - window, limit, now, uuid.uuid4().hex, int(window) * 2)
+            if allowed:
                 return True
             else:
                 # Sleep briefly with slight jitter before retrying
@@ -86,7 +84,8 @@ def record_usage(
     provider: str,
     estimated_units: int = 0,
     actual_units: int = 0,
-    uncertain: bool = False
+    uncertain: bool = False,
+    count_call: bool = True
 ) -> Dict[str, Any]:
     """Record request counts, estimated/actual billable usage, and provider uncertainty with atomic upsert."""
     day = datetime.now(timezone.utc).strftime('%Y-%m-%d')
@@ -94,9 +93,9 @@ def record_usage(
 
     query = """
     INSERT INTO usage (day, provider, calls, estimated_billable_units, actual_billable_units, uncertain_calls, last_call_at)
-    VALUES (%s, %s, 1, %s, %s, %s, %s)
+    VALUES (%s, %s, %s, %s, %s, %s, %s)
     ON CONFLICT (day, provider) DO UPDATE SET
-        calls = usage.calls + 1,
+        calls = usage.calls + EXCLUDED.calls,
         estimated_billable_units = usage.estimated_billable_units + EXCLUDED.estimated_billable_units,
         actual_billable_units = usage.actual_billable_units + EXCLUDED.actual_billable_units,
         uncertain_calls = usage.uncertain_calls + EXCLUDED.uncertain_calls,
@@ -104,7 +103,7 @@ def record_usage(
     RETURNING day, provider, calls, estimated_billable_units, actual_billable_units, uncertain_calls, last_call_at;
     """
     with _get_db_conn().cursor() as cursor:
-        cursor.execute(query, (day, provider, estimated_units, actual_units, 1 if uncertain else 0, now_dt))
+        cursor.execute(query, (day, provider, int(count_call), estimated_units, actual_units, 1 if uncertain else 0, now_dt))
         row = cursor.fetchone()
         return {
             'day': row[0],

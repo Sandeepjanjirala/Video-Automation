@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from django.db import transaction
 
 from studio.models import Project as PydanticProject
-from studio.store import compute_script_hash, digest
+from studio.store import compute_script_hash, digest, invalidate_stale_scene_fields
 from .models import (
     Workspace,
     Project,
@@ -52,6 +52,7 @@ def save_project_mutation(
 
         if old:
             old_data = old.body
+            invalidate_stale_scene_fields(old_data, validated)
             # Preserve script_approved_hash if script content didn't change
             if compute_script_hash(old_data) == compute_script_hash(validated):
                 validated['script_approved_hash'] = old_data.get('script_approved_hash', '')
@@ -188,7 +189,7 @@ def apply_job_result(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
                 else:
                     curr_s['video_asset'] = asset_info['id']
                     curr_s['visual'] = 'stock'
-                    curr_s['rights_reviewed'] = True
+                    curr_s['rights_reviewed'] = False
                     curr_s['trim_start'] = 0
                     modified = True
 
@@ -214,7 +215,7 @@ def apply_job_result(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
                 else:
                     curr_s['video_asset'] = asset_info['id']
                     curr_s['visual'] = 'stock'
-                    curr_s['rights_reviewed'] = True
+                    curr_s['rights_reviewed'] = False
                     curr_s['trim_start'] = 0
                     modified = True
 
@@ -347,6 +348,9 @@ def accept_voice_take_mutation(pid: str, take_id: str) -> Dict[str, Any]:
     Uses dedicated django_voice_writer role via voice_writer database alias.
     """
     with transaction.atomic(using='voice_writer'):
+        proj = Project.objects.using('voice_writer').select_for_update().filter(id=pid).first()
+        if not proj:
+            raise ValueError(f"Project '{pid}' not found")
         take = VoiceTake.objects.using('voice_writer').select_for_update().filter(id=take_id).first()
         if not take or take.project_id != pid:
             raise ValueError(f"Voice take '{take_id}' not found for project '{pid}'")
@@ -359,11 +363,15 @@ def accept_voice_take_mutation(pid: str, take_id: str) -> Dict[str, Any]:
         take.accepted = True
         take.save(using='voice_writer', update_fields=['accepted'])
 
-        proj = Project.objects.using('voice_writer').select_for_update().filter(id=pid).first()
-        if not proj:
-            raise ValueError(f"Project '{pid}' not found")
-
         p_data = copy.deepcopy(proj.body)
+        target_scene = next((s for s in p_data.get('scenes', []) if s.get('id') == take.scene_id), None)
+        if not target_scene:
+            raise ValueError('Voice take scene no longer exists')
+        source_text = (take.meta or {}).get('source_text')
+        if source_text is None:
+            source_text = take.spoken_text
+        if source_text not in (target_scene.get('narration', ''), target_scene.get('spoken_text') or target_scene.get('narration', '')):
+            raise ValueError('Script changed since this voice take was generated. Generate a new take.')
         if take.scene_id:
             for sc in p_data.get('scenes', []):
                 if sc.get('id') == take.scene_id:

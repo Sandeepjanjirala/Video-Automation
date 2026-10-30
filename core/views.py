@@ -165,7 +165,7 @@ class HealthCheckView(APIView):
         expected_tables = {
             "workspaces", "projects", "revisions", "assets", "jobs",
             "job_stages", "drafts", "application_receipts", "outbox",
-            "usage", "voice_takes", "alembic_version"
+            "usage", "voice_takes", "django_migrations"
         }
 
         try:
@@ -253,16 +253,17 @@ class SchemaStatusView(APIView):
         alembic_rev = None
         usage_count = 0
         with connection.cursor() as cursor:
-            cursor.execute("SELECT version_num FROM alembic_version LIMIT 1;")
-            row = cursor.fetchone()
-            if row:
-                alembic_rev = row[0]
+            if 'alembic_version' in connection.introspection.table_names():
+                cursor.execute("SELECT version_num FROM alembic_version LIMIT 1;")
+                row = cursor.fetchone()
+                if row:
+                    alembic_rev = row[0]
             cursor.execute("SELECT count(*) FROM usage;")
             usage_count = cursor.fetchone()[0]
 
         return Response({
-            "stage": "M2",
-            "schema_authority": "alembic",
+            "stage": "M9",
+            "schema_authority": "django",
             "alembic_revision": alembic_rev,
             "mapped_models_count": len(model_counts),
             "model_counts": model_counts,
@@ -319,7 +320,7 @@ class ProjectListView(APIView):
         try:
             PydanticProject.model_validate(data)
         except pydantic.ValidationError as err:
-            return Response({'detail': err.errors()}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+            return Response({'detail': err.errors(include_context=False)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -363,7 +364,7 @@ class ProjectDetailView(APIView):
         try:
             PydanticProject.model_validate(data['project'])
         except pydantic.ValidationError as err:
-            return Response({'detail': err.errors()}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+            return Response({'detail': err.errors(include_context=False)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -554,7 +555,10 @@ class ProjectJobsView(APIView):
         revision = data['revision']
         kind = data['kind']
         script = str(data.get('script', ''))[:20000]
-        video_id = int(data.get('video_id', 0))
+        try:
+            video_id = int(data.get('video_id', 0))
+        except (TypeError, ValueError):
+            return Response({'detail': 'video_id must be an integer'}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
         scene_id = str(data.get('scene_id', ''))[:48]
         operation_key = data.get('operation_key')
         if operation_key is not None:
@@ -571,10 +575,18 @@ class ProjectJobsView(APIView):
         }
 
         with transaction.atomic(using='job_writer'):
+            # Serialize enqueue decisions for this project on the same connection.
+            store.lock_enqueue(pid, operation_key, 'job_writer')
+            p = Project.objects.using('job_writer').filter(id=pid).first()
+            if not p or p.revision != revision:
+                return Response({'detail': 'Save the current revision first'}, status=status.HTTP_400_BAD_REQUEST)
+            options['tts_provider'] = p.body.get('tts_provider') or tts_provider
             # 1. Operation key idempotency check
             if operation_key:
                 existing_op = Job.objects.using('job_writer').filter(operation_key=operation_key).first()
                 if existing_op:
+                    if existing_op.project_id != pid or existing_op.kind != kind or existing_op.revision != revision:
+                        return Response({'detail': 'Operation key belongs to another request'}, status=status.HTTP_400_BAD_REQUEST)
                     return Response(serialize_job_dict(existing_op), status=status.HTTP_200_OK)
 
             # 2. Check for duplicate pending job of same kind on this project
@@ -674,8 +686,11 @@ class JobRetryView(APIView):
                 p = Project.objects.using('job_writer').filter(id=j.project_id).first()
                 if not p:
                     return Response({'detail': 'Project not found'}, status=status.HTTP_400_BAD_REQUEST)
+                if j.kind in ('voice', 'render') and p.approved_revision != p.revision:
+                    return Response({'detail': 'Approve this exact script revision first'}, status=status.HTTP_400_BAD_REQUEST)
                 snap = dict(j.snapshot)
                 snap['project'] = p.body
+                snap['options'] = {**snap.get('options', {}), 'tts_provider': p.body.get('tts_provider', 'edge')}
                 j.snapshot = snap
                 j.revision = p.revision
                 j.progress = 'Retry queued (current project)'
@@ -885,7 +900,7 @@ class AssetListCreateView(APIView):
             )
 
         aid = uuid.uuid4().hex
-        assets_dir = (Path(settings.BASE_DIR) / 'data' / 'assets').resolve()
+        assets_dir = (DATA / 'assets').resolve()
         assets_dir.mkdir(parents=True, exist_ok=True)
         path = assets_dir / f"{aid}{extension}"
         hasher = hashlib.sha256()
@@ -982,7 +997,7 @@ class AssetMediaView(APIView):
         except Asset.DoesNotExist:
             return Response({'detail': 'Media asset not found'}, status=status.HTTP_400_BAD_REQUEST)
 
-        assets_dir = (Path(settings.BASE_DIR) / 'data' / 'assets').resolve()
+        assets_dir = (DATA / 'assets').resolve()
         file_path = (assets_dir / a.filename).resolve()
 
         # Path traversal and existence check
@@ -1010,16 +1025,16 @@ class AssetThumbnailView(APIView):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        cache_dir = (Path(settings.BASE_DIR) / 'data' / 'cache').resolve()
+        cache_dir = (DATA / 'cache').resolve()
         cache_dir.mkdir(parents=True, exist_ok=True)
         thumb = cache_dir / f'{aid}.thumb.jpg'
 
         if thumb.is_file() and thumb.stat().st_size > 0:
             return FileResponse(open(thumb, 'rb'), content_type='image/jpeg')
 
-        assets_dir = (Path(settings.BASE_DIR) / 'data' / 'assets').resolve()
+        assets_dir = (DATA / 'assets').resolve()
         video_p = (assets_dir / a.filename).resolve()
-        if not video_p.is_file():
+        if video_p.parent != assets_dir or not video_p.is_file():
             return Response({'detail': 'Could not generate thumbnail'}, status=status.HTTP_404_NOT_FOUND)
 
         # Concurrency safety: generate to unique temporary file and atomically replace

@@ -83,6 +83,11 @@ def generate_voice_take(
     if cached:
         audio_file, boundaries, metadata = cached
     else:
+        from ..providers import online
+        from ..ratelimit import acquire_rate_slot
+        online()
+        if not acquire_rate_slot(cap.provider):
+            raise ValueError('Voice provider rate limit reached. Try again shortly.')
         adapter = get_adapter_for_provider(cap.provider)
         audio_file, boundaries, metadata = adapter.synthesize(
             text=final_text,
@@ -91,7 +96,7 @@ def generate_voice_take(
             pitch=eff_pitch
         )
         # Store in contract cache
-        audio_file, _ = store_cached_synthesis(contract_key, audio_file, boundaries, metadata)
+        audio_file, _ = store_cached_synthesis(contract_key, audio_file, boundaries, metadata, overwrite=explicit_regenerate)
 
     # 4. Copy to asset library for project playback
     take_id = f"take_{uuid.uuid4().hex[:12]}"

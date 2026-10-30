@@ -52,7 +52,7 @@ const StudioSettings = (() => {
     $('#setting-gemini-key').val('').attr('placeholder', cfg.gemini_key_configured ? '●●●●●●●● (saved key)' : 'Enter Gemini key');
     $('#hint-gemini-key').text(cfg.gemini_key_configured ? 'A key is saved.' : 'Needed for research and AI drafts.');
 
-    $('#setting-gemini-model').val(cfg.gemini_model || 'gemini-2.5-flash');
+    $('#setting-gemini-model').val(cfg.gemini_model || '');
     $('#setting-daily-ai-calls').val(cfg.daily_ai_calls || 20);
 
     $('#setting-pixabay-key').val('').attr('placeholder', cfg.pixabay_key_configured ? '●●●●●●●● (saved key)' : 'Enter Pixabay key');

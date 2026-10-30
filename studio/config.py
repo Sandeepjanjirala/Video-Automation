@@ -1,12 +1,13 @@
 import json
 import os
 import shutil
+import uuid
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.environ.get('REEL_DATA_DIR', str(ROOT / 'data'))).resolve()
 DEFAULTS = {
-    'gemini_key': '', 'gemini_model': 'gemini-3.8-flash', 'pixabay_key': '',
+    'gemini_key': '', 'gemini_model': '', 'pixabay_key': '',
     'azure_key': '', 'azure_region': '', 'sarvam_key': '', 'online_enabled': False,
     'tts_provider': 'edge', 'voice': 'te-IN-ShrutiNeural',
     'daily_ai_calls': 20, 'ffmpeg': '', 'ffprobe': '',
@@ -33,6 +34,9 @@ def save_settings(values):
         if key in SECRETS and not value:
             continue
         cfg[key] = value
+    for key in DEFAULTS.keys() - {'online_enabled', 'daily_ai_calls'}:
+        if not isinstance(cfg[key], str) or len(cfg[key]) > 2000 or '\n' in cfg[key] or '\r' in cfg[key]:
+            raise ValueError('Invalid setting value')
     if cfg['tts_provider'] not in ('edge', 'azure', 'sarvam'):
         raise ValueError('Choose edge, azure, or sarvam')
     from .voice.registry import TELUGU_VOICE_CATALOG
@@ -40,11 +44,11 @@ def save_settings(values):
         raise ValueError('Choose a supported Telugu voice')
     if not isinstance(cfg['online_enabled'], bool):
         raise ValueError('Online setting must be boolean')
-    cfg['daily_ai_calls'] = max(1, min(100, int(cfg['daily_ai_calls'])))
-    for key in DEFAULTS.keys() - {'online_enabled', 'daily_ai_calls'}:
-        if not isinstance(cfg[key], str) or len(cfg[key]) > 2000 or '\n' in cfg[key] or '\r' in cfg[key]:
-            raise ValueError('Invalid setting value')
-    tmp = DATA / 'settings.tmp'
+    try:
+        cfg['daily_ai_calls'] = max(1, min(100, int(cfg['daily_ai_calls'])))
+    except (TypeError, ValueError):
+        raise ValueError('Daily AI calls must be an integer') from None
+    tmp = DATA / f'settings.{uuid.uuid4().hex}.tmp'
     tmp.write_text(json.dumps(cfg, indent=2), 'utf-8')
     try:
         tmp.chmod(0o600)

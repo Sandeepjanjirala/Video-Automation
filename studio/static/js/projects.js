@@ -148,7 +148,7 @@
 
     loadProject: function(pid) {
       StudioState.setBusy(true);
-      StudioApi.request('/projects/' + pid)
+      return StudioApi.request('/projects/' + pid)
         .then(function(row) {
           Projects.sync(row);
           // Check for recoverable draft
@@ -179,8 +179,9 @@
     },
 
     sync: function(row) {
+      clearTimeout(autosaveTimer);
       StudioState.current = row;
-      StudioState.isDirty = false;
+      StudioState.markDirty(false);
       StudioState.draftRecoverable = null;
       StudioState.conflicts = [];
       StudioState.candidateTake = null;
@@ -200,6 +201,7 @@
       }
 
       Projects.renderProjectList();
+      Projects.renderDraftBanner();
       Projects.populateEditor();
       Projects.checkPreflight();
       $(document).trigger('studio:project-synced');
@@ -208,7 +210,7 @@
     createProject: function() {
       StudioState.setBusy(true);
       const emptyBody = StudioState.createEmptyProject();
-      StudioApi.request('/projects', 'POST', emptyBody)
+      return StudioApi.request('/projects', 'POST', emptyBody)
         .then(function(row) {
           StudioState.setNotice('Project created.');
           Projects.sync(row);
@@ -317,6 +319,7 @@
       const pid = StudioState.current.id;
       StudioApi.request('/projects/' + pid + '/preflight')
         .then(function(report) {
+          if (!StudioState.current || StudioState.current.id !== pid) return;
           StudioState.preflight = report;
           Projects.renderPreflightChecklist();
           Projects.updateHeaderBadges();
@@ -345,7 +348,9 @@
       $('#select-project-category').val(p.category || 'Storytelling');
       $('#input-target-seconds').val(p.target_seconds || 60);
       $('#select-duration-mode').val(p.duration_mode || 'natural');
-      $('#textarea-draft-script').val(p.draft_script || '');
+      $('#textarea-draft-script, #input-import-script').val(p.draft_script || '');
+      $('#select-project-tone').val(p.delivery_preset || 'conversational');
+      $('#select-project-duration').val(String(p.target_seconds));
       $('#textarea-evidence-notes').val(p.evidence_notes || '');
 
       // Export settings
@@ -368,7 +373,7 @@
 
       const scriptApproved = row.approved && !StudioState.isDirty;
       const visualsReviewed = p.scenes && p.scenes.every(s => s.rights_reviewed);
-      const renderReady = StudioState.preflight && StudioState.preflight.ready;
+      const renderReady = !StudioState.isDirty && StudioState.preflight && StudioState.preflight.ready;
 
       $('#badge-revision').text('v' + row.revision);
       $('#header-project-title').text(p.title || 'Untitled Reel');
@@ -405,6 +410,7 @@
     },
 
     renderDraftBanner: function() {
+      $('#alert-draft-recovery').toggle(!!StudioState.draftRecoverable);
       const $box = $('#draft-banner').empty();
       if (!StudioState.draftRecoverable) return;
 
@@ -463,7 +469,10 @@
       const $srcList = $('#research-sources-list').empty();
       if (p.research_sources && p.research_sources.length) {
         p.research_sources.forEach(function(s, idx) {
-          const $item = $(`<div><a href="${s.url}" target="_blank" rel="noreferrer">${idx + 1}. ${$('<div>').text(s.title).html()}</a></div>`);
+          let url;
+          try { url = new URL(s.url); } catch (e) { return; }
+          if (!['http:', 'https:'].includes(url.protocol)) return;
+          const $item = $('<div>').append($('<a>').attr({href: url.href, target: '_blank', rel: 'noreferrer'}).text(`${idx + 1}. ${s.title}`));
           $srcList.append($item);
         });
       }
@@ -482,6 +491,11 @@
       const $badge = $('#preflight-summary-badge');
 
       if (!pf) return;
+      if (StudioState.isDirty) {
+        $badge.attr('class', 'badge amber').text('Save to check');
+        $box.text('Save your changes to check the current storyboard.');
+        return;
+      }
 
       if (pf.ready) {
         $badge.attr('class', 'badge approved').text('All checks passed');
@@ -515,7 +529,7 @@
 
       StudioApi.request('/projects/' + pid + '/history')
         .then(function(history) {
-          const $list = $('#history-modal-list').empty();
+          const $list = $('#history-revisions-list').empty();
           if (!history || !history.length) {
             $list.html('<p class="muted">No historical revisions recorded.</p>');
           } else {
@@ -534,7 +548,7 @@
               $list.append($item);
             });
           }
-          $('#modal-history').show();
+          $('#history-modal').show();
         })
         .catch(function(err) {
           StudioState.setNotice(err.message, true);
@@ -550,13 +564,13 @@
     if (!body || !StudioState.current) return;
     StudioState.current.project = body;
     StudioState.markDirty(true);
-    $('#modal-history').hide();
+    $('#history-modal').hide();
     Projects.populateEditor();
     StudioState.setNotice('Revision loaded as unsaved draft. Save to create a new revision.');
   });
 
   $(document).on('click', '#btn-close-history-modal', function() {
-    $('#modal-history').hide();
+    $('#history-modal').hide();
   });
 
   Projects.save = Projects.saveProject;

@@ -8,12 +8,12 @@
 
     <div class="grid two">
       <div class="field">
-        <span>Top safe margin (px)</span>
-        <input type="number" id="input-margin-top" min="0" max="600" value="180">
+        <span>Caption size (1080p pixels)</span>
+        <input type="number" id="range-caption-size" class="project-field-bind" data-field="caption_size" min="30" max="90" value="56">
       </div>
       <div class="field">
         <span>Bottom safe margin (px)</span>
-        <input type="number" id="input-margin-bottom" min="0" max="600" value="260">
+        <input type="number" id="range-caption-bottom" class="project-field-bind" data-field="caption_bottom" min="180" max="600" value="300">
       </div>
     </div>
   </section>
@@ -22,20 +22,20 @@
   <section class="panel">
     <div class="sectionhead">
       <h2>Preflight readiness check</h2>
-      <span id="preflight-ready-badge" class="badge">Checking…</span>
+      <span id="preflight-summary-badge" class="badge">Checking…</span>
     </div>
     <p class="muted" style="margin-top:0;">The automated preflight pipeline validates your script, rights, media codecs, and voice takes before triggering FFmpeg.</p>
 
-    <div id="preflight-checklist" class="checklist">
+    <div id="preflight-checklist-items" class="checklist">
       <!-- Populated dynamically by StudioProjects.updatePreflight -->
       <div class="checkitem warn">Analyzing project readiness...</div>
     </div>
 
     <div class="actions" style="margin-top:20px;">
-      <button type="button" class="ghost" id="btn-render-preview" data-action="queue-job" data-kind="render" data-extra='{"resolution":"540x960"}'>
+      <button type="button" class="ghost" id="btn-render-preview" data-action="queue-job" data-kind="render" data-extra='{"quality":"draft"}'>
         &#9889; Quick draft preview (540&times;960)
       </button>
-      <button type="button" class="primary" id="btn-render-production" data-action="queue-job" data-kind="render" data-extra='{"resolution":"1080x1920"}'>
+      <button type="button" class="primary" id="btn-render-production" data-action="queue-job" data-kind="render" data-extra='{"quality":"final"}'>
         &#127916; Render 1080&times;1920 Reel
       </button>
     </div>

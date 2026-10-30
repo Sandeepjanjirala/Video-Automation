@@ -10,14 +10,14 @@
   const Voice = {
     init: function() {
       // Provider change -> update voice options
-      $(document).on('change', '#select-tts-provider', function() {
+      $(document).on('change', '#select-voice-provider', function() {
         const prov = $(this).val();
         Voice.populateVoiceOptions(prov);
 
         if (!StudioState.current || !StudioState.current.project) return;
         const p = StudioState.current.project;
         p.tts_provider = prov;
-        p.voice = $('#select-tts-voice').val();
+        p.voice = $('#select-voice-speaker').val();
 
         StudioState.markDirty(true);
         Voice.renderCapabilitiesStrip();
@@ -25,7 +25,7 @@
       });
 
       // Voice change
-      $(document).on('change', '#select-tts-voice', function() {
+      $(document).on('change', '#select-voice-speaker', function() {
         if (!StudioState.current || !StudioState.current.project) return;
         StudioState.current.project.voice = $(this).val();
         StudioState.markDirty(true);
@@ -34,13 +34,14 @@
       });
 
       // Voice profile lock
-      $(document).on('change', '#check-voice-locked', function() {
+      $(document).on('change', '#check-voice-lock', function() {
         if (!StudioState.current) return;
         const pid = StudioState.current.id;
         const locked = $(this).is(':checked');
 
         StudioState.setBusy(true);
-        StudioApi.request('/projects/' + pid + '/voice_lock', 'POST', { locked: locked })
+        Promise.resolve(StudioState.isDirty ? Projects.saveProject() : null)
+          .then(() => StudioApi.request('/projects/' + pid + '/voice_lock', 'POST', { locked: locked }))
           .then(function(updatedRow) {
             Projects.sync(updatedRow);
             StudioState.setNotice(locked ? 'Voice profile locked to project.' : 'Voice profile unlocked.');
@@ -65,7 +66,7 @@
         if (!StudioState.current || !StudioState.current.project) return;
         const val = +$(this).val();
         StudioState.current.project.speech_rate = val;
-        $('#speech-rate-label').text('Speech rate: ' + val + '%');
+        $('#label-speech-rate, #speech-rate-label').text('Speech rate: ' + val + '%');
         StudioState.markDirty(true);
         Projects.triggerAutosave();
       });
@@ -82,7 +83,8 @@
         updatedDict[key] = val;
 
         StudioState.setBusy(true);
-        StudioApi.request('/projects/' + pid + '/pronunciation_dict', 'POST', { dictionary: updatedDict })
+        Promise.resolve(StudioState.isDirty ? Projects.saveProject() : null)
+          .then(() => StudioApi.request('/projects/' + pid + '/pronunciation_dict', 'POST', { dictionary: updatedDict }))
           .then(function(updatedRow) {
             Projects.sync(updatedRow);
             $('#input-dict-key').val('');
@@ -108,7 +110,8 @@
         delete updatedDict[key];
 
         StudioState.setBusy(true);
-        StudioApi.request('/projects/' + pid + '/pronunciation_dict', 'POST', { dictionary: updatedDict })
+        Promise.resolve(StudioState.isDirty ? Projects.saveProject() : null)
+          .then(() => StudioApi.request('/projects/' + pid + '/pronunciation_dict', 'POST', { dictionary: updatedDict }))
           .then(function(updatedRow) {
             Projects.sync(updatedRow);
             StudioState.setNotice(`Pronunciation rule "${key}" removed.`);
@@ -204,7 +207,7 @@
       });
 
       // Generate candidate preview take
-      $(document).on('click', '#btn-generate-preview-take', function() {
+      $(document).on('click', '#btn-preview-candidate', function() {
         Voice.generatePreviewTake();
       });
 
@@ -221,7 +224,12 @@
     },
 
     populateVoiceOptions: function(prov) {
-      const $select = $('#select-tts-voice').empty();
+      const $select = $('#select-voice-speaker').empty();
+      const voices = (StudioState.capabilities || []).filter(c => c.provider === prov);
+      if (voices.length) {
+        voices.forEach(c => $select.append($('<option>').val(c.voice_id).text(c.display_name)));
+        return;
+      }
       if (prov === 'sarvam') {
         $select.append(`
           <option value="pavithra">Pavithra · Bulbul v3 (Telugu Female)</option>
@@ -247,6 +255,7 @@
       return StudioApi.request('/voice/capabilities')
         .then(function(caps) {
           StudioState.capabilities = caps || [];
+          Voice.populateVoiceControls();
           Voice.renderCapabilitiesStrip();
         })
         .catch(function() {});
@@ -263,8 +272,8 @@
 
       $('#check-voice-lock, #check-voice-locked').prop('checked', !!p.voice_locked);
       $('#select-delivery-preset').val(p.delivery_preset || 'conversational');
-      $('#range-speech-rate').val(p.speech_rate || 1.0).prop('disabled', prov === 'upload');
-      $('#label-speech-rate, #speech-rate-label').text((p.speech_rate || 1.0) + 'x');
+      $('#range-speech-rate').val(p.speech_rate ?? 0).prop('disabled', prov === 'upload');
+      $('#label-speech-rate, #speech-rate-label').text('Speech rate: ' + (p.speech_rate ?? 0) + '%');
 
       Voice.renderCapabilitiesStrip();
       Voice.renderDictionaryList();
@@ -360,6 +369,9 @@
       if (!StudioState.current || !StudioState.current.project) return;
       const p = StudioState.current.project;
       const scenes = p.scenes || [];
+      if (!scenes.some(s => s.id === StudioState.voiceLabSceneId)) {
+        StudioState.voiceLabSceneId = scenes[0]?.id || '';
+      }
 
       // Populate test scene dropdown
       const $select = $('#select-voicelab-scene').empty();
@@ -516,7 +528,8 @@
       const pid = StudioState.current.id;
       StudioState.setBusy(true);
 
-      StudioApi.request('/projects/' + pid + '/takes/' + takeId + '/accept', 'POST')
+      Promise.resolve(StudioState.isDirty ? Projects.saveProject() : null)
+        .then(() => StudioApi.request('/projects/' + pid + '/takes/' + takeId + '/accept', 'POST'))
         .then(function(res) {
           Projects.sync(res.project);
           StudioState.setNotice('Voice take accepted and applied to project (v' + res.project.revision + ').');

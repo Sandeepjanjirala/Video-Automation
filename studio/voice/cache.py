@@ -64,7 +64,8 @@ def store_cached_synthesis(
     src_audio: Path,
     boundaries: List[Dict[str, Any]],
     metadata: Dict[str, Any],
-    audio_format: str = "mp3"
+    audio_format: str = "mp3",
+    overwrite: bool = False
 ) -> Tuple[Path, Path]:
     """Atomically store synthesis artifacts in contract cache."""
     cache_dir = DATA / "cache"
@@ -75,7 +76,7 @@ def store_cached_synthesis(
     dest_meta = cache_dir / f"{contract_key}.meta.json"
 
     # If already cached by a concurrent request, reuse immediately
-    if dest_audio.exists() and dest_timing.exists() and dest_audio.stat().st_size > 0:
+    if not overwrite and dest_audio.exists() and dest_timing.exists() and dest_audio.stat().st_size > 0:
         return dest_audio, dest_timing
 
     unique = uuid.uuid4().hex[:8]
@@ -91,6 +92,8 @@ def store_cached_synthesis(
     if src_audio.resolve() != dest_audio.resolve():
         shutil.copy2(src_audio, temp_audio)
     else:
+        temp_timing.unlink(missing_ok=True)
+        temp_meta.unlink(missing_ok=True)
         return dest_audio, dest_timing
 
     # Atomic replace with retry for Windows file locks

@@ -45,6 +45,8 @@ if errorlevel 1 (
   exit /b 1
 )
 echo.
-echo Setup complete. Run START_WINDOWS.bat, then open http://127.0.0.1:8788
+echo Dependencies installed. PostgreSQL must be running before starting the studio.
+echo Run .venv\Scripts\python.exe manage.py migrate to initialize or update the database.
+echo Then run START_WINDOWS.bat and open http://127.0.0.1:8788
 echo Set FFmpeg and FFprobe paths in the app's Settings if they are not on PATH.
 pause

@@ -26,6 +26,16 @@ def main():
             raise SystemExit(f'Port {target_port} is in use. An existing studio may already be running: http://127.0.0.1:{target_port}')
 
     distributed = os.environ.get('STUDIO_DISTRIBUTED') == '1' or os.environ.get('STUDIO_WORKER_MODE') == 'celery'
+    os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+    django.setup()
+    from django.db import connection
+    from django.db.migrations.executor import MigrationExecutor
+    try:
+        executor = MigrationExecutor(connection)
+        if executor.migration_plan(executor.loader.graph.leaf_nodes()):
+            raise SystemExit('Database setup is pending. Run: python manage.py migrate, then restart the studio.')
+    except Exception:
+        raise SystemExit('PostgreSQL is unavailable or its schema cannot be read. Check STUDIO_DATABASE_URL and run python manage.py migrate.') from None
     worker = None
     if not distributed:
         worker = subprocess.Popen([sys.executable, '-m', 'studio.worker'])

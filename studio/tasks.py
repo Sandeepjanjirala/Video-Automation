@@ -19,9 +19,7 @@ from .config import DATA, executable, settings
 from . import store
 
 
-class FencingError(RuntimeError):
-    """Raised when worker loses execution lease or fencing token mismatches."""
-    pass
+FencingError = store.FencingError
 
 
 class CancelledError(RuntimeError):
@@ -45,15 +43,19 @@ class ExecutionLeaseContext:
         self.lease_token = store.acquire_lease(self.job_id, self.worker_id, self.duration)
         if not self.lease_token:
             raise FencingError(f"Could not acquire execution lease for job {self.job_id}")
+        self._context_token = store.execution_token.set(self.lease_token)
         self._thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
         self._thread.start()
         return self
 
     def _heartbeat_loop(self):
-        while not self._stop_event.wait(self.interval):
-            success = store.renew_lease(self.job_id, self.lease_token, self.duration)
-            if not success:
-                break
+        from django.db import connections
+        try:
+            while not self._stop_event.wait(self.interval):
+                if not store.renew_lease(self.job_id, self.lease_token, self.duration):
+                    break
+        finally:
+            connections.close_all()
 
     def check_ownership(self):
         if not store.verify_lease_and_not_cancelled(self.job_id, self.lease_token):
@@ -63,18 +65,36 @@ class ExecutionLeaseContext:
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=2)
+        store.execution_token.reset(self._context_token)
 
 
 def get_worker_identity(task_name: str) -> str:
     return f"{task_name}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
 
 
+def fail_execution(job_id, exc, lease, stage):
+    if not lease.lease_token:
+        return
+    from .config import SECRETS
+    message = str(exc) if isinstance(exc, ValueError) else f'{type(exc).__name__}: processing failed'
+    cfg = settings()
+    for key in SECRETS:
+        if cfg.get(key):
+            message = message.replace(cfg[key], '[redacted]')
+    try:
+        store.progress(job_id, message[:2000], 'failed', stage_name=stage,
+                       lease_token=lease.lease_token)
+    except FencingError:
+        pass  # Cancellation or a newer attempt owns the final status.
+
+
 @app.task(name='studio.tasks.task_research', bind=True, acks_late=True, max_retries=3)
 def task_research(self, job_id: str):
     """Stage: Research topic using grounded sources."""
     worker_id = get_worker_identity('research')
+    lease = ExecutionLeaseContext(job_id, worker_id)
     try:
-        with ExecutionLeaseContext(job_id, worker_id) as lease:
+        with lease:
             job_data = store.job(job_id)
             project = job_data['snapshot']['project']
             store.progress(job_id, 'Researching claims and facts', stage_name='research')
@@ -88,7 +108,7 @@ def task_research(self, job_id: str):
     except Exception as exc:
         if isinstance(exc, FencingError):
             return {'job_id': job_id, 'status': 'fenced'}
-        store.progress(job_id, f"Research failed: {str(exc)[:500]}", 'failed', stage_name='research')
+        fail_execution(job_id, exc, lease, 'research')
         raise
 
 
@@ -96,8 +116,9 @@ def task_research(self, job_id: str):
 def task_draft(self, job_id: str):
     """Stage: Draft storyboard from script or topic."""
     worker_id = get_worker_identity('draft')
+    lease = ExecutionLeaseContext(job_id, worker_id)
     try:
-        with ExecutionLeaseContext(job_id, worker_id) as lease:
+        with lease:
             job_data = store.job(job_id)
             project = job_data['snapshot']['project']
             script = job_data['snapshot']['options'].get('script', '')
@@ -112,7 +133,7 @@ def task_draft(self, job_id: str):
     except Exception as exc:
         if isinstance(exc, FencingError):
             return {'job_id': job_id, 'status': 'fenced'}
-        store.progress(job_id, f"Drafting failed: {str(exc)[:500]}", 'failed', stage_name='draft')
+        fail_execution(job_id, exc, lease, 'draft')
         raise
 
 
@@ -120,8 +141,9 @@ def task_draft(self, job_id: str):
 def task_stock(self, job_id: str):
     """Stage: Footage acquisition for single scene."""
     worker_id = get_worker_identity('stock')
+    lease = ExecutionLeaseContext(job_id, worker_id)
     try:
-        with ExecutionLeaseContext(job_id, worker_id) as lease:
+        with lease:
             job_data = store.job(job_id)
             opts = job_data['snapshot']['options']
             store.progress(job_id, 'Downloading footage clip', stage_name='footage')
@@ -136,7 +158,7 @@ def task_stock(self, job_id: str):
     except Exception as exc:
         if isinstance(exc, FencingError):
             return {'job_id': job_id, 'status': 'fenced'}
-        store.progress(job_id, f"Stock acquisition failed: {str(exc)[:500]}", 'failed', stage_name='footage')
+        fail_execution(job_id, exc, lease, 'footage')
         raise
 
 
@@ -144,8 +166,9 @@ def task_stock(self, job_id: str):
 def task_stock_all(self, job_id: str):
     """Stage: Sourcing footage for unassigned scenes."""
     worker_id = get_worker_identity('stock_all')
+    lease = ExecutionLeaseContext(job_id, worker_id)
     try:
-        with ExecutionLeaseContext(job_id, worker_id) as lease:
+        with lease:
             job_data = store.job(job_id)
             p = job_data['snapshot']['project']
             from .providers import download_stock, stock_search
@@ -178,7 +201,7 @@ def task_stock_all(self, job_id: str):
     except Exception as exc:
         if isinstance(exc, FencingError):
             return {'job_id': job_id, 'status': 'fenced'}
-        store.progress(job_id, f"Stock sourcing failed: {str(exc)[:500]}", 'failed', stage_name='footage')
+        fail_execution(job_id, exc, lease, 'footage')
         raise
 
 
@@ -186,8 +209,9 @@ def task_stock_all(self, job_id: str):
 def task_voice_pipeline(self, job_id: str):
     """Stages: Narration synthesis & Caption alignment."""
     worker_id = get_worker_identity('voice')
+    lease = ExecutionLeaseContext(job_id, worker_id)
     try:
-        with ExecutionLeaseContext(job_id, worker_id) as lease:
+        with lease:
             job_data = store.job(job_id)
             p = job_data['snapshot']['project']
             if not p['scenes'] or any(not s.get('narration', '').strip() for s in p['scenes']):
@@ -221,7 +245,7 @@ def task_voice_pipeline(self, job_id: str):
     except Exception as exc:
         if isinstance(exc, FencingError):
             return {'job_id': job_id, 'status': 'fenced'}
-        store.progress(job_id, f"Voice preparation failed: {str(exc)[:500]}", 'failed', stage_name='voice')
+        fail_execution(job_id, exc, lease, 'voice')
         raise
 
 
@@ -231,8 +255,10 @@ def task_render_pipeline(self, job_id: str):
     Stages: narration -> alignment -> scene rendering -> assembly -> mixing -> validation.
     """
     worker_id = get_worker_identity('render')
+    lease = ExecutionLeaseContext(job_id, worker_id, interval=15, duration=90)
+    temp = None
     try:
-        with ExecutionLeaseContext(job_id, worker_id, interval=15, duration=90) as lease:
+        with lease:
             job_data = store.job(job_id)
             p = job_data['snapshot']['project']
 
@@ -291,9 +317,12 @@ def task_render_pipeline(self, job_id: str):
                 length = math.ceil((voice['duration'] / speed + scene['hold_seconds']) * 30) / 30
                 cues = [{**c, 'start': c['start'] / speed, 'end': c['end'] / speed} for c in voice['cues']]
                 cache_key = store.digest({
-                    'renderer': 2,
+                    'renderer': 3,
                     'scene': scene,
                     'audio': Path(voice['audio_path']).name,
+                    'audio_mtime_ns': Path(voice['audio_path']).stat().st_mtime_ns,
+                    'audio_size': Path(voice['audio_path']).stat().st_size,
+                    'cues': cues,
                     'speed': speed,
                     'width': width,
                     'caption_size': p['caption_size'],
@@ -407,12 +436,6 @@ def task_render_pipeline(self, job_id: str):
             (temp / 'source-report.json').write_text(json.dumps(report, indent=2, ensure_ascii=False), 'utf-8')
             (temp / 'project.json').write_text(json.dumps(job_data['snapshot'], indent=2, ensure_ascii=False), 'utf-8')
 
-            destination = DATA / 'exports' / job_id
-            destination.mkdir(parents=True, exist_ok=True)
-            for name in ('reel.mp4', 'captions.srt', 'source-report.json', 'project.json'):
-                shutil.copyfile(temp / name, destination / name)
-            shutil.rmtree(temp, ignore_errors=True)
-
             result = {
                 'export_id': job_id,
                 'duration': report['duration'],
@@ -422,10 +445,13 @@ def task_render_pipeline(self, job_id: str):
 
             # Fencing check before committing final succeeded state
             lease.check_ownership()
-            store.progress(job_id, 'Complete', 'succeeded', result, stage_name='validation')
+            store.publish_export(job_id, temp, result)
             return {'job_id': job_id, 'status': 'succeeded'}
     except Exception as exc:
         if isinstance(exc, FencingError):
             return {'job_id': job_id, 'status': 'fenced'}
-        store.progress(job_id, f"Render failed: {str(exc)[:500]}", 'failed', stage_name='render')
+        fail_execution(job_id, exc, lease, 'render')
         raise
+    finally:
+        if temp is not None:
+            shutil.rmtree(temp, ignore_errors=True)

@@ -37,6 +37,15 @@ services:
       timeout: 3s
       retries: 5
 
+  migrate:
+    build: .
+    command: ["python", "manage.py", "migrate", "--noinput"]
+    environment:
+      - STUDIO_DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-studio}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
     build: .
     container_name: studio-api
@@ -46,13 +55,15 @@ services:
     environment:
       - STUDIO_DISTRIBUTED=1
       - STUDIO_DOCKER=1
-      - STUDIO_DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/studio
+      - STUDIO_DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-studio}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - STUDIO_CACHE_REDIS_URL=redis://redis:6379/2
     volumes:
       - ./data:/app/data
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -70,13 +81,15 @@ services:
     command: ["python", "-m", "studio.dispatcher"]
     environment:
       - STUDIO_DISTRIBUTED=1
-      - STUDIO_DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/studio
+      - STUDIO_DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-studio}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - STUDIO_CACHE_REDIS_URL=redis://redis:6379/2
     volumes:
       - ./data:/app/data
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -95,13 +108,15 @@ services:
     command: ["celery", "-A", "studio.celery_app", "worker", "-Q", "network", "-c", "2", "--loglevel=info", "-n", "worker_network@%h"]
     environment:
       - STUDIO_DISTRIBUTED=1
-      - STUDIO_DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/studio
+      - STUDIO_DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-studio}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - STUDIO_CACHE_REDIS_URL=redis://redis:6379/2
     volumes:
       - ./data:/app/data
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -120,13 +135,15 @@ services:
     command: ["celery", "-A", "studio.celery_app", "worker", "-Q", "render", "-c", "1", "--loglevel=info", "-n", "worker_render@%h"]
     environment:
       - STUDIO_DISTRIBUTED=1
-      - STUDIO_DATABASE_URL=postgresql+psycopg2://postgres:postgres@postgres:5432/studio
+      - STUDIO_DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-studio}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
       - STUDIO_CACHE_REDIS_URL=redis://redis:6379/2
     volumes:
       - ./data:/app/data
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:

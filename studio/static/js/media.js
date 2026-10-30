@@ -35,10 +35,10 @@
       });
 
       // Library modal file upload
-      $(document).on('change', '#input-library-upload-mp4', function(e) {
+      $(document).on('change', '#input-library-upload-mp4, #file-upload-media', function(e) {
         const file = e.target.files && e.target.files[0];
         if (!file) return;
-        Media.uploadFile(file, 'video')
+        Media.uploadFile(file)
           .then(function() {
             return Media.loadLibraryAssets();
           })
@@ -78,6 +78,34 @@
             StudioState.setBusy(false);
             e.target.value = '';
           });
+      });
+
+      // Background music upload
+      $(document).on('change', '.scene-upload-audio-input', async function(e) {
+        const sid = $(this).data('scene-id');
+        const file = e.target.files && e.target.files[0];
+        const scene = StudioState.current?.project.scenes.find(s => s.id === sid);
+        if (!file || !scene) return;
+        const narration = scene.narration;
+        StudioState.setBusy(true);
+        try {
+          const bytes = new TextEncoder().encode(JSON.stringify(narration));
+          const hash = await crypto.subtle.digest('SHA-256', bytes);
+          const asset = await Media.uploadFile(file, 'audio');
+          const textHash = Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
+          Scenes.updateSceneField(sid, {audio_asset: asset.id, audio_text_hash: textHash, take_id: '', cues: []});
+          Scenes.renderScriptEditor();
+          StudioState.setNotice('Recording attached to this narration. Save and approve before rendering.');
+        } catch (err) {
+          StudioState.setNotice(err.message, true);
+        } finally {
+          StudioState.setBusy(false);
+          e.target.value = '';
+        }
+      });
+      $(document).on('click', '.btn-remove-scene-audio', function() {
+        Scenes.updateSceneField($(this).data('scene-id'), {audio_asset: '', audio_text_hash: '', take_id: '', spoken_text: '', cues: []});
+        Scenes.renderScriptEditor();
       });
 
       // Background music upload
@@ -136,15 +164,16 @@
       });
 
       // Pixabay stock search
-      $(document).on('click', '.btn-find-stock', function() {
-        const sid = $(this).data('scene-id');
-        const s = StudioState.current.project.scenes.find(x => x.id === sid);
-        if (!s || !s.keywords) return;
+      $(document).on('click', '.btn-find-stock, #btn-stock-search', function() {
+        const sid = $(this).data('scene-id') || (libraryTargetScene !== 'all' ? libraryTargetScene : '');
+        const s = StudioState.current?.project.scenes.find(x => x.id === sid);
+        const query = $(this).is('#btn-stock-search') ? ($('#input-stock-search').val() || '').trim() : s?.keywords;
+        if (!query) return;
 
-        const $box = $(`#stock-results-${sid}`).html('<p class="muted">Searching Pixabay stock...</p>');
+        const $box = ($(this).is('#btn-stock-search') ? $('#stock-results-grid') : $(`#stock-results-${sid}`)).show().html('<p class="muted">Searching Pixabay stock...</p>');
         StudioState.setBusy(true);
 
-        StudioApi.request('/stock?q=' + encodeURIComponent(s.keywords))
+        StudioApi.request('/stock?q=' + encodeURIComponent(query))
           .then(function(hits) {
             if (!hits || !hits.length) {
               $box.html('<p class="muted">No stock clips found. Try different keywords.</p>');
@@ -155,9 +184,9 @@
               html += `
                 <div class="stockcard">
                   <p><b>${$('<div>').text(h.tags || 'Video').html()}</b></p>
-                  <video src="${h.preview_url}" style="width:100%;height:100px;object-fit:cover;border-radius:4px;" controls muted preload="metadata"></video>
-                  <p><small>${h.duration}s · by ${h.user}</small></p>
-                  <button type="button" class="btn-select-stock-hit" data-scene-id="${sid}" data-download-url="${h.download_url}" data-title="${h.tags || 'Pixabay video'}">Use this clip</button>
+                  <video src="${h.video.url}" style="width:100%;height:100px;object-fit:cover;border-radius:4px;" controls muted preload="metadata"></video>
+                  <p><small>${h.duration}s · by ${$('<div>').text(h.creator || '').html()}</small></p>
+                  <button type="button" class="btn-select-stock-hit" data-scene-id="${sid}" data-video-id="${h.id}">${sid ? 'Use this clip' : 'Download to library'}</button>
                 </div>
               `;
             });
@@ -175,12 +204,9 @@
       // Stock selection -> queue stock job
       $(document).on('click', '.btn-select-stock-hit', function() {
         const sid = $(this).data('scene-id');
-        const downloadUrl = $(this).data('download-url');
-        const title = $(this).data('title');
-        Jobs.queue('stock', {
+        StudioJobs.queue('stock', {
           scene_id: sid,
-          query: title,
-          direct_url: downloadUrl
+          video_id: Number($(this).data('video-id'))
         });
       });
 
@@ -247,13 +273,14 @@
       const pid = StudioState.current.id;
 
       if (target === 'all') {
-        StudioApi.request('/projects/' + pid + '/assign-media', 'POST', {
+        Promise.resolve(StudioState.isDirty ? Projects.saveProject() : null)
+        .then(() => StudioApi.request('/projects/' + pid + '/assign-media', 'POST', {
           asset_id: assetId,
           scene_ids: ['all']
-        })
+        }))
         .then(function(updatedRow) {
           Projects.sync(updatedRow);
-          $('#modal-media-library').hide();
+          $('#media-library-modal, #modal-media-library').hide();
           StudioState.setNotice('Clip assigned to all scenes.');
         })
         .catch(function(err) {
@@ -269,7 +296,7 @@
           rights_reviewed: true,
           trim_start: 0
         });
-        $('#modal-media-library').hide();
+        $('#media-library-modal, #modal-media-library').hide();
         Scenes.renderSceneVisuals();
         StudioState.setNotice('Clip assigned to scene. Save project to keep selection.');
         StudioState.setBusy(false);

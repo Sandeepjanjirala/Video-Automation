@@ -1,14 +1,8 @@
-"""Django settings for Telugu Reel Studio (Phase M1).
-
-Safe coexistence settings:
-- Read-only connection to existing PostgreSQL database.
-- Zero internal migration-backed apps installed (preserves Alembic schema authority).
-- Local loopback binding only (127.0.0.1, localhost).
-"""
+"""Local Django studio settings with optional scoped PostgreSQL identities."""
 import os
 import sys
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -51,8 +45,10 @@ admin_db_url = os.environ.get(
 
 is_migration_command = len(sys.argv) > 1 and sys.argv[1] in ('migrate', 'makemigrations', 'showmigrations', 'sqlmigrate', 'inspectdb')
 
-if is_migration_command or 'STUDIO_DATABASE_URL' in os.environ or 'STUDIO_MIGRATION_DATABASE_URL' in os.environ:
+if is_migration_command:
     db_url = admin_db_url
+elif os.environ.get('STUDIO_DATABASE_URL'):
+    db_url = os.environ['STUDIO_DATABASE_URL']
 else:
     db_url = os.environ.get('STUDIO_READONLY_DATABASE_URL')
     if not db_url:
@@ -204,6 +200,12 @@ DATABASES = {
         'ATOMIC_REQUESTS': False,
     },
 }
+
+# URL-encoded credentials must be decoded before passing them to libpq.
+for database in DATABASES.values():
+    for field in ('NAME', 'USER', 'PASSWORD'):
+        database[field] = unquote(database[field])
+    database.setdefault('OPTIONS', {})['connect_timeout'] = 5
 
 # Upload Limits: Stream large files to disk without buffering 200MB into memory
 DATA_UPLOAD_MAX_MEMORY_SIZE = 220 * 1024 * 1024  # 220 MB request payload limit

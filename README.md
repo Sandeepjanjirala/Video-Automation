@@ -1,205 +1,120 @@
-# Telugu Reel Studio — first runnable release (0.1)
+# Telugu Reel Studio
 
-A separate, local application for Sandeep's workflow: multi-topic stories, Telugu speech,
-Roman Telugu captions, adjustable duration, and manual publishing to Instagram and YouTube.
-The existing ShortsGenius project is not changed or required.
+A local workspace for turning your researched script into a vertical video:
+script and Roman Telugu captions → footage → narration → draft review → MP4 export.
 
-This release implements the core editing-to-export workflow. It is not a claim of
-production certification or guaranteed monetization. Live provider credentials,
-voice quality, and the Windows launcher still need validation on your PC.
+**Instagram publishing is not implemented yet.** Download the final reel and upload
+it manually. YouTube long videos are outside the current scope.
+
+## Current architecture
+
+- Django + Django REST Framework; Django templates and local jQuery.
+- PostgreSQL for projects, immutable revisions, assets, jobs, and voice takes.
+- FFmpeg/FFprobe for video processing, subtitles, narration normalization, and music ducking.
+- Local mode: one worker process launched by `run.py`.
+- Distributed mode: Redis, a transactional outbox dispatcher, and Celery workers.
+  Both modes execute the same leased job pipeline.
+- Optional providers: Gemini for research/script preparation, Pixabay for footage,
+  Edge community TTS, Azure Speech, and Sarvam speech. Provider credentials are separate.
+
+The older migration documents in `docs/` describe historical stages, including
+removed FastAPI, React, SQLite, and Alembic components. They are not current setup instructions.
 
 ## Start on Windows
 
-1. Extract this ZIP to a new folder, for example `Documents\TeluguReelStudio`.
-2. Run `SETUP_WINDOWS.bat`. It creates a project-only virtual environment and installs
-   dependencies. Python 3.12 x64 is preferred; the launcher also accepts installed
-   Python 3.11–3.14. Only Python 3.12 was tested for this delivery.
-3. Run `START_WINDOWS.bat`. Keep the terminal open.
-4. Open **http://127.0.0.1:8787** in Chrome or Edge.
-5. Open **Settings & providers**. If FFmpeg is not on PATH, paste the full paths to
-   `ffmpeg.exe` and `ffprobe.exe` that already work for ShortsGenius. Do not paste
-   surrounding quotes. Save, reopen Settings, and use **Check saved media setup**.
+Python 3.12 and FFmpeg/FFprobe are required. FFmpeg needs `libx264`, `subtitles`,
+`loudnorm`, and `sidechaincompress`. Node.js is needed only for frontend tests.
 
-Use an FFmpeg build with `libx264`, `subtitles`/libass, `loudnorm`, and
-`sidechaincompress`. There is no FFmpeg installer bundled here and no existing
-configuration is overwritten. The app binds only to the local loopback interface.
+1. Run `SETUP_WINDOWS.bat` to install Python dependencies into `.venv`.
+2. Start PostgreSQL. With Docker available, infrastructure can be started using
+   `docker compose up -d postgres redis`.
+3. The default local database is `postgresql://postgres:postgres@127.0.0.1:5433/studio`.
+   Override it with `STUDIO_DATABASE_URL` when needed. Percent-encode special
+   characters in URL credentials. `STUDIO_MIGRATION_DATABASE_URL` can supply a
+   separate migration identity. Existing scoped identities in `backups/` are
+   supported; their grants must cover the application's operations.
+4. Initialize/update the database:
 
-The CPU is used for encoding, with four encode threads and one active job. The
-Intel UHD 730 is not required. This configuration is intended for your i5-13400 / 16 GB
-machine, but render speed on that hardware has not been benchmarked. No local
-video-generation model, CUDA dependency, or large model download is required.
+   ```powershell
+   .venv\Scripts\python.exe manage.py migrate
+   .venv\Scripts\python.exe doctor.py
+   ```
 
-## Your first reel — no API keys required
+5. Run `START_WINDOWS.bat` and open **http://127.0.0.1:8788**.
+6. Configure FFmpeg paths and optional provider credentials in Settings.
 
-1. Create a new story. Enter a title, topic, and target duration.
-2. Enter a short scene's narration in **native Telugu script**. Enter the same spoken
-   words in English letters in **Roman Telugu captions**. Add more scenes as needed.
-3. Add factual review notes (or explicitly identify original fiction). Save and approve.
-4. In **Voice & visuals**, upload a video for each scene or explicitly select a
-   simple animated title card. Confirm each scene's relevance and usage rights.
-5. For narration, either upload an audio-only recording for every scene, or enable
-   online services and use the optional Edge community TTS integration.
-6. Prepare voice previews, review pronunciation, then render a 540p draft.
-7. Review framing and caption timing. Adjust as needed, save and approve, and render
-   the final 1080p export.
-8. Download `reel.mp4`. Publish manually. No social accounts are connected.
+The launcher checks database migrations before starting. Keep its terminal open
+while jobs run. This is a single-user local app using Django's development server,
+not an authenticated public hosting service.
 
-Entering Roman Telugu in the caption field does not automatically make the TTS
-speak correctly. Native Telugu narration text is separate for that reason. You can
-paste a Roman Telugu script into the import box and use configured Gemini to
-transliterate it; generated results require review before applying.
+To start the entire distributed stack, use `docker compose up --build`.
+Compose runs migrations before the API, dispatcher, and workers. The image includes
+templates, static assets, FFmpeg, and fonts. Local and distributed workers must not
+be run against the same job stream simultaneously.
 
-## Optional online automation
+## Make a reel from your script
 
-All online services are disabled until enabled in Settings. Each action is initiated
-by a button; there are no scheduled calls or automatic paid fallbacks.
+1. Create a story and paste your script into **Quick script importer**.
+2. **Split into scenes** works locally and preserves the text. Add matching Roman
+   Telugu captions yourself, or use **Prepare my script with AI** to generate
+   segmentation and transliteration. Apply the completed job after reviewing it.
+3. Add your research/evidence notes, or identify the script as original fiction.
+   Save and approve the current revision.
+4. Upload footage, find Pixabay candidates, or explicitly select title cards.
+   Review visual relevance and usage rights. Stock downloads require review.
+5. Upload a narration recording for each scene, or choose a speech provider and
+   voice. For online synthesis, enable online services explicitly in Settings.
+   Voice Lab lets you audition and accept individual takes.
+6. Save and approve after edits. Prepare narration to review it, then render a
+   **540×960 draft**. Inspect framing, pronunciation, and captions.
+7. Render the **1080×1920 final** and download `reel.mp4` for Instagram.
 
-| Action | Provider / requirement |
-|---|---|
-| Research and claim review | Gemini API key + available model that supports Google Search grounding |
-| Draft from research / prepare your own script | Gemini API key + compatible model |
-| Stock search, candidate selection and downloads | Your Pixabay API key |
-| No-key online speech | Optional `edge-tts` community integration |
-| Official speech API | Azure Speech resource key + region |
-| Fully offline narration | Upload your own scene audio |
+Editing narration invalidates old normalized speech and take references. Existing
+recordings must match the current narration; reattach or regenerate them when it
+changes. A stale voice take cannot be accepted against a changed script.
 
-Gemini's model ID is intentionally configurable with no silently chosen default.
-The adapter uses the documented `generateContent` interface and its `google_search`
-tool. Select an available model in your API account. A ChatGPT subscription is not
-used by this application and no API credits are included.
+Target duration is 10–180 seconds. Natural mode uses actual narration duration.
+Target-fit mode permits only 0.8–1.25× adjustment; excessive changes require script
+editing. Output is H.264/AAC at 30 fps. Caption timing is approximate unless manually
+edited; automatic word-index alignment still needs review.
 
-The Gemini request limit is per UTC day and counts attempted requests, including
-failures. It is **not a rupee spending cap**: token and grounding-search charges vary
-by model/provider. Use provider-side quotas and billing controls where available.
+## Providers, files, and recovery
 
-Edge TTS uses an unofficial integration with an online Microsoft service, not a
-local model or contracted API. Availability can change. Evaluate its terms and
-commercial suitability yourself; use an appropriately licensed recording or an
-official Speech API when required. No monetization or voice-service entitlement is
-implied by this package.
+Online services are disabled in new installations. Select a Gemini model available
+in your own API account; the app does not silently choose one. The Gemini daily
+limit counts HTTP attempts, including retries. It is a request limit, not a spending cap.
+Edge TTS is a community integration with an online service, not an offline voice model.
 
-## Topic → research → script → video
+Media, caches, settings, and exports live under `data/`, or `REEL_DATA_DIR` when set.
+Projects and job records live in PostgreSQL. Back up **both**, with workers stopped.
+Keys are kept in local settings and masked by the API. Export reports can contain
+editorial notes. A completed render provides `reel.mp4`, `captions.srt`,
+`source-report.json`, and `project.json`.
 
-1. Enter the topic and choose an editorial preset.
-2. Click **Research / check claims**. The worker returns a sourced, model-assisted
-   report; a report without grounded source links is rejected.
-3. Read the completed job's report. **Apply result**, review it, then save.
-4. Click **Draft from research**, or paste your own script and choose **Prepare my
-   script with AI**. Existing script text is not overwritten until you apply a result.
-5. Edit the script and its Roman captions. Add your own evidence notes and approve.
-6. Click **Find footage for unassigned scenes** to download keyword-selected
-   candidates. Existing assigned uploads and explicit graphic scenes are preserved.
-   Apply the result, inspect every selected clip, and confirm relevance and rights.
-   Missing matches remain missing; they are never replaced by unrelated demos.
-7. Replace individual selections with uploads or another Pixabay result whenever needed.
-8. Prepare narration, review, render a draft, and export the final cut.
+Failed jobs can be retried. Retrying current inputs requires approval of the current
+revision; original-input retries retain their original snapshot. Cancelled and
+completed jobs cannot be restarted by duplicate queue delivery. Crashed execution
+leases expire and become retryable failures. Do not delete original assets while
+saved projects still reference them.
 
-Stock matching uses keywords and prioritizes an unused portrait candidate when
-available. It is not semantic visual verification. A general stadium clip is not
-evidence of a particular match or event. The output report retains source/creator
-and license references; these records do not replace permission review.
-
-## Duration and captions
-
-- Target is adjustable from **10 to 180 seconds** for this release.
-- **Natural narration pace** uses actual recorded/synthesized audio length plus
-  scene holds; the target guides script generation, not a forced cutoff.
-- **Fit target** allows only 0.8–1.25x global narration speed adjustment. If a target
-  needs a larger change, the job pauses with an error asking you to edit the script
-  or target. It does not silently cut narration.
-- Scene lengths are rounded up to 30 fps frames; final measured duration is reported.
-- Edge word boundaries are mapped by word index only when counts agree. This is
-  an initial alignment, not guaranteed phonetic alignment.
-- When counts differ, or Azure/uploaded audio lacks word boundaries, caption timing
-  is estimated by text length and clearly labelled for review.
-- Use **Load generated timings for editing** and **Edit caption timestamps** to
-  correct `start`, `end`, and `text` per scene. Times refer to the original narration;
-  target-fit speed adjustment is applied during rendering. Empty cues mean automatic.
-- Narration or Roman-text edits clear old manual cues. A changed narration invalidates
-  its uploaded-audio binding: re-upload the correct recording or remove it to use TTS.
-- Caption size and bottom margin are adjustable. Preview against each platform's UI.
-
-## Editing, revision history, retries
-
-Saving creates a new immutable revision. A no-op save preserves approval. Any actual
-edit conservatively requires re-approval, including visual/layout edits in this first
-release. All jobs snapshot their project revision and voice provider. A completed
-result can be applied only when its originating revision is still current and there
-are no unsaved edits. This prevents an old AI draft from overwriting new work.
-
-Use **Revision history** to load an earlier version as a draft. Saving that draft
-creates a new revision and keeps history. Failed jobs can retry their original
-inputs; to use edited inputs, queue a new job. Narration and encoded scenes are
-cached. An unchanged retry reuses completed work; caption/visual changes can reuse
-narration. Scene cache invalidation is conservative and may rerender more than the
-minimal set when scene metadata changes.
-
-The worker is a separate process with a SQLite queue and an exclusive single-worker
-lock. Interrupted running jobs become failed at worker restart; press Retry. Queued
-jobs remain queued. Leave the launcher open until work finishes; cancellation and
-fine-grained job prioritization are not implemented in this release.
-
-## Outputs and data
-
-Every successful render exposes:
-
-- `reel.mp4` — 540×960 draft or 1080×1920 final, H.264 video / AAC audio, 30 fps.
-- `captions.srt` — the burned caption content and timings as a separate file.
-- `source-report.json` — revision, duration, media provenance, caption alignment mode,
-  research source links, music asset record, and your review notes.
-- `project.json` — the render input snapshot, without provider keys.
-
-These last two files can contain your editorial notes: review before sharing them.
-
-Projects, assets, caches, settings, and exports live under the application's `data/`
-folder. Keep it out of Git and back it up while the application is stopped. Keys are
-stored in `data/settings.json`; filesystem permissions protect them, but there is no
-OS credential-vault integration yet. The API never returns saved key values.
-
-The application has no cloud hosting, public authentication, publisher, scheduler,
-or analytics integration. It is a single-user local workspace, not an internet-facing
-service. Upload limit is 200 MB per file; downloaded stock clips are limited to 180 MB.
-There is no automatic cache deletion in this release; close the app before manually
-removing cache files. Keep original `assets/` files because saved projects reference them.
-
-## Included and deferred
-
-Implemented: React/TypeScript editor, FastAPI API, durable local worker, immutable
-revisions, human approval, Gemini adapters, Pixabay search and automatic candidate
-sourcing, scene uploads, Edge/Azure voice adapters, uploaded audio, editable captions,
-trim/crop/contain framing, simple title-card fades, music ducking, draft/final rendering,
-validation, retry, and export provenance.
-
-Deferred: advanced timeline UI, high-quality animated maps/graphics templates,
-Remotion integration, AI presenters, generated video, forced phonetic alignment,
-automatic live-news freshness rechecks at export, bulk scheduling, publishing,
-analytics, multi-user access, and cloud deployment. There is no claim that this
-first release produces a polished monetizable reel without editorial work.
-
-## Developer commands
+## Verification
 
 ```powershell
-.venv\Scripts\python.exe doctor.py
 .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.venv\Scripts\python.exe -m pytest tests -q
+npm install --prefix frontend
+.venv\Scripts\python.exe manage.py check
+.venv\Scripts\python.exe scripts/run_audit_tests.py
 ```
 
-The prebuilt React interface is included: Node.js is **not required to run the app**.
-To change it, install Node.js, enter `frontend/`, run `npm ci`, then `npm run build`.
-`package-lock.json` records the frontend build dependencies. Python direct dependencies
-are pinned; `requirements-tested.txt` also records the tested transitive environment.
+The audit runner creates and removes a uniquely named PostgreSQL test database,
+uses separate media/settings, disables online services, and retains test artifacts
+under `test-outputs/`. The test database account needs CREATE DATABASE permission.
+It tests real FFmpeg exports, uploads, editor controls, concurrency, cancellation,
+voice selection, quotas, and fresh migrations. Browser-DOM tests use Node.js/jsdom.
 
-On Linux/macOS: create a venv, install `requirements.txt`, make FFmpeg/FFprobe available,
-and run `python run.py`. The application itself has no Windows-only runtime dependency.
+**Do not run the historical integration suites against your working database.**
+Several older fixtures use hardcoded `studio`/`studio_test` databases, alter roles,
+or assume obsolete migration stages and already-running servers. The isolated
+runner deliberately runs `tests/test_audit.py`; it does not certify those old suites.
 
-## Provider references checked for this release
-
-- https://ai.google.dev/gemini-api/docs/generate-content/google-search
-- https://ai.google.dev/gemini-api/docs/google-search
-- https://pixabay.com/api/docs/
-- https://pixabay.com/service/license-summary/
-- https://github.com/rany2/edge-tts
-- https://learn.microsoft.com/en-us/azure/ai-services/speech-service/rest-text-to-speech
-- https://learn.microsoft.com/en-us/azure/ai-services/speech-service/language-support
-
-See `TEST_RESULTS.md` for the actual verification scope and remaining limits.
+See `docs/AUDIT_2026-10-30.md` for the changes, verification scope, and remaining gaps.

@@ -12,6 +12,8 @@
         const sid = $(this).closest('.scriptrow').data('id');
         Scenes.updateSceneField(sid, {
           narration: $(this).val(),
+          spoken_text: '',
+          take_id: '',
           cues: []
         });
       });
@@ -32,8 +34,25 @@
       });
 
       // Add scene buttons
-      $(document).on('click', '#btn-add-scene, #btn-add-scene-secondary', function() {
+      $(document).on('click', '#btn-add-scene, #btn-add-scene-secondary, #btn-add-scene-bottom', function() {
         Scenes.addScene();
+      });
+
+      $(document).on('click', '#btn-import-split', function() {
+        if (!StudioState.current) return;
+        const text = ($('#input-import-script').val() || '').trim();
+        const parts = text.split(/\n+|(?<=[.!?।])\s+/u).map(s => s.trim()).filter(Boolean);
+        if (!parts.length) return StudioState.setNotice('Paste a script first.', true);
+        if (parts.length > 30 || parts.some(s => s.length > 3000)) {
+          return StudioState.setNotice('Use at most 30 scenes and 3,000 characters per scene.', true);
+        }
+        const p = StudioState.current.project;
+        if (p.scenes.some(s => s.narration.trim()) && !confirm('Replace the current storyboard with this script?')) return;
+        p.scenes = parts.map(narration => ({...StudioState.createEmptyScene(), narration}));
+        StudioState.markDirty(true);
+        Projects.populateEditor();
+        Projects.triggerAutosave();
+        StudioState.setNotice('Script split into scenes. Add Roman Telugu captions, or use Prepare my script with AI.');
       });
 
       // Move scene up
@@ -84,6 +103,7 @@
 
     addScene: function() {
       if (!StudioState.current || !StudioState.current.project) return;
+      if (StudioState.current.project.scenes.length >= 30) return StudioState.setNotice('A reel supports up to 30 scenes.', true);
       const newScene = StudioState.createEmptyScene();
       StudioState.current.project.scenes.push(newScene);
       StudioState.markDirty(true);
@@ -160,10 +180,12 @@
                   <textarea class="scene-roman-input input-scene-caption" rows="4" placeholder="Telugulo mee katha…">${$('<div>').text(s.roman || '').html()}</textarea>
                 </label>
               </div>
-              <input type="hidden" class="scene-keywords-input input-scene-visual-prompt" value="${$('<div>').text(s.keywords || '').html()}">
+              <label class="field"><span>English footage search keywords</span><input type="text" class="scene-keywords-input input-scene-visual-prompt" maxlength="100" value="${$('<div>').text(s.keywords || '').html().replace(/"/g, '&quot;')}"></label>
               <div class="rowtools">
                 <button type="button" class="btn-move-scene-up"${disableMoveUp}>Move up</button>
                 <button type="button" class="btn-remove-scene">Remove scene</button>
+                <label class="filebutton ghost">Upload narration<input type="file" class="scene-upload-audio-input" data-scene-id="${s.id}" accept="audio/*"></label>
+                ${s.audio_asset ? `<audio controls preload="none" src="/api/assets/${s.audio_asset}/media"></audio><button type="button" class="btn-remove-scene-audio" data-scene-id="${s.id}">Remove recording</button>` : ''}
                 ${attachedAudioMsg}
               </div>
             </div>
@@ -267,7 +289,7 @@
                 <details style="margin-top:14px;">
                   <summary><b>Caption timing cues</b> (${s.cues ? s.cues.length : 0} manual words)</summary>
                   <p class="muted">Word-level start/end timestamps override automatic text-proportional timing.</p>
-                  <textarea id="cues-editor-${s.id}" rows="4" style="font-family:monospace;font-size:12px;">${cuesJson}</textarea>
+                  <textarea id="cues-editor-${s.id}" rows="4" style="font-family:monospace;font-size:12px;">${$('<div>').text(cuesJson).html()}</textarea>
                   <div class="actions">
                     <button type="button" class="btn-apply-cues" data-scene-id="${s.id}">Apply timings</button>
                   </div>

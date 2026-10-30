@@ -225,7 +225,7 @@ def list_voices(provider: Optional[str] = None) -> List[VoiceCapability]:
 
 def get_voice_capability(voice_id: str, provider: Optional[str] = None) -> VoiceCapability:
     """Lookup a voice capability by ID or normalized provider:voice_id key."""
-    if voice_id in TELUGU_VOICE_CATALOG:
+    if voice_id in TELUGU_VOICE_CATALOG and (provider is None or TELUGU_VOICE_CATALOG[voice_id].provider == provider):
         return TELUGU_VOICE_CATALOG[voice_id]
     
     # Check with provider prefix
@@ -237,8 +237,7 @@ def get_voice_capability(voice_id: str, provider: Optional[str] = None) -> Voice
         if v.voice_id == voice_id and (provider is None or v.provider == provider):
             return v
 
-    # Fallback to default Shruti
-    return TELUGU_VOICE_CATALOG["te-IN-ShrutiNeural"]
+    raise ValueError(f'Unsupported voice {voice_id!r} for provider {provider!r}. Choose a voice from the catalog.')
 
 
 def validate_voice_controls(voice_cap: VoiceCapability, requested_controls: Dict[str, Any]) -> Dict[str, Any]:

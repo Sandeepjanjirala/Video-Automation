@@ -28,16 +28,16 @@
       <div class="field">
         <span>Delivery style preset</span>
         <select id="select-delivery-preset">
-          <option value="storyteller">Expressive Storyteller (Dynamic pitch &amp; cadence)</option>
-          <option value="explainer">Clear Explainer (Balanced, educational)</option>
-          <option value="urgent">High-Energy Reel (Fast, hook-focused)</option>
-          <option value="custom">Custom pacing</option>
+          <option value="conversational">Conversational</option>
+          <option value="documentary">Documentary</option>
+          <option value="curious">Curious</option>
+          <option value="suspense">Suspense</option>
         </select>
       </div>
 
       <div class="field">
-        <span>Speech pacing (Rate: <span id="label-speech-rate">1.00x</span>)</span>
-        <input type="range" id="range-speech-rate" min="0.75" max="1.35" step="0.05" value="1.00">
+        <span id="label-speech-rate">Speech rate: 0%</span>
+        <input type="range" id="range-speech-rate" min="-25" max="25" step="1" value="0">
       </div>
     </div>
 
@@ -90,38 +90,17 @@
         <b>Colloquial spoken phrasing polish</b>
         <button type="button" id="btn-check-rewrite" class="ghost" style="font-size:11px;padding:4px 8px;">Check colloquial cadence</button>
       </div>
-      <div id="rewrite-diff-container" style="display:none;margin-top:10px;">
-        <div id="rewrite-diff-display" class="diff-container"></div>
-        <div class="actions">
-          <button type="button" id="btn-apply-rewrite" class="primary" style="font-size:11px;padding:4px 8px;">Apply spoken rewrite to scene</button>
-          <button type="button" id="btn-dismiss-rewrite" class="ghost" style="font-size:11px;padding:4px 8px;">Dismiss</button>
-        </div>
-      </div>
+      <div id="rewrite-preview-box" style="display:none;margin-top:10px;"></div>
     </div>
-
-    <!-- A/B Comparison Cards -->
-    <div class="ab-grid">
-      <div class="ab-card" id="ab-card-active">
-        <h4><span>Active scene take</span> <span class="badge approved">Current</span></h4>
-        <div id="active-take-body">
-          <p class="muted" style="font-size:12px;">No rendered audio take currently assigned.</p>
-        </div>
-      </div>
-
-      <div class="ab-card" id="ab-card-candidate">
-        <h4><span>Candidate take</span> <span class="badge" id="candidate-take-badge">Audition</span></h4>
-        <div id="candidate-take-body">
-          <p class="muted" style="font-size:12px;">Click "Audition candidate take" to synthesize a preview.</p>
-        </div>
-      </div>
-    </div>
+    <div id="voicelab-text-tiers-preview"></div>
+    <div id="voicelab-ab-cards-container"></div>
 
     <!-- Pronunciation Dictionary & Normalizer -->
     <details style="margin-top:16px;">
       <summary><b>Pronunciation dictionary &amp; phonetic overrides</b></summary>
       <div style="padding:10px 0;">
         <p class="muted" style="font-size:12px;">Specify exact phonetic replacements for English terms, technical words, or brand names.</p>
-        <div id="pronunciation-dict-list"></div>
+        <div id="dict-entries-list"></div>
         <div class="dict-row">
           <input type="text" id="input-dict-key" placeholder="Original word (e.g. WiFi, AI)">
           <input type="text" id="input-dict-val" placeholder="Phonetic Telugu (e.g. వైఫై, ఏఐ)">
@@ -131,10 +110,10 @@
         <div style="margin-top:16px;border-top:1px solid var(--line);padding-top:12px;">
           <span style="font-size:12px;font-weight:600;">Test phonetic normalizer:</span>
           <div style="display:flex;gap:8px;margin-top:6px;">
-            <input type="text" id="input-norm-test" placeholder="Test sentence with numbers or English terms...">
-            <button type="button" id="btn-test-norm" class="ghost">Normalize</button>
+            <input type="text" id="input-test-normalize-text" placeholder="Test sentence with numbers or English terms...">
+            <button type="button" id="btn-test-normalize" class="ghost">Normalize</button>
           </div>
-          <div id="output-norm-test" style="margin-top:8px;font-size:12px;color:var(--green);font-weight:500;"></div>
+          <div id="norm-test-result-box" style="margin-top:8px;font-size:12px;color:var(--green);font-weight:500;"></div>
         </div>
       </div>
     </details>
@@ -142,9 +121,7 @@
     <!-- Take History -->
     <details style="margin-top:10px;">
       <summary><b>Project voice take history</b></summary>
-      <div id="voice-takes-history" style="padding:10px 0;">
-        <p class="muted" style="font-size:12px;">Past synthesis takes for this project are retained durable.</p>
-      </div>
+      <table style="width:100%"><thead><tr><th>Take</th><th>Scene</th><th>Voice</th><th>Preset</th><th>Duration</th><th>Status</th><th>Playback</th></tr></thead><tbody id="voicelab-takes-tbody"></tbody></table>
     </details>
   </section>
 

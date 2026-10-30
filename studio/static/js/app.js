@@ -55,11 +55,12 @@ const StudioApp = (() => {
 
   function updateBusyState(busy) {
     if (busy) {
-      $('button:not(.allow-busy), input:not(.allow-busy)').prop('disabled', true);
+      $('button:not(.allow-busy), input:not(.allow-busy), textarea:not(.allow-busy), select:not(.allow-busy)').prop('disabled', true);
       $('#global-busy-spinner').show();
     } else {
-      $('button:not(.allow-busy), input:not(.allow-busy)').prop('disabled', false);
+      $('button:not(.allow-busy), input:not(.allow-busy), textarea:not(.allow-busy), select:not(.allow-busy)').prop('disabled', false);
       $('#global-busy-spinner').hide();
+      StudioProjects.updateHeaderBadges();
     }
   }
 

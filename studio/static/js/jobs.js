@@ -5,6 +5,9 @@ const StudioJobs = (() => {
   let activeProjectId = null;
 
   function init() {
+    $(document).on('studio:project-synced', function() {
+      if (StudioState.current) startPolling(StudioState.current.id);
+    });
     // Retry buttons
     $(document).on('click', '.btn-retry-job', function() {
       const jid = $(this).data('jid');
@@ -32,6 +35,11 @@ const StudioJobs = (() => {
       let extra = {};
       if (extraJson) {
         try { extra = JSON.parse(extraJson); } catch(e) {}
+      }
+      const scriptInput = $(this).attr('data-script-input');
+      if (scriptInput) {
+        extra.script = ($(scriptInput).val() || '').trim();
+        if (!extra.script) return StudioState.tell('Paste your script first.', true);
       }
       queue(kind, extra);
     });
@@ -156,6 +164,7 @@ const StudioJobs = (() => {
     if (!projectId) return;
     try {
       const jobs = await StudioApi.req(`/projects/${projectId}/jobs`);
+      if (!StudioState.current || StudioState.current.id !== projectId) return;
       StudioState.setJobs(jobs);
 
       // Check if any jobs are currently queued or running
@@ -177,6 +186,7 @@ const StudioJobs = (() => {
     if (!projectId || projectId !== activeProjectId) return;
     try {
       const jobs = await StudioApi.req(`/projects/${projectId}/jobs`);
+      if (!StudioState.current || StudioState.current.id !== projectId) return;
       StudioState.setJobs(jobs);
       const pending = jobs.filter(j => j.state === 'queued' || j.state === 'running');
       if (pending.length > 0) {
@@ -210,7 +220,8 @@ const StudioJobs = (() => {
       const isFailed = j.state === 'failed';
       const isSucceeded = j.state === 'succeeded';
       const isRunning = j.state === 'running' || j.state === 'queued';
-      const canApply = isSucceeded && ['research', 'draft', 'stock', 'stock_all'].includes(j.kind);
+      const canApply = isSucceeded && ['research', 'draft', 'stock', 'stock_all'].includes(j.kind)
+        && (j.kind !== 'stock' || !!j.result?.scene_id);
 
       html += `<div class="job ${escapeHtml(j.state)}" data-jid="${escapeHtml(j.id)}">`;
       html += `  <div class="job-meta">`;
@@ -246,6 +257,13 @@ const StudioJobs = (() => {
           html += `    <p>${escapeHtml(x.scene_id)}: ${escapeHtml(x.error || 'Candidate downloaded; review after applying.')}</p>`;
         });
         html += `  </details>`;
+      }
+
+      // Details for research
+      if (j.kind === 'voice' && isSucceeded && j.result?.voices) {
+        j.result.voices.forEach(v => {
+          html += `<div><span>${escapeHtml(v.scene_id)}</span><audio controls preload="none" src="/api/jobs/${encodeURIComponent(j.id)}/audio/${encodeURIComponent(v.scene_id)}"></audio></div>`;
+        });
       }
 
       // Details for research
@@ -290,8 +308,7 @@ const StudioJobs = (() => {
     let html = '';
     exportJobs.forEach(j => {
       const videoSrc = `/api/exports/${encodeURIComponent(j.id)}/reel.mp4`;
-      const thumbSrc = `/api/exports/${encodeURIComponent(j.id)}/thumb.jpg`;
-      const resLabel = j.params && j.params.resolution ? j.params.resolution : '1080x1920';
+      const resLabel = (j.result?.dimensions || []).join('x') || 'Rendered reel';
 
       html += `<div class="card export-card" style="margin-bottom:1.5rem;padding:1rem;border-radius:var(--radius);background:var(--surface);border:1px solid var(--border);" data-jid="${escapeHtml(j.id)}">`;
       html += `  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">`;
@@ -302,7 +319,7 @@ const StudioJobs = (() => {
       html += `    <a href="${videoSrc}" download="reel_${escapeHtml(j.id)}.mp4" class="btn primary" style="font-size:0.85rem;padding:0.4rem 0.8rem;text-decoration:none;">Download MP4</a>`;
       html += `  </div>`;
       html += `  <div class="video-preview-wrapper" style="max-width:360px;margin:0 auto;border-radius:var(--radius);overflow:hidden;background:#000;">`;
-      html += `    <video controls preload="metadata" poster="${thumbSrc}" style="width:100%;display:block;max-height:540px;" src="${videoSrc}">`;
+      html += `    <video controls preload="metadata" style="width:100%;display:block;max-height:540px;" src="${videoSrc}">`;
       html += `      Your browser does not support the video tag.`;
       html += `    </video>`;
       html += `  </div>`;

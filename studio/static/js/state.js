@@ -116,6 +116,8 @@
     },
 
     setNotice: function(msg, isError) {
+      $('#alert-notice-text').text(msg || '');
+      $('#alert-general-notice').toggleClass('error', !!isError).toggle(!!msg);
       if (!msg) {
         $('#studio-notice-container').empty();
         return;
@@ -130,8 +132,10 @@
       $('#studio-notice-container').html(html);
     },
 
+    _busyCount: 0,
     setBusy: function(busy) {
-      StudioState.isBusy = !!busy;
+      StudioState._busyCount = Math.max(0, StudioState._busyCount + (busy ? 1 : -1));
+      StudioState.isBusy = StudioState._busyCount > 0;
       $('button, input[type=file]').each(function() {
         if ($(this).hasClass('keep-enabled') || $(this).hasClass('allow-busy')) return;
         $(this).prop('disabled', StudioState.isBusy);

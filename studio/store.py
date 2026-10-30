@@ -7,7 +7,9 @@ import json
 import os
 import signal
 import subprocess
+import shutil
 import uuid
+from contextvars import ContextVar
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -17,7 +19,7 @@ import django
 django.setup()
 
 from django.conf import settings
-from django.db import connection, transaction
+from django.db import connection, connections, transaction
 from django.db.models import Q
 from core.models import (
     Workspace, Project, Revision, Asset, Job, JobStage, Draft,
@@ -31,6 +33,22 @@ DB_ALIAS = 'job_writer' if 'job_writer' in settings.DATABASES else 'default'
 PROJECT_DB = 'project_writer' if 'project_writer' in settings.DATABASES else 'default'
 MEDIA_DB = 'media_writer' if 'media_writer' in settings.DATABASES else 'default'
 VOICE_DB = 'voice_writer' if 'voice_writer' in settings.DATABASES else 'default'
+
+# Each execution carries its fencing token through all nested media/provider calls.
+execution_token = ContextVar('execution_token', default=None)
+
+
+class FencingError(RuntimeError):
+    """Execution was cancelled, expired, or replaced by another worker."""
+
+
+def check_execution(j, token=None):
+    token = token or execution_token.get()
+    if j.cancelled or j.state == 'cancelled':
+        raise FencingError('Job was cancelled')
+    if token and (j.state != 'running' or j.lease_token != token or
+                  not j.lease_expires_at or j.lease_expires_at <= datetime.now(timezone.utc)):
+        raise FencingError('Worker no longer owns this job')
 
 
 def now() -> str:
@@ -46,6 +64,20 @@ def compute_script_hash(project_dict: Dict[str, Any]) -> str:
     content = [{'narration': s.get('narration', ''), 'roman': s.get('roman', '')} for s in scenes]
     content.append({'notes': project_dict.get('evidence_notes', '')})
     return digest(content)
+
+
+def invalidate_stale_scene_fields(old_data, new_data):
+    old_scenes = {s['id']: s for s in old_data.get('scenes', [])}
+    for scene in new_data.get('scenes', []):
+        old = old_scenes.get(scene['id'])
+        if not old:
+            continue
+        if old.get('narration') != scene.get('narration'):
+            for field in ('spoken_text', 'take_id'):
+                if scene.get(field) == old.get(field):
+                    scene[field] = ''
+        if any(old.get(f) != scene.get(f) for f in ('narration', 'roman')) and scene.get('cues') == old.get('cues'):
+            scene['cues'] = []
 
 
 def init() -> None:
@@ -93,6 +125,7 @@ def save_project(project: Dict[str, Any], pid: Optional[str] = None, expected: O
         now_dt = datetime.now(timezone.utc)
         if old:
             old_data = old.body
+            invalidate_stale_scene_fields(old_data, data)
             if compute_script_hash(old_data) == compute_script_hash(data):
                 data['script_approved_hash'] = old_data.get('script_approved_hash', '')
             if old_data == data:
@@ -131,16 +164,15 @@ def save_project(project: Dict[str, Any], pid: Optional[str] = None, expected: O
 
 def reserve_ai_call(limit: int) -> None:
     day = now()[:10]
-    with connection.cursor() as cursor:
-        cursor.execute("SELECT calls FROM usage WHERE day = %s AND provider = 'gemini' FOR UPDATE;", (day,))
-        row = cursor.fetchone()
-        count = row[0] if row else 0
-        if count >= limit:
+    from .ratelimit import _get_db_conn
+    with _get_db_conn().cursor() as cursor:
+        cursor.execute("""
+            INSERT INTO usage (day, provider, calls) VALUES (%s, 'gemini', 1)
+            ON CONFLICT (day, provider) DO UPDATE SET calls = usage.calls + 1
+            WHERE usage.calls < %s RETURNING calls
+        """, (day, limit))
+        if cursor.fetchone() is None:
             raise ValueError('Daily Gemini request limit reached. Change Settings or try tomorrow (UTC).')
-        if row:
-            cursor.execute("UPDATE usage SET calls = calls + 1 WHERE day = %s AND provider = 'gemini';", (day,))
-        else:
-            cursor.execute("INSERT INTO usage (day, provider, calls) VALUES (%s, 'gemini', 1);", (day,))
 
 
 def save_draft(pid: str, draft_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -306,6 +338,25 @@ def preflight(project_data: Any) -> Dict[str, Any]:
             errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'video_asset', 'message': f'Scene {idx}: select or upload a video clip'})
         if not s.get('rights_reviewed', False):
             errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'rights_reviewed', 'message': f'Scene {idx}: review rights before rendering'})
+        for field, kind in (('video_asset', 'video'), ('audio_asset', 'audio')):
+            if not s.get(field) or (field == 'video_asset' and vis == 'graphic'):
+                continue
+            try:
+                asset_path(s[field], kind)
+                if field == 'audio_asset' and s.get('audio_text_hash') != digest(s.get('narration', '')):
+                    raise ValueError('Narration recording no longer matches the script; re-attach it or generate a new take')
+                if field == 'video_asset' and s.get('trim_start', 0) >= asset(s[field]).get('duration', 0):
+                    raise ValueError('Trim start must be before the end of the video')
+            except ValueError as exc:
+                errors.append({'scene_index': idx, 'scene_id': sid, 'field': field, 'message': f'Scene {idx}: {exc}'})
+
+    if project_data.get('music_asset'):
+        if not project_data.get('music_rights_reviewed'):
+            errors.append({'field': 'music_rights_reviewed', 'message': 'Review music usage rights before rendering'})
+        try:
+            asset_path(project_data['music_asset'], 'audio')
+        except ValueError as exc:
+            errors.append({'field': 'music_asset', 'message': str(exc)})
 
     return {'ready': len(errors) == 0, 'errors': errors, 'warnings': warnings}
 
@@ -344,7 +395,8 @@ def enqueue(
     operation_key: Optional[str] = None
 ) -> Dict[str, Any]:
     with transaction.atomic(using=DB_ALIAS):
-        p = Project.objects.using(PROJECT_DB).filter(id=pid).first()
+        lock_enqueue(pid, operation_key, DB_ALIAS)
+        p = Project.objects.using(DB_ALIAS).filter(id=pid).first()
         if not p:
             raise ValueError('Project not found')
         if p.revision != revision:
@@ -353,6 +405,8 @@ def enqueue(
         if operation_key:
             existing = Job.objects.using(DB_ALIAS).filter(operation_key=operation_key).first()
             if existing:
+                if existing.project_id != pid or existing.kind != kind or existing.revision != revision:
+                    raise ValueError('Operation key belongs to another request')
                 return job_to_dict(existing)
 
         # Prevent duplicate pending job
@@ -373,7 +427,8 @@ def enqueue(
                 raise ValueError(f'Cannot queue render: {msg}')
 
         now_dt = datetime.now(timezone.utc)
-        jid = uuid.uuid4().hex[:16]
+        jid = uuid.uuid4().hex
+        options = {**(options or {}), 'tts_provider': p.body.get('tts_provider') or 'edge'}
         snap = {
             'project': p.body,
             'options': options or {},
@@ -424,6 +479,14 @@ def enqueue(
         return job_to_dict(new_job)
 
 
+def lock_enqueue(pid, operation_key=None, using=DB_ALIAS):
+    """Serialize queue decisions without granting the job role UPDATE on projects."""
+    with connections[using].cursor() as cursor:
+        if operation_key:
+            cursor.execute('SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))', ('studio-operation', operation_key))
+        cursor.execute('SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))', ('studio-enqueue', pid))
+
+
 def job(jid: str) -> Dict[str, Any]:
     j = Job.objects.using(DB_ALIAS).filter(id=jid).first()
     if not j:
@@ -443,11 +506,15 @@ def progress(
     result: Optional[Dict[str, Any]] = None,
     stage_name: Optional[str] = None,
     billable_units: int = 0,
-    ambiguous: bool = False
+    ambiguous: bool = False,
+    lease_token: Optional[str] = None
 ) -> None:
     with transaction.atomic(using=DB_ALIAS):
         j = Job.objects.using(DB_ALIAS).select_for_update().filter(id=jid).first()
         if not j:
+            return
+        check_execution(j, lease_token)
+        if j.state in ('succeeded', 'failed'):
             return
         now_dt = datetime.now(timezone.utc)
         j.progress = message
@@ -487,6 +554,22 @@ def claim() -> Optional[Dict[str, Any]]:
         return job_to_dict(j)
 
 
+def publish_export(jid: str, directory: Path, result: Dict[str, Any]) -> None:
+    """Publish only while owning the job; downloads stay hidden until commit.
+
+    Keep the job locked across publication and completion so an expired attempt
+    cannot overwrite another attempt's finished files.
+    """
+    with transaction.atomic(using=DB_ALIAS):
+        j = Job.objects.using(DB_ALIAS).select_for_update().get(id=jid)
+        check_execution(j)
+        destination = DATA / 'exports' / jid
+        destination.mkdir(parents=True, exist_ok=True)
+        for name in ('reel.mp4', 'captions.srt', 'source-report.json', 'project.json'):
+            shutil.copyfile(directory / name, destination / name)
+        progress(jid, 'Complete', 'succeeded', result, stage_name='validation')
+
+
 def retry(jid: str, mode: str = 'original') -> Dict[str, Any]:
     with transaction.atomic(using=DB_ALIAS):
         j = Job.objects.using(DB_ALIAS).select_for_update().filter(id=jid).first()
@@ -500,8 +583,11 @@ def retry(jid: str, mode: str = 'original') -> Dict[str, Any]:
             p = Project.objects.using(PROJECT_DB).filter(id=j.project_id).first()
             if not p:
                 raise ValueError('Project not found')
+            if j.kind in ('voice', 'render') and p.approved_revision != p.revision:
+                raise ValueError('Approve this exact script revision first')
             snap = dict(j.snapshot)
             snap['project'] = p.body
+            snap['options'] = {**snap.get('options', {}), 'tts_provider': p.body.get('tts_provider', 'edge')}
             j.snapshot = snap
             j.revision = p.revision
             j.progress = 'Retry queued (current project)'
@@ -549,26 +635,27 @@ def acquire_lease(jid: str, worker_id: str, duration_seconds: int = 60) -> Optio
     """Acquire or extend execution lease for a job."""
     with transaction.atomic(using=DB_ALIAS):
         j = Job.objects.using(DB_ALIAS).select_for_update().filter(id=jid).first()
-        if not j or j.cancelled:
+        if not j or j.cancelled or j.state not in ('queued', 'running'):
             return None
         now_dt = datetime.now(timezone.utc)
-        if j.state == 'running' and j.lease_token and j.lease_token != worker_id:
+        if j.state == 'running' and j.lease_token:
             if j.lease_expires_at and j.lease_expires_at > now_dt:
                 return None  # Still owned by an active worker
         j.state = 'running'
-        j.lease_token = worker_id
+        j.lease_token = uuid.uuid4().hex
         j.lease_expires_at = now_dt + timedelta(seconds=duration_seconds)
         j.heartbeat_at = now_dt
         j.updated_at = now_dt
         j.save(using=DB_ALIAS)
-        return worker_id
+        return j.lease_token
 
 
 def renew_lease(jid: str, lease_token: str, extension_seconds: int = 60) -> bool:
     """Heartbeat lease renewal during long-running worker tasks."""
     with transaction.atomic(using=DB_ALIAS):
         j = Job.objects.using(DB_ALIAS).select_for_update().filter(id=jid).first()
-        if not j or j.cancelled or j.lease_token != lease_token:
+        if (not j or j.cancelled or j.state != 'running' or j.lease_token != lease_token
+                or not j.lease_expires_at or j.lease_expires_at <= datetime.now(timezone.utc)):
             return False
         now_dt = datetime.now(timezone.utc)
         j.lease_expires_at = now_dt + timedelta(seconds=extension_seconds)
@@ -581,7 +668,7 @@ def renew_lease(jid: str, lease_token: str, extension_seconds: int = 60) -> bool
 def verify_lease_and_not_cancelled(jid: str, lease_token: str) -> bool:
     """Verify that caller holds the active unexpired lease and job is not cancelled."""
     j = Job.objects.using(DB_ALIAS).filter(id=jid).first()
-    if not j or j.cancelled or j.lease_token != lease_token:
+    if not j or j.cancelled or j.state != 'running' or j.lease_token != lease_token or not j.lease_expires_at:
         return False
     now_dt = datetime.now(timezone.utc)
     if j.lease_expires_at and j.lease_expires_at < now_dt:
@@ -591,12 +678,19 @@ def verify_lease_and_not_cancelled(jid: str, lease_token: str) -> bool:
 
 def register_subprocess(jid: str, pid: int) -> None:
     """Associate active OS subprocess PID with the job."""
-    Job.objects.using(DB_ALIAS).filter(id=jid).update(subprocess_pid=pid)
+    with transaction.atomic(using=DB_ALIAS):
+        j = Job.objects.using(DB_ALIAS).select_for_update().get(id=jid)
+        check_execution(j)
+        j.subprocess_pid = pid
+        j.save(using=DB_ALIAS, update_fields=['subprocess_pid'])
 
 
-def unregister_subprocess(jid: str) -> None:
+def unregister_subprocess(jid: str, pid: Optional[int] = None) -> None:
     """Clear subprocess PID when process finishes."""
-    Job.objects.using(DB_ALIAS).filter(id=jid).update(subprocess_pid=None)
+    query = Job.objects.using(DB_ALIAS).filter(id=jid)
+    if pid is not None:
+        query = query.filter(subprocess_pid=pid)
+    query.update(subprocess_pid=None)
 
 
 def terminate_subprocess_tree(pid: int) -> None:
@@ -615,7 +709,11 @@ def terminate_subprocess_tree(pid: int) -> None:
                 parent.kill()
             except Exception:
                 try:
-                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    # Never kill a shared process group containing the API/worker.
+                    if os.getpgid(pid) == pid:
+                        os.killpg(pid, signal.SIGKILL)
+                    else:
+                        os.kill(pid, signal.SIGKILL)
                 except Exception:
                     os.kill(pid, signal.SIGKILL)
     except Exception:
