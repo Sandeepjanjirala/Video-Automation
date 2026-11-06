@@ -55,19 +55,36 @@ be run against the same job stream simultaneously.
 ## Make a reel from your script
 
 1. Create a story and paste your script into **Quick script importer**.
-2. **Split into scenes** works locally and preserves the text. Add matching Roman
-   Telugu captions yourself, or use **Prepare my script with AI** to generate
-   segmentation and transliteration. Apply the completed job after reviewing it.
+2. Select **Telugu written in English letters** (default) or native Telugu.
+   **Split into scenes** works locally. Each scene preserves your Roman Telugu
+   input/captions separately from its native Telugu narration. **Convert to Telugu**
+   opens a review window: use your configured Gemini or Sarvam text API, or paste
+   Telugu manually. Apply only after checking names and pronunciation. Editing a
+   converted Roman source requires another narration review before export.
 3. Add your research/evidence notes, or identify the script as original fiction.
    Save and approve the current revision.
-4. Upload footage, find Pixabay candidates, or explicitly select title cards.
-   Review visual relevance and usage rights. Stock downloads require review.
-5. Upload a narration recording for each scene, or choose a speech provider and
-   voice. For online synthesis, enable online services explicitly in Settings.
-   Voice Lab lets you audition and accept individual takes.
-6. Save and approve after edits. Prepare narration to review it, then render a
+4. Upload a video or JPEG/PNG/WebP image, reuse library media, find free stock,
+   or select title cards. Automatic stock search uses Pixabay first, then Pexels
+   when no results are found (or only Pexels is configured). Each scene also has
+   a source selector. Provider errors are shown; choose the other source explicitly
+   if credentials or quota fail. Review relevance and usage rights.
+5. Each scene has a **Prompt** button. Edit, save and copy its 5–10 second prompt
+   into a video generator of your choice, then upload the result. Prompt creation
+   is local and free; this app does not call a video generation API. External free
+   quotas, watermarks and usage terms depend on that service. Choose **Loop clip**
+   or **Hold the last frame** for short footage; images hold for the narration.
+6. New projects use **Edge Mohan**, a free online male Telugu narrator. Enable
+   online services for synthesis, or upload recordings for offline work. Voice Lab
+   auditions, accepted takes, caching and revision history remain available.
+7. Save and approve after edits. Prepare narration to review it, then render a
    **540×960 draft**. Inspect framing, pronunciation, and captions.
-7. Render the **1080×1920 final** and download `reel.mp4` for Instagram.
+8. Once satisfied, optionally choose **Upgrade to Sarvam voice**. This selects
+   Shubh (Bulbul v3 male); Ratan is also available. The selection itself makes no
+   paid call. Save and approve, then prepare narration or render with Sarvam.
+   Old generated takes and manual cue timings are invalidated when voice settings
+   change. Uploaded human recordings and selected visuals are preserved.
+9. Render the **1080×1920 final**, download `reel.mp4`, and upload it manually
+   to Instagram or YouTube. Final resolution never changes your voice provider.
 
 Editing narration invalidates old normalized speech and take references. Existing
 recordings must match the current narration; reattach or regenerate them when it
@@ -84,6 +101,20 @@ Online services are disabled in new installations. Select a Gemini model availab
 in your own API account; the app does not silently choose one. The Gemini daily
 limit counts HTTP attempts, including retries. It is a request limit, not a spending cap.
 Edge TTS is a community integration with an online service, not an offline voice model.
+It requires no API key but has no availability guarantee. Text conversion is separate
+from free voice: Gemini uses your account quota; Sarvam conversion is metered. Manual
+Telugu entry and prompt creation need no API calls. Successful conversions are cached,
+including Sarvam's individual chunks of at most 1,000 characters. Stock results are
+cached for 24 hours; downloads are deduplicated and retain source/creator/license data.
+
+Sarvam uses the documented Bulbul v3 speaker IDs and supported pace controls, stores
+WAV audio with the correct extension, and labels its caption alignment as estimated.
+Old projects using retired Sarvam IDs must select a current voice; they are not
+silently remapped. Existing explicit voice selections in other projects are retained.
+
+Provider contracts checked against the official [Sarvam TTS](https://docs.sarvam.ai/api-reference/text-to-speech/convert),
+[Sarvam transliteration](https://docs.sarvam.ai/api-reference/text/transliterate-text),
+and [Pexels API](https://www.pexels.com/api/documentation/) documentation.
 
 Media, caches, settings, and exports live under `data/`, or `REEL_DATA_DIR` when set.
 Projects and job records live in PostgreSQL. Back up **both**, with workers stopped.

@@ -9,7 +9,7 @@ const path = require('node:path');
   const w = dom.window;
   const root = path.join(__dirname, '..', 'studio', 'static');
   w.eval(fs.readFileSync(path.join(root, 'vendor/jquery.min.js'), 'utf8'));
-  for (const name of ['state', 'scenes', 'projects', 'voice', 'jobs', 'media']) {
+  for (const name of ['state', 'workflow', 'scenes', 'projects', 'voice', 'jobs', 'media']) {
     w.eval(fs.readFileSync(path.join(root, 'js', name + '.js'), 'utf8'));
   }
   const $ = w.jQuery;
@@ -20,6 +20,7 @@ const path = require('node:path');
     if (url.startsWith('/stock?')) return [{id:123, creator:'Fixture', tags:'Nature', duration:1, video:{url:'https://cdn.pixabay.com/fixture.mp4'}}];
     if (url === '/voice/preview') return {take_id: 'take_test', asset_id: 'a'.repeat(32), audio_url: '/api/assets/test/media', duration: 1.2, provider: 'edge', display_name: 'Fixture', preset: 'conversational'};
     if (url === '/voice/normalize') return {spoken_text: 'Normalized', roman_text: 'Roman'};
+    if (url === '/voice/transliterate') return {telugu: 'మన తెలుగు కథ.', roman: body.text, provider: body.provider, cached: false};
     if (url === '/voice/rewrite_preview') return {changed: true, proposed: 'New script', diff: [{type:'added', text:'New script'}]};
     if (url.endsWith('/jobs') && method === 'POST') return {id:'job1', kind: body.kind, state:'queued', result:{}};
     return [];
@@ -33,7 +34,7 @@ const path = require('node:path');
   const row = {id:'fixture', revision:1, approved:false, project:p};
   w.Projects.sync(row);
   assert.equal(w.StudioState.getDirty(), false);
-  assert.equal($('#select-voice-speaker').val(), 'te-IN-ShrutiNeural');
+  assert.equal($('#select-voice-speaker').val(), 'te-IN-MohanNeural');
   $('#select-voice-provider').val('azure').trigger('change');
   assert.equal(p.tts_provider, 'azure');
   $('#select-voice-speaker').val('te-IN-MohanNeural').trigger('change');
@@ -46,8 +47,8 @@ const path = require('node:path');
   $('#input-import-script').val('First sentence. Second sentence.').trigger('input');
   $('#btn-import-split').trigger('click');
   assert.equal(p.scenes.length, 2);
-  assert.equal(p.scenes[0].narration, 'First sentence.');
-  assert.equal(p.scenes[0].roman, '');
+  assert.equal(p.scenes[0].narration, '');
+  assert.equal(p.scenes[0].roman, 'First sentence.');
   p.scenes[0].spoken_text = 'Old speech';
   $('.scene-narration-input').first().val('Edited sentence').trigger('input');
   assert.equal(p.scenes[0].spoken_text, '');
@@ -84,6 +85,59 @@ const path = require('node:path');
   await tick();
   assert.ok(calls.some(c => c.body?.video_id === 123));
   assert.equal($('.scene-upload-audio-input').length, 3);
+  // Prompt generation is local; custom prompts round-trip without provider calls.
+  const beforePrompt = calls.length;
+  $('.btn-scene-prompt').first().trigger('click');
+  assert.match($('#scene-generation-prompt').val(), /5-second.*9:16/);
+  $('#scene-generation-prompt').val('My custom cinematic scene');
+  $('#btn-save-prompt').trigger('click');
+  assert.equal(p.scenes[0].generation_prompt, 'My custom cinematic scene');
+  assert.equal(calls.length, beforePrompt);
+  $('.btn-scene-prompt').first().trigger('click');
+  assert.equal($('#scene-generation-prompt').val(), 'My custom cinematic scene');
+  $('.btn-close-workflow').first().trigger('click');
+
+  // Native conversion is reviewable; editing the source blocks an outdated apply.
+  p.scenes[0].roman = 'Mana telugu katha.';
+  $('.btn-scene-transliterate').first().trigger('click');
+  const previousNarration = p.scenes[0].narration;
+  $('#btn-convert-telugu').trigger('click');
+  await tick();
+  assert.equal(p.scenes[0].narration, previousNarration);
+  assert.equal($('#transliteration-result').val(), 'మన తెలుగు కథ.');
+  p.scenes[0].roman = 'Source edited';
+  $('#btn-apply-telugu').trigger('click');
+  assert.equal(p.scenes[0].narration, previousNarration);
+  p.scenes[0].roman = 'Mana telugu katha.';
+  $('#btn-apply-telugu').trigger('click');
+  assert.equal(p.scenes[0].narration, 'మన తెలుగు కథ.');
+  assert.equal(p.scenes[0].narration_source_roman, 'Mana telugu katha.');
+
+  // Selecting Sarvam never generates paid audio on its own.
+  const beforeUpgrade = calls.length;
+  $('#btn-upgrade-sarvam').trigger('click');
+  assert.equal(p.tts_provider, 'sarvam');
+  assert.equal(p.voice, 'shubh');
+  assert.match($('.voice-billing-note').first().text(), /metered/);
+  assert.equal(calls.length, beforeUpgrade);
+  $('#btn-free-preview-voice').trigger('click');
+  assert.equal(p.tts_provider, 'edge');
+  assert.equal(p.voice, 'te-IN-MohanNeural');
+
+  p.scenes[0].stock_provider = 'pexels';
+  p.scenes[0].keywords = 'Andhra Pradesh';
+  w.Scenes.renderSceneVisuals();
+  $('.btn-find-stock').first().trigger('click');
+  await tick();
+  assert.ok(calls.some(c => c.url.includes('provider=pexels')));
+  p.scenes[0].visual = 'image';
+  p.scenes[0].video_asset = 'a'.repeat(32);
+  w.Scenes.renderSceneVisuals();
+  assert.equal($('.scene-visual-card').first().find('img.clippreview').length, 1);
+  p.scenes[0].visual = 'graphic';
+  p.scenes[0].graphic_title = '<img src=x onerror=alert(1)>';
+  w.Scenes.renderSceneVisuals();
+  assert.equal($('.visualplaceholder img').length, 0);
   w.StudioState.setNotice('Visible notice');
   assert.equal($('#alert-notice-text').text(), 'Visible notice');
   w.StudioState.markDirty(true);

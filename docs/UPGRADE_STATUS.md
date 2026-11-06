@@ -1,5 +1,48 @@
 # Telugu Reel Studio — Upgrade Status & Technical Audit
 
+## Current workflow update — 2026-11-06
+
+The Django/jQuery application now supports the approved low-cost scene workflow:
+
+- New projects default to the free online **Mohan** male narrator. Existing explicit
+  choices are preserved. Sarvam is a separate, deliberate project upgrade, and
+  selecting a provider alone makes no synthesis call. Export resolution never
+  selects a different provider.
+- The local importer accepts Romanized Telugu or native Telugu. Per-scene conversion
+  returns an editable candidate through Gemini or Sarvam, or accepts manually pasted
+  Telugu. The Roman input is retained. Changing a converted source requires review
+  before rendering. Conversion has separate API quota/billing from free narration.
+- Every scene has a saved, editable, copyable video prompt. Prompts are generated
+  locally; users generate clips on their chosen external service and upload them.
+- Pixabay is the preferred stock source, with Pexels as an optional fallback and
+  explicit scene/library selector. Search results cache for 24 hours, downloads
+  deduplicate by provider/ID and content, and creator/source/license metadata is kept.
+- Video and JPEG/PNG/WebP uploads work per scene and through the shared library.
+  Short clips can loop or hold the last frame. Images hold for narration duration.
+- Changing voice settings detaches stale synthetic takes and clears obsolete cues;
+  human recordings and visuals remain attached. Sarvam's current v3 male speaker
+  IDs and supported controls replace the invalid old catalog. WAV files retain
+  their proper format/extension. Retired IDs require an explicit current selection.
+- Existing revisions, approval, autosaved drafts, auditions, caching, background
+  jobs, manual caption timings, music ducking, and MP4/SRT/source exports remain.
+  Instagram and YouTube uploads are manual.
+
+Validation: **36 tests passed** through `scripts/run_audit_tests.py` in a disposable
+PostgreSQL 17 database with isolated media/settings. These include the real jQuery
+modules on the Django-rendered page, mocked provider contract tests, fresh
+migrations, and actual FFmpeg exports with video, images, frozen frames, audio and
+music. `git diff --check` and Python/JavaScript syntax checks passed. No live provider
+calls were made; Telugu voice quality and account quotas still need a user audition.
+Chromium screenshot capture was attempted but blocked by the execution environment's
+Unix-socket restriction; no visual browser verification is claimed.
+
+No database migration or data reset is required for these additive project-document
+fields. Back up the database and media directory as usual before updating.
+
+## Historical migration record
+
+The figures and host details below describe the earlier migration, not this run.
+
 **Last Updated**: 2026-10-14  
 **Current Phase**: Django Migration — Stage M9 Complete (Final Architecture Cleanup + Django Schema Ownership)  
 **Status**: Stage M9 Complete — Codebase genuinely converted to pure Django + Django Templates + jQuery + Django ORM + Django Migrations + PostgreSQL + Redis + Celery + FFmpeg. All legacy React, ReactDOM, TypeScript/TSX, FastAPI, and SQLAlchemy implementations deleted. PostgreSQL schema authority transferred 100% to Django migrations (`core/migrations/0001_initial.py`). Alembic frozen and retired. 151 automated tests passing; jQuery UI smoke passing with 0 errors; Workflow A and B real 1080x1920 E2E video reels rendered and verified; 0 React runtimes, 0 FastAPI processes, 0 SQLAlchemy runtime dependencies.  

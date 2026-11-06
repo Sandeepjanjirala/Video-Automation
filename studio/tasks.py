@@ -149,7 +149,7 @@ def task_stock(self, job_id: str):
             store.progress(job_id, 'Downloading footage clip', stage_name='footage')
 
             from .providers import download_stock
-            asset_info = download_stock(opts['video_id'])
+            asset_info = download_stock(opts['video_id'], opts.get('stock_provider', 'pixabay'))
             result = {'asset': asset_info, 'scene_id': opts.get('scene_id')}
 
             lease.check_ownership()
@@ -183,13 +183,13 @@ def task_stock_all(self, job_id: str):
                     selected.append({'scene_id': scene['id'], 'error': 'Add English search keywords'})
                     continue
                 try:
-                    candidates = stock_search(scene['keywords'])
-                    candidates.sort(key=lambda h: (h['id'] in used, h['video']['height'] < h['video']['width']))
+                    candidates = stock_search(scene['keywords'], provider=scene.get('stock_provider', 'auto'))
+                    candidates.sort(key=lambda h: ((h.get('provider', 'pixabay'), h['id']) in used, h['video']['height'] < h['video']['width']))
                     if not candidates:
                         raise ValueError('No suitable stock result. Upload footage or choose a graphic.')
                     hit = candidates[0]
-                    selected.append({'scene_id': scene['id'], 'asset': download_stock(hit['id'])})
-                    used.add(hit['id'])
+                    selected.append({'scene_id': scene['id'], 'asset': download_stock(hit['id'], hit.get('provider', 'pixabay'))})
+                    used.add((hit.get('provider', 'pixabay'), hit['id']))
                 except ValueError as exc:
                     selected.append({'scene_id': scene['id'], 'error': str(exc)})
 
@@ -317,7 +317,7 @@ def task_render_pipeline(self, job_id: str):
                 length = math.ceil((voice['duration'] / speed + scene['hold_seconds']) * 30) / 30
                 cues = [{**c, 'start': c['start'] / speed, 'end': c['end'] / speed} for c in voice['cues']]
                 cache_key = store.digest({
-                    'renderer': 3,
+                    'renderer': 4,
                     'scene': scene,
                     'audio': Path(voice['audio_path']).name,
                     'audio_mtime_ns': Path(voice['audio_path']).stat().st_mtime_ns,
@@ -348,11 +348,18 @@ def task_render_pipeline(self, job_id: str):
                         args += ['-f', 'lavfi', '-i', f'color=c=0x12251F:s={width}x{height}:r=30:d={length}']
                         vf = f"drawbox=x=0:y={int(height * .24)}:w=iw:h=4:color=0xB9F8CF:t=fill"
                     else:
-                        args += ['-stream_loop', '-1', '-ss', str(scene['trim_start']), '-i', store.asset_path(scene['video_asset'], 'video')]
+                        if scene['visual'] == 'image':
+                            args += ['-loop', '1', '-framerate', '30', '-i', store.asset_path(scene['video_asset'], 'image')]
+                        else:
+                            if scene.get('short_clip_mode', 'loop') == 'loop':
+                                args += ['-stream_loop', '-1']
+                            args += ['-ss', str(scene['trim_start']), '-i', store.asset_path(scene['video_asset'], 'video')]
                         if scene['fit'] == 'crop':
                             vf = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}:(iw-ow)*{scene['crop_x']}:(ih-oh)/2"
                         else:
                             vf = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x12251F"
+                    if scene['visual'] != 'graphic' and scene.get('short_clip_mode') == 'freeze':
+                        vf += f',tpad=stop_mode=clone:stop_duration={length}'
                     output = work / 'scene.mp4'
                     args += ['-i', voice['audio_path'], '-map', '0:v:0', '-map', '1:a:0',
                              '-vf', vf + ",setsar=1,fps=30,subtitles=captions.ass",

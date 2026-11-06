@@ -1,0 +1,23 @@
+<div id="scene-prompt-modal" class="modalback" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="scene-prompt-title">
+  <div class="modal">
+    <div class="sectionhead"><h2 id="scene-prompt-title">Scene video prompt</h2><button type="button" class="btn-close-workflow" aria-label="Close prompt">×</button></div>
+    <p class="muted">Edit and copy this prompt into your chosen video generator. Download its clip, then use Upload video / image on this scene. Check that provider's free quota, watermark and usage terms.</p>
+    <label class="field"><span>Clip duration</span><select id="prompt-seconds"><option value="5">5 seconds</option><option value="8">8 seconds</option><option value="10">10 seconds</option></select></label>
+    <label class="field"><span>Editable prompt</span><textarea id="scene-generation-prompt" rows="10" maxlength="6000"></textarea></label>
+    <div class="actions"><button type="button" id="btn-save-prompt" class="primary">Save prompt</button><button type="button" id="btn-copy-prompt">Save &amp; copy prompt</button><button type="button" id="btn-refresh-prompt">Rebuild from scene</button></div>
+    <p id="prompt-feedback" role="status" class="muted"></p>
+  </div>
+</div>
+<div id="transliteration-modal" class="modalback" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="transliteration-title">
+  <div class="modal">
+    <div class="sectionhead"><h2 id="transliteration-title">Roman Telugu → తెలుగు</h2><button type="button" class="btn-close-workflow" aria-label="Close conversion">×</button></div>
+    <p class="muted">Converts the spelling of your Telugu words, preserving your script. Review names and pronunciation before applying.</p>
+    <label class="field"><span>Roman Telugu source</span><textarea id="transliteration-source" rows="3" readonly></textarea></label>
+    <label class="field"><span>Conversion provider</span><select id="transliteration-provider"><option value="gemini">Gemini — uses your configured API quota</option><option value="sarvam">Sarvam — metered text conversion</option></select></label>
+    <p class="muted">This sends only this scene's text to the selected provider. Voice stays on your selected narrator. You can also paste Telugu below manually without a conversion call.</p>
+    <button type="button" id="btn-convert-telugu">Convert this scene</button>
+    <label class="field"><span>Review and edit Telugu narration</span><textarea id="transliteration-result" rows="5" maxlength="3000" lang="te"></textarea></label>
+    <button type="button" id="btn-apply-telugu" class="primary">Apply Telugu narration</button>
+    <p id="transliteration-feedback" role="status" class="muted"></p>
+  </div>
+</div>

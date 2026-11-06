@@ -7,6 +7,7 @@
 
   let libraryTargetScene = 'all';
 
+  const esc = value => $('<div>').text(value || '').html().replace(/"/g, '&quot;');
   const Media = {
     init: function() {
       // Reusable media library modal open
@@ -26,7 +27,7 @@
       // Library asset assignment
       $(document).on('click', '.btn-assign-asset-scene', function() {
         const aid = $(this).data('asset-id');
-        Media.assignAsset(aid, libraryTargetScene);
+        Media.assignAsset(aid, libraryTargetScene, $(this).data('asset-kind'));
       });
 
       $(document).on('click', '.btn-assign-asset-all', function() {
@@ -60,16 +61,16 @@
         if (!file) return;
 
         StudioState.setBusy(true);
-        Media.uploadFile(file, 'video')
+        Media.uploadFile(file, 'visual')
           .then(function(asset) {
             Scenes.updateSceneField(sid, {
               video_asset: asset.id,
-              visual: 'upload',
+              visual: asset.kind === 'image' ? 'image' : 'upload',
               rights_reviewed: true,
               trim_start: 0
             });
             Scenes.renderSceneVisuals();
-            StudioState.setNotice('Uploaded video assigned to scene. Save project to keep selection.');
+            StudioState.setNotice('Uploaded visual assigned to scene. Save project to keep selection.');
           })
           .catch(function(err) {
             StudioState.setNotice(err.message, true);
@@ -170,10 +171,11 @@
         const query = $(this).is('#btn-stock-search') ? ($('#input-stock-search').val() || '').trim() : s?.keywords;
         if (!query) return;
 
-        const $box = ($(this).is('#btn-stock-search') ? $('#stock-results-grid') : $(`#stock-results-${sid}`)).show().html('<p class="muted">Searching Pixabay stock...</p>');
+        const $box = ($(this).is('#btn-stock-search') ? $('#stock-results-grid') : $(`#stock-results-${sid}`)).show().html('<p class="muted">Searching stock providers…</p>');
         StudioState.setBusy(true);
 
-        StudioApi.request('/stock?q=' + encodeURIComponent(query))
+        const provider = $(this).is('#btn-stock-search') ? $('#library-stock-provider').val() : (s?.stock_provider || 'auto');
+        StudioApi.request('/stock?q=' + encodeURIComponent(query) + '&provider=' + encodeURIComponent(provider || 'auto'))
           .then(function(hits) {
             if (!hits || !hits.length) {
               $box.html('<p class="muted">No stock clips found. Try different keywords.</p>');
@@ -184,9 +186,9 @@
               html += `
                 <div class="stockcard">
                   <p><b>${$('<div>').text(h.tags || 'Video').html()}</b></p>
-                  <video src="${h.video.url}" style="width:100%;height:100px;object-fit:cover;border-radius:4px;" controls muted preload="metadata"></video>
-                  <p><small>${h.duration}s · by ${$('<div>').text(h.creator || '').html()}</small></p>
-                  <button type="button" class="btn-select-stock-hit" data-scene-id="${sid}" data-video-id="${h.id}">${sid ? 'Use this clip' : 'Download to library'}</button>
+                  <video src="${esc(h.video.url)}" style="width:100%;height:100px;object-fit:cover;border-radius:4px;" controls muted preload="metadata"></video>
+                  <p><small>${h.duration}s · by ${esc(h.creator)} on <a href="${esc(h.source_url || (h.provider === 'pexels' ? 'https://www.pexels.com' : 'https://pixabay.com'))}" target="_blank" rel="noopener noreferrer">${esc(h.provider || 'pixabay')}</a></small></p>
+                  <button type="button" class="btn-select-stock-hit" data-scene-id="${sid}" data-video-id="${h.id}" data-provider="${esc(h.provider || 'pixabay')}">${sid ? 'Use this clip' : 'Download to library'}</button>
                 </div>
               `;
             });
@@ -206,7 +208,8 @@
         const sid = $(this).data('scene-id');
         StudioJobs.queue('stock', {
           scene_id: sid,
-          video_id: Number($(this).data('video-id'))
+          video_id: Number($(this).data('video-id')),
+          stock_provider: $(this).data('provider') || 'pixabay'
         });
       });
 
@@ -219,7 +222,7 @@
       const fd = new FormData();
       fd.append('file', file);
       return StudioApi.upload('/assets', fd).then(function(asset) {
-        if (kind && asset.kind !== kind) {
+        if (kind && (kind === 'visual' ? !['video', 'image'].includes(asset.kind) : asset.kind !== kind)) {
           throw new Error('Please select a ' + kind + ' file.');
         }
         return asset;
@@ -235,9 +238,9 @@
     loadLibraryAssets: function() {
       const $grid = $('#media-assets-grid, #media-library-grid').html('<p class="muted">Loading media assets...</p>');
       return StudioApi.request('/assets').then(function(assets) {
-        const videoAssets = (assets || []).filter(a => a.kind === 'video');
+        const videoAssets = (assets || []).filter(a => ['video', 'image'].includes(a.kind));
         if (!videoAssets.length) {
-          $grid.html('<p class="muted">No media assets in library yet. Upload clips or search Pixabay stock above.</p>');
+          $grid.html('<p class="muted">No media assets in library yet. Upload clips or search free stock above.</p>');
           return;
         }
 
@@ -246,18 +249,19 @@
           const name = a.name || a.id;
           const durStr = a.duration ? a.duration.toFixed(1) + 's' : '';
           const singleBtn = (libraryTargetScene !== 'all')
-            ? `<button type="button" class="primary btn-assign-asset-scene" data-asset-id="${a.id}">Use for this scene</button>`
+            ? `<button type="button" class="primary btn-assign-asset-scene" data-asset-id="${a.id}" data-asset-kind="${a.kind}">Use for this scene</button>`
             : '';
 
           html += `
             <div class="mediacard">
-              <video class="mediathumb" preload="metadata" src="/api/assets/${a.id}/media"></video>
+              <img class="mediathumb" loading="lazy" alt="${esc(name)}" src="/api/assets/${a.id}/thumbnail">
               <div class="mediainfo">
                 <b>${$('<div>').text(name).html()}</b>
-                <small>${durStr} · ${a.provider || 'upload'}</small>
+                <small>${durStr} · ${esc(a.provider || 'upload')}</small>
+                ${a.source_url && /^https:\/\//.test(a.source_url) ? `<a href="${esc(a.source_url)}" target="_blank" rel="noopener noreferrer">${esc(a.creator || 'Source')} on ${esc(a.provider)}</a>` : ''}
                 <div class="mediaactions">
                   ${singleBtn}
-                  <button type="button" class="btn-assign-asset-all" data-asset-id="${a.id}">Use across all scenes</button>
+                  <button type="button" class="btn-assign-asset-all" data-asset-id="${a.id}" data-asset-kind="${a.kind}">Use across all scenes</button>
                 </div>
               </div>
             </div>
@@ -267,7 +271,7 @@
       });
     },
 
-    assignAsset: function(assetId, target) {
+    assignAsset: function(assetId, target, kind) {
       if (!StudioState.current) return;
       StudioState.setBusy(true);
       const pid = StudioState.current.id;
@@ -292,7 +296,7 @@
       } else {
         Scenes.updateSceneField(target, {
           video_asset: assetId,
-          visual: 'upload',
+          visual: kind === 'image' ? 'image' : 'upload',
           rights_reviewed: true,
           trim_start: 0
         });

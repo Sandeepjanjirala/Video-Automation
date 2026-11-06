@@ -43,6 +43,7 @@ class LocalSecurityMiddleware(MiddlewareMixin):
                     '/api/projects',
                     '/api/settings',
                     '/api/voice/normalize',
+                    '/api/voice/transliterate',
                     '/api/voice/preview',
                     '/api/voice/ab_compare',
                     '/api/voice/rewrite_preview',

@@ -9,6 +9,16 @@
 
   const Voice = {
     init: function() {
+      $(document).on('click', '#btn-free-preview-voice, #btn-upgrade-sarvam', function() {
+        if (!StudioState.current) return;
+        const p = StudioState.current.project;
+        p.tts_provider = this.id === 'btn-free-preview-voice' ? 'edge' : 'sarvam';
+        p.voice = p.tts_provider === 'edge' ? 'te-IN-MohanNeural' : 'shubh';
+        StudioState.markDirty(true);
+        Voice.populateVoiceControls();
+        Projects.triggerAutosave();
+        StudioState.setNotice('Voice selected. Save and approve, then prepare narration or render. Existing visuals stay in place; timing is rebuilt for the new voice.');
+      });
       // Provider change -> update voice options
       $(document).on('change', '#select-voice-provider', function() {
         const prov = $(this).val();
@@ -225,24 +235,22 @@
 
     populateVoiceOptions: function(prov) {
       const $select = $('#select-voice-speaker').empty();
-      const voices = (StudioState.capabilities || []).filter(c => c.provider === prov);
+      const voices = (StudioState.capabilities || []).filter(c => c.provider === prov).sort((a, b) => (b.gender === 'male') - (a.gender === 'male'));
       if (voices.length) {
         voices.forEach(c => $select.append($('<option>').val(c.voice_id).text(c.display_name)));
         return;
       }
       if (prov === 'sarvam') {
         $select.append(`
-          <option value="pavithra">Pavithra · Bulbul v3 (Telugu Female)</option>
-          <option value="meera">Meera · Bulbul v3 (Telugu Female)</option>
-          <option value="arvind">Arvind · Bulbul v3 (Telugu Male)</option>
-          <option value="amartya">Amartya · Bulbul v3 (Telugu Male)</option>
+          <option value="shubh">Shubh · Bulbul v3 (Male)</option>
+          <option value="ratan">Ratan · Bulbul v3 (Male)</option>
         `);
       } else if (prov === 'upload') {
         $select.append('<option value="human_upload">Uploaded Audio (Human Voice)</option>');
       } else {
         $select.append(`
-          <option value="te-IN-ShrutiNeural">Shruti · Telugu female</option>
           <option value="te-IN-MohanNeural">Mohan · Telugu male</option>
+          <option value="te-IN-ShrutiNeural">Shruti · Telugu female</option>
         `);
       }
     },
@@ -268,7 +276,10 @@
       const prov = p.tts_provider || 'edge';
       $('#select-voice-provider, #select-tts-provider').val(prov);
       Voice.populateVoiceOptions(prov);
-      $('#select-voice-speaker, #select-tts-voice').val(p.voice || 'te-IN-ShrutiNeural');
+      if (p.voice && !$('#select-voice-speaker option').toArray().some(o => o.value === p.voice)) {
+        $('#select-voice-speaker').append($('<option>').val(p.voice).text(p.voice + ' — unavailable; choose a current voice'));
+      }
+      $('#select-voice-speaker, #select-tts-voice').val(p.voice || 'te-IN-MohanNeural');
 
       $('#check-voice-lock, #check-voice-locked').prop('checked', !!p.voice_locked);
       $('#select-delivery-preset').val(p.delivery_preset || 'conversational');
@@ -283,7 +294,11 @@
       if (!StudioState.current || !StudioState.current.project) return;
       const p = StudioState.current.project;
       const caps = StudioState.capabilities || [];
-
+      const billing = p.tts_provider === 'edge'
+        ? 'Free online voice: Mohan or Shruti. No API key. The community service may be unavailable; upload narration if needed.'
+        : p.tts_provider === 'sarvam' ? 'Sarvam voice selected. Preparing narration or rendering can use metered API credits. Repeated identical audio is cached.'
+        : 'Your selected voice provider applies its own quota or billing.';
+      $('.voice-billing-note').text(billing);
       const curCap = caps.find(c => c.voice_id === p.voice && c.provider === p.tts_provider)
         || caps.find(c => c.voice_id === p.voice)
         || caps[0];
@@ -304,8 +319,7 @@
       $strip.append(`<span class="badge-cap-info">Format: ${(curCap.audio_formats && curCap.audio_formats[0]) || 'mp3'}</span>`);
       $strip.append(`<span class="badge-cap-info">Timing: ${curCap.timing_metadata || 'sentence'}</span>`);
       $strip.append(`<span class="badge-cap-info">Limit: ${curCap.max_characters_per_request || 5000} chars</span>`);
-      const costPer1k = curCap.estimated_cost_per_1k_chars || 0;
-      $strip.append(`<span class="badge-cap-info">Est. Cost: ₹${(costPer1k * 1000).toFixed(2)}/1M chars</span>`);
+      $strip.append($('<span class="badge-cap-info">').text(p.tts_provider === 'edge' ? 'Free community voice' : 'Provider quota / billing applies'));
     },
 
     renderDictionaryList: function() {
@@ -499,7 +513,7 @@
         scene_id: curScene.id,
         text: textToSynthesize,
         provider: p.tts_provider || 'edge',
-        voice: p.voice || 'te-IN-ShrutiNeural',
+        voice: p.voice || 'te-IN-MohanNeural',
         preset: p.delivery_preset || 'conversational',
         rate: p.speech_rate || 0,
         pitch: 0,

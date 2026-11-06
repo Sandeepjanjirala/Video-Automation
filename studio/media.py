@@ -45,8 +45,16 @@ def run(args, cwd=None, timeout=1800, job_id=None):
             store.unregister_subprocess(job_id, proc.pid if proc else None)
 
 
-def probe(path):
+def probe(path, allow_still=False):
     value = json.loads(run([executable('ffprobe'), '-v', 'error', '-show_streams', '-show_format', '-of', 'json', path], timeout=45))
+    if allow_still:
+        streams = value.get('streams', [])
+        if (len(streams) != 1 or streams[0].get('codec_name') not in ('png', 'mjpeg', 'webp')
+                or value.get('format', {}).get('format_name') not in ('image2', 'png_pipe', 'jpeg_pipe', 'webp_pipe')
+                or not 0 < streams[0].get('width', 0) * streams[0].get('height', 0) <= 40000000):
+            raise ValueError('Upload a still JPEG, PNG or WebP image, at most 40 megapixels.')
+        value.setdefault('format', {})['duration'] = '0'
+        return value
     duration = float(value.get('format', {}).get('duration', 0))
     if not math.isfinite(duration) or not 0 < duration <= 36000:
         raise ValueError('Media must have a valid duration between 0 and 36,000 seconds')
@@ -73,7 +81,7 @@ def voice_for(scene, project, provider):
     pdict = project.get('pronunciation_dict') or {}
     return synthesize(
         text=text,
-        voice=project.get('voice', 'te-IN-ShrutiNeural'),
+        voice=project.get('voice', 'te-IN-MohanNeural'),
         rate=project.get('speech_rate', 0),
         provider=provider,
         delivery_preset=preset,

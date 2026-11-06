@@ -7,12 +7,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.environ.get('REEL_DATA_DIR', str(ROOT / 'data'))).resolve()
 DEFAULTS = {
-    'gemini_key': '', 'gemini_model': '', 'pixabay_key': '',
+    'gemini_key': '', 'gemini_model': '', 'pixabay_key': '', 'pexels_key': '',
     'azure_key': '', 'azure_region': '', 'sarvam_key': '', 'online_enabled': False,
-    'tts_provider': 'edge', 'voice': 'te-IN-ShrutiNeural',
+    'tts_provider': 'edge', 'voice': 'te-IN-MohanNeural',
     'daily_ai_calls': 20, 'ffmpeg': '', 'ffprobe': '',
 }
-SECRETS = {'gemini_key', 'pixabay_key', 'azure_key', 'sarvam_key'}
+SECRETS = {'gemini_key', 'pixabay_key', 'pexels_key', 'azure_key', 'sarvam_key'}
 
 
 def setup():

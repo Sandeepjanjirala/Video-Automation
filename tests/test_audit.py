@@ -69,6 +69,203 @@ def test_editor_controls_on_rendered_page():
     subprocess.run(['node', 'tests/audit_ui.cjs', str(page)], check=True, timeout=45)
 
 
+def test_free_male_default_preserves_existing_choices():
+    assert Project().tts_provider == 'edge'
+    assert Project().voice == 'te-IN-MohanNeural'
+    old = project()
+    old.update(tts_provider='azure', voice='te-IN-ShrutiNeural')
+    assert store.save_project(old)['project']['voice'] == 'te-IN-ShrutiNeural'
+
+
+def test_scene_prompt_and_source_preferences_survive_revisions():
+    body = project()
+    body['scenes'][0].update(generation_prompt='Cinematic Andhra landscape', prompt_seconds=5,
+                             stock_provider='pexels', short_clip_mode='freeze')
+    p = store.save_project(body)
+    saved = store.get_project(p['id'])['project']['scenes'][0]
+    assert saved['generation_prompt'] == 'Cinematic Andhra landscape'
+    assert saved['stock_provider'] == 'pexels'
+    assert saved['short_clip_mode'] == 'freeze'
+
+
+def test_sarvam_conversion_chunks_caches_and_keeps_project_unchanged(monkeypatch):
+    from studio.transliteration import convert
+    cfg = {'online_enabled': True, 'sarvam_key': 'fixture-key'}
+    monkeypatch.setattr(providers, 'settings', lambda: cfg)
+    monkeypatch.setattr(providers, 'acquire_rate_slot', lambda *a: True)
+    calls = []
+    class Response:
+        def json(self):
+            return {'transliterated_text': 'మన తెలుగు కథ.'}
+    def request(method, url, **kw):
+        assert url == 'https://api.sarvam.ai/transliterate'
+        assert kw['json']['source_language_code'] == 'en-IN'
+        assert kw['json']['target_language_code'] == 'te-IN'
+        assert len(kw['json']['input']) <= 1000
+        calls.append(kw['json']['input'])
+        return Response()
+    monkeypatch.setattr(providers, 'request', request)
+    row = store.save_project(project())
+    text = 'Mana telugu katha. ' * 100
+    result = convert(text, 'sarvam')
+    assert len(calls) == 2
+    assert result['roman'] == text.strip()
+    assert 'తెలుగు' in result['telugu']
+    cfg['online_enabled'] = False
+    assert convert(text, 'sarvam')['cached'] is True
+    assert len(calls) == 2
+    assert store.get_project(row['id'])['revision'] == 1
+    with pytest.raises(ValueError, match='disabled'):
+        convert('Kotha script ' + uuid.uuid4().hex, 'sarvam')
+    assert client().post('/api/voice/transliterate', {'text': [], 'provider': 'sarvam'}, content_type='application/json').status_code == 400
+
+
+def test_conversion_source_edit_requires_review():
+    body = project()
+    scene = body['scenes'][0]
+    scene['narration_source_roman'] = scene['roman']
+    assert store.preflight(body)['ready']
+    scene['roman'] = 'Vere Telugu katha.'
+    assert any('Roman source changed' in e['message'] for e in store.preflight(body)['errors'])
+
+
+def test_pixabay_first_pexels_fallback_cache_and_download_hosts(monkeypatch):
+    from studio.stock import safe_stock_url
+    monkeypatch.setattr(providers, 'settings', lambda: {'online_enabled': True, 'pixabay_key': 'fixture-pixabay', 'pexels_key': 'fixture-pexels'})
+    calls = []
+    class Response:
+        def __init__(self, body): self.body = body
+        def json(self): return self.body
+    def request(method, url, **kw):
+        calls.append(url)
+        if 'pixabay' in url:
+            return Response({'hits': []})
+        assert kw['headers']['Authorization'] == 'fixture-pexels'
+        video = {'id': 12345, 'duration': 5, 'url': 'https://www.pexels.com/video/12345/', 'user': {'name': 'Fixture creator'},
+                 'video_files': [{'file_type': 'video/mp4', 'width': 1080, 'height': 1920, 'link': 'https://videos.pexels.com/fixture.mp4'}]}
+        return Response(video if 'videos/12345' in url else {'videos': [video]})
+    monkeypatch.setattr(providers, 'request', request)
+    query = 'fixture ' + uuid.uuid4().hex
+    hits = providers.stock_search(query)
+    assert hits[0]['provider'] == 'pexels'
+    assert hits[0]['creator'] == 'Fixture creator'
+    assert len(calls) == 2 and 'pixabay' in calls[0]
+    assert providers.stock_search(query) == hits
+    assert len(calls) == 2
+    assert providers.stock_search(video_id=12345, provider='pexels')[0]['id'] == 12345
+    assert calls[-1].endswith('/v1/videos/videos/12345')
+    assert safe_stock_url('https://videos.pexels.com/fixture.mp4', 'pexels')
+    for url in ('http://videos.pexels.com/a.mp4', 'https://videos.pexels.com.evil.test/a',
+                'https://127.0.0.1/a', 'https://user@videos.pexels.com/a', 'https://videos.pexels.com:invalid/a'):
+        assert not safe_stock_url(url, 'pexels')
+
+
+def test_pixabay_hit_prevents_unnecessary_pexels_request(monkeypatch):
+    monkeypatch.setattr(providers, 'settings', lambda: {'online_enabled': True, 'pixabay_key': 'fixture', 'pexels_key': 'fixture'})
+    class Response:
+        def json(self):
+            return {'hits': [{'id': 678, 'duration': 4, 'user': 'Author', 'pageURL': 'https://pixabay.com/videos/678/',
+                              'videos': {'medium': {'url': 'https://cdn.pixabay.com/fixture.mp4', 'size': 1024, 'width': 1080, 'height': 1920}}}]}
+    def request(method, url, **kw):
+        assert 'pixabay.com' in url
+        return Response()
+    monkeypatch.setattr(providers, 'request', request)
+    assert providers.stock_search(uuid.uuid4().hex)[0]['provider'] == 'pixabay'
+
+
+def test_stock_download_deduplication_is_provider_scoped(monkeypatch):
+    calls = []
+    def find(**kwargs):
+        calls.append(kwargs)
+        return {'id': 'a' * 32, 'provider': kwargs['provider']}
+    monkeypatch.setattr(store, 'find_asset', find)
+    monkeypatch.setattr(providers, 'stock_search', lambda *a, **k: pytest.fail('Already downloaded'))
+    assert providers.download_stock(123, 'pexels')['provider'] == 'pexels'
+    assert calls == [{'provider': 'pexels', 'external_id': '123'}]
+
+
+def test_sarvam_upgrade_detaches_generated_takes_and_preserves_uploads(monkeypatch):
+    body = project()
+    body['scenes'][0].update(audio_asset='a' * 32, take_id='take_free', audio_text_hash=store.digest(body['scenes'][0]['narration']),
+                             cues=[{'start': 0, 'end': 1, 'text': 'Idi'}])
+    body['scenes'].append({**body['scenes'][0], 'id': 'manual', 'take_id': '', 'audio_asset': 'b' * 32})
+    monkeypatch.setattr(store, 'get_voice_take', lambda tid: {'provider': 'edge', 'asset_id': 'a' * 32})
+    p = store.save_project(body)
+    body.update(tts_provider='sarvam', voice='shubh')
+    updated, _ = services.save_project_mutation(body, p['id'], 1)
+    first, manual = updated.body['scenes']
+    assert first['audio_asset'] == first['take_id'] == ''
+    assert first['cues'] == []
+    assert manual['audio_asset'] == 'b' * 32
+    calls = []
+    monkeypatch.setattr(providers, 'synthesize', lambda **kw: (calls.append(kw) or (Path('new.wav'), [])))
+    media.voice_for(first, updated.body, 'sarvam')
+    assert calls[0]['provider'] == 'sarvam' and calls[0]['voice'] == 'shubh'
+
+
+def test_sarvam_tts_contract_uses_supported_speaker_and_controls(monkeypatch, tmp_path):
+    import base64
+    import io
+    import wave
+    from studio.voice import sarvam_adapter
+    from studio.voice.registry import get_voice_capability
+    stream = io.BytesIO()
+    with wave.open(stream, 'wb') as wav:
+        wav.setnchannels(1); wav.setsampwidth(2); wav.setframerate(24000); wav.writeframes(b'\x00\x00' * 2400)
+    class Response:
+        status_code = 200
+        def json(self): return {'audios': [base64.b64encode(stream.getvalue()).decode()]}
+    calls = []
+    class Client:
+        def __init__(self, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        def post(self, url, **kw): calls.append(kw); return Response()
+    monkeypatch.setattr(sarvam_adapter, 'settings', lambda: {'sarvam_key': 'fixture'})
+    monkeypatch.setattr(sarvam_adapter.httpx, 'Client', Client)
+    output = tmp_path / 'sample.wav'
+    audio, boundaries, meta = sarvam_adapter.SarvamTTSAdapter().synthesize('ఇది తెలుగు.', 'shubh', target_audio=output, target_meta=tmp_path / 'timing.json')
+    payload = calls[0]['json']
+    assert payload['speaker'] == 'shubh' and payload['model'] == 'bulbul:v3'
+    assert payload['language_code'] == 'te-IN'
+    assert not {'pitch', 'loudness', 'enable_preprocessing'} & payload.keys()
+    assert media.duration(audio) == pytest.approx(0.1)
+    assert boundaries and meta['timing_type'] == 'duration_proportional'
+    with pytest.raises(ValueError, match='Unsupported voice'):
+        get_voice_capability('meera', 'sarvam')
+
+
+def test_uploaded_image_and_freeze_clip_export_offline(tmp_path):
+    picture, video, audio = (tmp_path / n for n in ('scene.png', 'clip.mp4', 'speech.wav'))
+    media.run([executable('ffmpeg'), '-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=blue:s=320x240', '-frames:v', '1', '-threads', '1', picture])
+    media.run([executable('ffmpeg'), '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30:duration=0.3', '-c:v', 'libx264', video])
+    media.run([executable('ffmpeg'), '-v', 'error', '-y', '-f', 'lavfi', '-i', 'sine=duration=1.3', audio])
+    def upload(path):
+        res = client().post('/api/assets', {'file': SimpleUploadedFile(path.name, path.read_bytes())})
+        assert res.status_code == 200, res.content
+        return res.json()
+    image, clip, voice = upload(picture), upload(video), upload(audio)
+    assert image['kind'] == 'image'
+    response = client().get(f"/api/assets/{image['id']}/thumbnail")
+    assert response.status_code == 200
+    response.close()
+    bad = client().post('/api/assets', {'file': SimpleUploadedFile('invalid.png', b'not an image')})
+    assert bad.status_code == 400
+    body = project()
+    scene = body['scenes'][0]
+    scene.update(visual='image', video_asset=image['id'], audio_asset=voice['id'], audio_text_hash=store.digest(scene['narration']))
+    body['scenes'].append({**scene, 'id': 'frozen', 'visual': 'upload', 'video_asset': clip['id'], 'short_clip_mode': 'freeze'})
+    row = store.save_project(body)
+    assert store.preflight(row['project'])['ready']
+    store.approve(row['id'], row['revision'])
+    job = store.enqueue(row['id'], row['revision'], 'render', {'quality': 'draft'})
+    assert task_render_pipeline.run(job['id'])['status'] == 'succeeded'
+    output = DATA / 'exports' / job['id'] / 'reel.mp4'
+    assert media.duration(output) == pytest.approx(2.6, abs=0.2)
+    assert (output.parent / 'source-report.json').is_file()
+    assert (output.parent / 'captions.srt').is_file()
+
+
 def test_backend_edit_invalidates_old_spoken_text():
     body = project()
     body['scenes'][0]['spoken_text'] = 'Old normalized text'
@@ -295,7 +492,7 @@ def test_voice_lookup_respects_provider():
 
 def test_voice_lab_obeys_offline_setting(monkeypatch):
     from studio.voice import lab
-    monkeypatch.setattr(lab, 'get_cached_synthesis', lambda *a: None)
+    monkeypatch.setattr(lab, 'get_cached_synthesis', lambda *a, **kw: None)
     with pytest.raises(ValueError, match='disabled'):
         lab.generate_voice_take('fixture', 'scene1', 'ఇది పరీక్ష.')
 

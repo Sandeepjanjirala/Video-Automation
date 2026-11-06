@@ -38,27 +38,24 @@
     </div>
 
     <div class="field">
-      <span>Narration provider</span>
-      <select id="setting-tts-provider">
-        <option value="edge">Edge community integration — no key, online</option>
-        <option value="sarvam">Sarvam AI Bulbul neural — Telugu specialist</option>
-        <option value="azure">Azure Speech — official API, account required</option>
-      </select>
+      <span>Pexels API key (optional stock fallback)</span>
+      <input type="password" id="setting-pexels-key" autocomplete="off" placeholder="Enter key to update">
+      <small>Pixabay is searched first. Add Pexels for more footage choices.</small>
     </div>
 
     <!-- Conditional Sarvam Fields -->
-    <div class="field tts-provider-fields tts-provider-sarvam" style="display:none;">
+    <div class="field">
       <span>Sarvam API subscription key</span>
       <input type="password" id="setting-sarvam-key" autocomplete="off" placeholder="Enter key to update">
-      <small id="hint-sarvam-key">Needed for Sarvam Bulbul neural synthesis.</small>
+      <small id="hint-sarvam-key">Optional metered Telugu conversion and final voice upgrade.</small>
     </div>
 
     <!-- Conditional Azure Fields -->
-    <div class="field tts-provider-fields tts-provider-azure" style="display:none;">
+    <div class="field">
       <span>Azure Speech key</span>
       <input type="password" id="setting-azure-key" autocomplete="off" placeholder="Enter key to update">
     </div>
-    <div class="field tts-provider-fields tts-provider-azure" style="display:none;">
+    <div class="field">
       <span>Azure region</span>
       <input type="text" id="setting-azure-region" placeholder="centralindia">
     </div>

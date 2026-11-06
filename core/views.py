@@ -559,6 +559,9 @@ class ProjectJobsView(APIView):
             video_id = int(data.get('video_id', 0))
         except (TypeError, ValueError):
             return Response({'detail': 'video_id must be an integer'}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        stock_provider = data.get('stock_provider', 'pixabay')
+        if stock_provider not in ('pixabay', 'pexels'):
+            return Response({'detail': 'Choose Pixabay or Pexels for the selected clip'}, status=422)
         scene_id = str(data.get('scene_id', ''))[:48]
         operation_key = data.get('operation_key')
         if operation_key is not None:
@@ -571,6 +574,7 @@ class ProjectJobsView(APIView):
             'quality': quality,
             'script': script,
             'video_id': video_id,
+            'stock_provider': stock_provider,
             'scene_id': scene_id,
         }
 
@@ -893,9 +897,9 @@ class AssetListCreateView(APIView):
             return Response({'detail': 'No file uploaded'}, status=status.HTTP_400_BAD_REQUEST)
 
         extension = Path(file.name or '').suffix.lower()
-        if extension not in ('.mp4', '.mov', '.mkv', '.webm', '.mp3', '.wav', '.m4a', '.ogg', '.aac'):
+        if extension not in ('.mp4', '.mov', '.mkv', '.webm', '.mp3', '.wav', '.m4a', '.ogg', '.aac', '.jpg', '.jpeg', '.png', '.webp'):
             return Response(
-                {'detail': 'Upload MP4/MOV/MKV/WEBM video or MP3/WAV/M4A/OGG/AAC audio'},
+                {'detail': 'Upload MP4/MOV/MKV/WEBM video, JPEG/PNG/WebP image, or MP3/WAV/M4A/OGG/AAC audio'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -923,7 +927,8 @@ class AssetListCreateView(APIView):
                 return Response(serialize_asset_dict(existing))
 
             # Media stream validation via FFprobe
-            info = probe(path)
+            is_image = extension in ('.jpg', '.jpeg', '.png', '.webp')
+            info = probe(path, allow_still=is_image)
             video = any(
                 s.get('codec_type') == 'video' and not s.get('disposition', {}).get('attached_pic')
                 for s in info.get('streams', [])
@@ -938,7 +943,7 @@ class AssetListCreateView(APIView):
                 'id': aid,
                 'filename': path.name,
                 'name': Path(file.name or '').name[:180],
-                'kind': 'video' if video else 'audio',
+                'kind': 'image' if is_image else 'video' if video else 'audio',
                 'duration': duration_val,
                 'sha256': file_hash,
                 'provider': 'upload',
@@ -960,7 +965,7 @@ class AssetListCreateView(APIView):
                     workspace_id='default',
                     filename=path.name,
                     name=Path(file.name or '').name[:180],
-                    kind='video' if video else 'audio',
+                    kind='image' if is_image else 'video' if video else 'audio',
                     duration=duration_val,
                     sha256=file_hash,
                     provider='upload',
@@ -1019,6 +1024,8 @@ class AssetThumbnailView(APIView):
         except Asset.DoesNotExist:
             return Response({'detail': 'Media asset not found'}, status=status.HTTP_400_BAD_REQUEST)
 
+        if a.kind == 'image':
+            return AssetMediaView().get(request, aid)
         if a.kind != 'video':
             return Response(
                 {'detail': 'Thumbnails only available for video assets'},
@@ -1091,7 +1098,7 @@ class StockSearchView(APIView):
             )
         try:
             from studio.providers import stock_search
-            results = stock_search(q)
+            results = stock_search(q, provider=request.query_params.get('provider', 'auto'))
             return Response(results)
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -1115,6 +1122,25 @@ class SettingsView(APIView):
                 return Response(res, status=status.HTTP_200_OK)
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class VoiceTransliterateView(APIView):
+    """Return an editable candidate; conversion never overwrites the project."""
+
+    def post(self, request, *args, **kwargs):
+        if not isinstance(request.data, dict):
+            return Response({'detail': 'Expected a text and provider object'}, status=422)
+        try:
+            from studio.transliteration import convert
+            return Response(convert(request.data.get('text'), request.data.get('provider')))
+        except ValueError as exc:
+            from studio.config import SECRETS, settings
+            message = str(exc)
+            for key in SECRETS:
+                secret = settings().get(key)
+                if secret:
+                    message = message.replace(secret, '[redacted]')
+            return Response({'detail': message}, status=400)
 
 
 class VoiceNormalizeView(APIView):
@@ -1159,7 +1185,7 @@ class VoicePreviewView(APIView):
                 scene_id=str(data.get('scene_id') or ''),
                 text=str(text_val),
                 provider=str(data.get('provider') or 'edge'),
-                voice=str(data.get('voice') or 'te-IN-ShrutiNeural'),
+                voice=str(data.get('voice') or 'te-IN-MohanNeural'),
                 delivery_preset=str(data.get('preset') or 'conversational'),
                 rate=int(data.get('rate') or 0),
                 pitch=int(data.get('pitch') or 0),

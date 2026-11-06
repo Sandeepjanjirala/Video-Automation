@@ -68,10 +68,22 @@ def compute_script_hash(project_dict: Dict[str, Any]) -> str:
 
 def invalidate_stale_scene_fields(old_data, new_data):
     old_scenes = {s['id']: s for s in old_data.get('scenes', [])}
+    voice_changed = any(old_data.get(f) != new_data.get(f) for f in
+                        ('tts_provider', 'voice', 'speech_rate', 'delivery_preset', 'pronunciation_dict'))
     for scene in new_data.get('scenes', []):
         old = old_scenes.get(scene['id'])
         if not old:
             continue
+        speech_changed = voice_changed or any(old.get(f) != scene.get(f) for f in
+                                              ('narration', 'spoken_text', 'delivery_preset'))
+        # Accepted synthetic takes are attachments too. Never keep an old engine's
+        # recording after a voice upgrade. Human uploads remain explicitly attached.
+        if speech_changed and old.get('take_id') and scene.get('audio_asset') == old.get('audio_asset'):
+            take = get_voice_take(old['take_id'])
+            if take and take.get('provider') != 'upload':
+                scene.update(audio_asset='', audio_text_hash='', take_id='')
+        if speech_changed and scene.get('cues') == old.get('cues'):
+            scene['cues'] = []
         if old.get('narration') != scene.get('narration'):
             for field in ('spoken_text', 'take_id'):
                 if scene.get(field) == old.get(field):
@@ -333,8 +345,10 @@ def preflight(project_data: Any) -> Dict[str, Any]:
             errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'narration', 'message': f'Scene {idx}: narration is empty'})
         if not s.get('roman', '').strip():
             errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'roman', 'message': f'Scene {idx}: Roman caption text is empty'})
+        if s.get('narration_source_roman') and s['narration_source_roman'] != s.get('roman'):
+            errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'narration', 'message': f'Scene {idx}: Roman source changed; review and apply Telugu narration again'})
         vis = s.get('visual', 'graphic')
-        if vis in ('upload', 'stock') and not (s.get('video_asset') or s.get('asset_id')):
+        if vis in ('upload', 'stock', 'image') and not (s.get('video_asset') or s.get('asset_id')):
             errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'video_asset', 'message': f'Scene {idx}: select or upload a video clip'})
         if not s.get('rights_reviewed', False):
             errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'rights_reviewed', 'message': f'Scene {idx}: review rights before rendering'})
@@ -342,10 +356,10 @@ def preflight(project_data: Any) -> Dict[str, Any]:
             if not s.get(field) or (field == 'video_asset' and vis == 'graphic'):
                 continue
             try:
-                asset_path(s[field], kind)
+                asset_path(s[field], 'image' if field == 'video_asset' and vis == 'image' else kind)
                 if field == 'audio_asset' and s.get('audio_text_hash') != digest(s.get('narration', '')):
                     raise ValueError('Narration recording no longer matches the script; re-attach it or generate a new take')
-                if field == 'video_asset' and s.get('trim_start', 0) >= asset(s[field]).get('duration', 0):
+                if field == 'video_asset' and vis != 'image' and s.get('trim_start', 0) >= asset(s[field]).get('duration', 0):
                     raise ValueError('Trim start must be before the end of the video')
             except ValueError as exc:
                 errors.append({'scene_index': idx, 'scene_id': sid, 'field': field, 'message': f'Scene {idx}: {exc}'})
