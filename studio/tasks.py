@@ -263,18 +263,10 @@ def task_render_pipeline(self, job_id: str):
                     'alignment': alignment
                 })
 
-            voice_total = sum(v['duration'] for v in prepared)
-            holds = sum(s['hold_seconds'] for s in p['scenes'])
-            speed = 1.0
-            if p['duration_mode'] == 'target':
-                if p['target_seconds'] <= holds:
-                    raise ValueError('Target duration is shorter than the scene holds')
-                speed = voice_total / (p['target_seconds'] - holds)
-                if not 0.8 <= speed <= 1.25:
-                    raise ValueError(f"Narration plus holds is {voice_total + holds:.1f}s. Target needs excessive speed change. Edit the script, change the target, or use natural duration.")
-            natural = voice_total / speed + holds
-            if natural > 180.5:
-                raise ValueError('This release supports up to 180 seconds. Shorten the script or increase speech rate.')
+            from . import timeline
+            tl = timeline.compute_timeline(p, prepared)
+            speed = tl.speed
+            offset = tl.total_duration
 
             draft = job_data['snapshot']['options'].get('quality', 'final') == 'draft'
             width, height = (540, 960) if draft else (1080, 1920)
@@ -283,23 +275,32 @@ def task_render_pipeline(self, job_id: str):
             temp = DATA / 'tmp' / f"{job_id}_{uuid.uuid4().hex[:8]}"
             temp.mkdir(parents=True, exist_ok=True)
 
-            scene_files, all_cues, report_scenes = [], [], []
-            offset = 0.0
+            scene_files, report_scenes = [], []
 
             # 3. Scene rendering stage
-            for i, (scene, voice) in enumerate(zip(p['scenes'], prepared)):
+            for i, (scene, voice, scene_tl) in enumerate(zip(p['scenes'], prepared, tl.scenes)):
                 lease.check_ownership()
                 store.progress(job_id, f"Rendering scene {i + 1}/{len(p['scenes'])} ({'draft' if draft else '1080p'})", stage_name='scene_rendering')
-                length = math.ceil((voice['duration'] / speed + scene['hold_seconds']) * 30) / 30
-                cues = [{**c, 'start': c['start'] / speed, 'end': c['end'] / speed} for c in voice['cues']]
+                length = scene_tl.scene_duration
+                cues = scene_tl.cues
                 cache_key = store.digest({
-                    'renderer': 2,
-                    'scene': scene,
-                    'audio': Path(voice['audio_path']).name,
-                    'speed': speed,
+                    'renderer': 3,
+                    'scene_id': scene['id'],
+                    'visual': scene['visual'],
+                    'video_asset': scene['video_asset'],
+                    'trim_start': scene['trim_start'],
+                    'fit': scene['fit'],
+                    'crop_x': scene['crop_x'],
+                    'graphic_title': scene['graphic_title'],
+                    'audio_name': Path(voice['audio_path']).name,
+                    'speed': round(speed, 6),
                     'width': width,
+                    'height': height,
                     'caption_size': p['caption_size'],
-                    'caption_bottom': p['caption_bottom']
+                    'caption_bottom': p['caption_bottom'],
+                    'caption_style': p.get('caption_style', 'classic_outline'),
+                    'duration': length,
+                    'cues': [{'start': round(c['start'], 3), 'end': round(c['end'], 3), 'text': c['text']} for c in cues]
                 })
                 cached = DATA / 'cache' / (cache_key + '.scene.mp4')
 
@@ -347,7 +348,6 @@ def task_render_pipeline(self, job_id: str):
                         temp_cache.unlink(missing_ok=True)
 
                 scene_files.append(cached)
-                all_cues.extend([{**c, 'start': c['start'] + offset, 'end': c['end'] + offset} for c in cues])
                 report_scenes.append({
                     'scene_id': scene['id'],
                     'duration': length,
@@ -355,27 +355,36 @@ def task_render_pipeline(self, job_id: str):
                     'visual': store.asset(scene['video_asset']) if scene['visual'] != 'graphic' else {'provider': 'explicit graphic'},
                     'source_audio_muted': True
                 })
-                offset += length
 
             # 4. Assembly stage
             lease.check_ownership()
             store.progress(job_id, 'Joining scenes into continuous video', stage_name='assembly')
-            listing = temp / 'scenes.txt'
-            for i, source in enumerate(scene_files):
-                shutil.copyfile(source, temp / f'scene-{i}.mp4')
-            listing.write_text('\n'.join(f"file 'scene-{i}.mp4'" for i in range(len(scene_files))), 'utf-8')
+            joined_key = store.digest({'joined_v': 2, 'scenes': [s.name for s in scene_files]})
+            cached_joined = DATA / 'cache' / (joined_key + '.joined.mp4')
             joined = temp / 'joined.mp4'
-            run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '1',
-                 '-i', 'scenes.txt', '-c', 'copy', '-movflags', '+faststart', joined], cwd=temp, job_id=job_id)
+            if cached_joined.exists() and cached_joined.stat().st_size > 0:
+                shutil.copyfile(cached_joined, joined)
+            else:
+                listing = temp / 'scenes.txt'
+                for i, source in enumerate(scene_files):
+                    shutil.copyfile(source, temp / f'scene-{i}.mp4')
+                listing.write_text('\n'.join(f"file 'scene-{i}.mp4'" for i in range(len(scene_files))), 'utf-8')
+                run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '1',
+                     '-i', 'scenes.txt', '-c', 'copy', '-movflags', '+faststart', joined], cwd=temp, job_id=job_id)
+                try:
+                    shutil.copyfile(joined, cached_joined)
+                except OSError:
+                    pass
 
             # 5. Mixing stage
             lease.check_ownership()
             store.progress(job_id, 'Mixing background audio and voice ducking', stage_name='mixing')
             final = temp / 'reel.mp4'
             if p['music_asset']:
+                fade_out_st = max(0.0, offset - 0.8)
                 run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-filter_complex_threads', '1',
                      '-i', joined, '-stream_loop', '-1', '-i', store.asset_path(p['music_asset'], 'audio'),
-                     '-filter_complex', f"[0:a]asplit=2[v][side];[1:a]volume={p['music_gain']}[m];[m][side]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=350[duck];[v][duck]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[a]",
+                     '-filter_complex', f"[0:a]asplit=2[v][side];[1:a]volume={p['music_gain']},afade=t=in:st=0:d=0.4,afade=t=out:st={fade_out_st:.2f}:d=0.8[m];[m][side]sidechaincompress=threshold=0.03:ratio=8:attack=15:release=300[duck];[v][duck]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[a]",
                      '-map', '0:v:0', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-t', str(offset), '-movflags', '+faststart', final],
                     job_id=job_id)
             else:
@@ -392,7 +401,8 @@ def task_render_pipeline(self, job_id: str):
             run([executable('ffmpeg'), '-v', 'error', '-xerror', '-i', final, '-f', 'null', '-'], timeout=600, job_id=job_id)
 
             # 7. Atomic publication
-            (temp / 'captions.srt').write_text('\n\n'.join(f"{i+1}\n{stamp(c['start'])} --> {stamp(c['end'])}\n{c['text']}" for i, c in enumerate(all_cues)) + '\n', 'utf-8')
+            (temp / 'captions.srt').write_text(timeline.to_srt(tl.all_cues), 'utf-8')
+            (temp / 'timing-manifest.json').write_text(json.dumps(tl.to_manifest(), indent=2, ensure_ascii=False), 'utf-8')
             report = {
                 'project_id': job_data['project_id'],
                 'revision': job_data['revision'],
@@ -401,6 +411,7 @@ def task_render_pipeline(self, job_id: str):
                 'dimensions': [width, height],
                 'scenes': report_scenes,
                 'caption_note': 'Automatic Roman Telugu timings need preview review. Manual cues override automatic timings.',
+                'caption_style': p.get('caption_style', 'classic_outline'),
                 'evidence_notes': p['evidence_notes'],
                 'research_sources': p['research_sources'],
                 'music': store.asset(p['music_asset']) if p['music_asset'] else None,
@@ -411,7 +422,8 @@ def task_render_pipeline(self, job_id: str):
 
             destination = DATA / 'exports' / job_id
             destination.mkdir(parents=True, exist_ok=True)
-            for name in ('reel.mp4', 'captions.srt', 'source-report.json', 'project.json'):
+            exported_files = ['reel.mp4', 'captions.srt', 'timing-manifest.json', 'source-report.json', 'project.json']
+            for name in exported_files:
                 shutil.copyfile(temp / name, destination / name)
             shutil.rmtree(temp, ignore_errors=True)
 
@@ -419,7 +431,7 @@ def task_render_pipeline(self, job_id: str):
                 'export_id': job_id,
                 'duration': report['duration'],
                 'dimensions': report['dimensions'],
-                'files': ['reel.mp4', 'captions.srt', 'source-report.json', 'project.json']
+                'files': exported_files
             }
 
             # Fencing check before committing final succeeded state

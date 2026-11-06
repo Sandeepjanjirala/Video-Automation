@@ -11,6 +11,8 @@ class Cue(StrictModel):
     start: float = Field(ge=0, le=180)
     end: float = Field(gt=0, le=180)
     text: str = Field(min_length=1, max_length=160)
+    provenance: Literal['manual', 'provider-mapped', 'aligner', 'estimated'] = 'estimated'
+    needs_review: bool = False
 
     @model_validator(mode='after')
     def check(self):
@@ -37,6 +39,8 @@ class Scene(StrictModel):
     graphic_title: str = Field(default='', max_length=150)
     rights_reviewed: bool = False
     cues: list[Cue] = Field(default_factory=list, max_length=200)
+    caption_alignment_provenance: str = ''
+    cues_needs_review: bool = False
 
     @model_validator(mode='after')
     def check(self):
@@ -44,7 +48,7 @@ class Scene(StrictModel):
             raise ValueError('Roman caption field must use English letters, not Telugu script')
         last = 0.0
         for cue in self.cues:
-            if cue.start < last:
+            if cue.start < last - 0.001:
                 raise ValueError('Caption cues must be ordered and must not overlap')
             last = cue.end
         return self
@@ -68,6 +72,7 @@ class Project(StrictModel):
     music_rights_reviewed: bool = False
     caption_size: int = Field(default=56, ge=30, le=90)
     caption_bottom: int = Field(default=300, ge=180, le=600)
+    caption_style: Literal['classic_outline', 'box_black', 'yellow_glow', 'pill_translucent'] = 'classic_outline'
     script_approved_hash: str = Field(default='', max_length=64)
     draft_script: str = Field(default='', max_length=50000)
 

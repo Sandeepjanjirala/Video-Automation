@@ -238,6 +238,13 @@ def asset(aid: str) -> Dict[str, Any]:
             'license_url': a.license_url,
             'retrieved': a.created_at.isoformat() if a.created_at else now()
         })
+        if meta.get('kind') == 'video':
+            w = int(meta.get('width') or 1920)
+            h = int(meta.get('height') or 1080)
+            meta['width'] = w
+            meta['height'] = h
+            meta['orientation'] = 'portrait' if h > w else 'landscape' if w > h else 'square'
+            meta['aspect_ratio'] = f"{w}:{h}"
         return meta
 
 
@@ -326,12 +333,30 @@ def preflight(project_data: Any) -> Dict[str, Any]:
     if not scenes:
         errors.append({'scene_index': 0, 'scene_id': '', 'field': 'scenes', 'message': 'Add at least one scene before rendering'})
 
+    # Duplicate footage warnings
+    vid_counts = {}
+    for i, s in enumerate(scenes):
+        v = s.get('video_asset')
+        if v and s.get('visual') != 'graphic':
+            vid_counts.setdefault(v, []).append(i + 1)
+    for vid, scn_indices in vid_counts.items():
+        if len(scn_indices) > 1:
+            warnings.append({'field': 'video_asset',
+                             'message': f'Asset {vid[:8]} is reused across scenes {scn_indices}. (Supported reusable footage)'})
+
+    from . import timeline
     for i, s in enumerate(scenes):
         idx = i + 1
         sid = s.get('id', '')
         if not s.get('narration', '').strip() or not s.get('roman', '').strip():
             errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'narration',
                            'message': f'Scene {idx}: Missing Telugu narration or Roman captions'})
+        else:
+            mismatches = timeline.detect_text_mismatches(s.get('narration', ''), s.get('roman', ''))
+            for m in mismatches:
+                warnings.append({'scene_index': idx, 'scene_id': sid, 'field': 'roman',
+                                 'message': f'Scene {idx}: {m}'})
+
         if s.get('visual') == 'graphic':
             if not s.get('graphic_title', '').strip():
                 errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'graphic_title',
@@ -353,6 +378,10 @@ def preflight(project_data: Any) -> Dict[str, Any]:
                     elif trim >= dur:
                         errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'trim_start',
                                        'message': f'Scene {idx}: Trim start ({trim:.1f}s) exceeds clip duration ({dur:.1f}s)'})
+                    ameta = asset(vid)
+                    if ameta.get('orientation') == 'landscape' and s.get('fit', 'crop') == 'crop':
+                        warnings.append({'scene_index': idx, 'scene_id': sid, 'field': 'fit',
+                                         'message': f'Scene {idx}: Landscape clip (16:9) cropped to vertical (9:16) uses ~31.6% of frame width. Use horizontal crop slider to center your subject.'})
                 except Exception as exc:
                     errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'video_asset',
                                    'message': f'Scene {idx}: Video footage error ({exc})'})

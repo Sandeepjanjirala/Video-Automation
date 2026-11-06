@@ -302,9 +302,94 @@ def job_audio(jid: str, scene_id: str):
     return FileResponse(path)
 
 
+@app.get('/api/assets/{aid}/crop-preview')
+def asset_crop_preview(aid: str, crop_x: float = Query(0.5, ge=0.0, le=1.0), fit: str = Query('crop', pattern='^(crop|contain)$'), trim: float = Query(0.0, ge=0.0)):
+    meta = store.asset(aid)
+    if meta.get('kind') != 'video':
+        raise HTTPException(status_code=404, detail='Previews only available for video assets')
+    key = store.digest({'aid': aid, 'crop_x': round(crop_x, 2), 'fit': fit, 'trim': round(trim, 1)})
+    preview_file = DATA / 'cache' / f'{key}.preview.jpg'
+    if not preview_file.exists():
+        from .media import run
+        video_p = store.asset_path(aid, 'video')
+        w, h = 270, 480
+        if fit == 'crop':
+            vf = f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h}:(iw-ow)*{crop_x}:(ih-oh)/2"
+        else:
+            vf = f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:color=0x12251F"
+        try:
+            run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y',
+                 '-ss', str(trim), '-i', str(video_p), '-vframes', '1',
+                 '-vf', vf, '-q:v', '3', str(preview_file)], timeout=15)
+        except Exception:
+            raise HTTPException(status_code=404, detail='Could not generate crop preview')
+    if not preview_file.exists():
+        raise HTTPException(status_code=404, detail='Preview not found')
+    return FileResponse(preview_file, media_type='image/jpeg')
+
+
+class CueSplitBody(BaseModel):
+    cue_index: int = Field(ge=0)
+    split_ratio: float = Field(default=0.5, ge=0.1, le=0.9)
+
+
+@app.post('/api/projects/{pid}/scenes/{sid}/cues/split')
+def split_cue_endpoint(pid: str, sid: str, body: CueSplitBody):
+    from . import timeline
+    proj = store.get_project(pid)
+    p_data = proj['project']
+    scene = next((s for s in p_data['scenes'] if s['id'] == sid), None)
+    if not scene:
+        raise HTTPException(status_code=404, detail='Scene not found')
+    scene['cues'] = timeline.split_cue(scene.get('cues', []), body.cue_index, body.split_ratio)
+    scene['caption_alignment_provenance'] = 'manual'
+    scene['cues_needs_review'] = False
+    return store.save_project(p_data, pid, proj['revision'])
+
+
+class CueMergeBody(BaseModel):
+    cue_index: int = Field(ge=0)
+
+
+@app.post('/api/projects/{pid}/scenes/{sid}/cues/merge')
+def merge_cue_endpoint(pid: str, sid: str, body: CueMergeBody):
+    from . import timeline
+    proj = store.get_project(pid)
+    p_data = proj['project']
+    scene = next((s for s in p_data['scenes'] if s['id'] == sid), None)
+    if not scene:
+        raise HTTPException(status_code=404, detail='Scene not found')
+    scene['cues'] = timeline.merge_cues(scene.get('cues', []), body.cue_index)
+    scene['caption_alignment_provenance'] = 'manual'
+    scene['cues_needs_review'] = False
+    return store.save_project(p_data, pid, proj['revision'])
+
+
+@app.post('/api/projects/{pid}/scenes/{sid}/cues/reset')
+def reset_cues_endpoint(pid: str, sid: str):
+    from . import timeline
+    proj = store.get_project(pid)
+    p_data = proj['project']
+    scene = next((s for s in p_data['scenes'] if s['id'] == sid), None)
+    if not scene:
+        raise HTTPException(status_code=404, detail='Scene not found')
+    # If scene has an audio asset, get its measured duration; else approximate from text
+    audio_dur = 5.0
+    if scene.get('audio_asset'):
+        try:
+            from .media import duration as media_duration
+            audio_dur = media_duration(store.asset_path(scene['audio_asset'], 'audio'))
+        except Exception:
+            pass
+    scene['cues'] = timeline.reset_scene_cues(scene, audio_dur)
+    scene['caption_alignment_provenance'] = 'estimated'
+    scene['cues_needs_review'] = True
+    return store.save_project(p_data, pid, proj['revision'])
+
+
 @app.get('/api/exports/{jid}/{name}')
 def export(jid: str, name: str):
-    if not re.fullmatch('[a-f0-9]{32}', jid) or name not in ('reel.mp4', 'captions.srt', 'source-report.json', 'project.json'):
+    if not re.fullmatch('[a-f0-9]{32}', jid) or name not in ('reel.mp4', 'captions.srt', 'timing-manifest.json', 'source-report.json', 'project.json'):
         raise HTTPException(404)
     if store.job(jid)['state'] != 'succeeded':
         raise ValueError('Export is incomplete')

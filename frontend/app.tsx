@@ -19,13 +19,15 @@ const uid = () => crypto.randomUUID().replaceAll('-', '').slice(0, 12);
 const scene = () => ({
   id: uid(), narration: '', roman: '', keywords: '', visual: 'upload', video_asset: '',
   audio_asset: '', audio_text_hash: '', trim_start: 0, fit: 'crop', crop_x: .5, hold_seconds: 0,
-  graphic_title: '', rights_reviewed: false, cues: []
+  graphic_title: '', rights_reviewed: false, cues: [], caption_alignment_provenance: '',
+  cues_needs_review: false
 });
 const empty = () => ({
   title: 'My next story', topic: '', category: 'Storytelling', target_seconds: 60,
   duration_mode: 'natural', voice: 'te-IN-ShrutiNeural', speech_rate: 0, scenes: [scene()],
   evidence_notes: '', research_report: '', research_sources: [], research_grounding: {},
   music_asset: '', music_gain: .12, music_rights_reviewed: false, caption_size: 56, caption_bottom: 300,
+  caption_style: 'classic_outline',
   script_approved_hash: '', draft_script: ''
 });
 async function hashText(text: string) {
@@ -522,14 +524,31 @@ function App() {
                       <p>{s.roman}</p>
                       <div className="scenegrid">
                         <div>
-                          {s.video_asset && s.visual !== 'graphic' ? (
-                            <video className="clippreview" controls preload="metadata" src={'/api/assets/' + s.video_asset + '/media'} />
-                          ) : (
-                            <div className="visualplaceholder">
-                              <span>✦</span>
-                              <p>{s.visual === 'graphic' ? s.graphic_title || 'Your graphic title' : 'Select footage or upload a clip'}</p>
+                          <div className="croppreview-wrap">
+                            {s.video_asset && s.visual !== 'graphic' ? (
+                              <video
+                                id={'video-' + s.id}
+                                className="clippreview"
+                                controls
+                                preload="metadata"
+                                src={'/api/assets/' + s.video_asset + '/media'}
+                                style={{
+                                  objectFit: s.fit === 'crop' ? 'cover' : 'contain',
+                                  objectPosition: s.fit === 'crop' ? `${s.crop_x * 100}% center` : 'center center'
+                                }}
+                              />
+                            ) : (
+                              <div className="visualplaceholder">
+                                <span>✦</span>
+                                <p>{s.visual === 'graphic' ? s.graphic_title || 'Your graphic title' : 'Select footage or upload a clip'}</p>
+                              </div>
+                            )}
+                            <div className="safearea-guide">
+                              <div className="safearea-top">Avoid top 15% (notch / header)</div>
+                              <div className="safearea-center">9:16 Safe Center</div>
+                              <div className="safearea-bottom">Avoid bottom 20% (UI / captions)</div>
                             </div>
-                          )}
+                          </div>
                         </div>
                         <div>
                           <Field label="Visual source">
@@ -567,15 +586,25 @@ function App() {
                                 </Field>
                                 <Field label="Framing">
                                   <select value={s.fit} onChange={e => edit(s.id, {fit: e.target.value})}>
-                                    <option value="crop">Fill vertical frame</option>
+                                    <option value="crop">Fill vertical frame (crop)</option>
                                     <option value="contain">Fit entire clip with padding</option>
                                   </select>
                                 </Field>
                               </div>
                               {s.fit === 'crop' && (
-                                <Field label="Horizontal crop position">
+                                <Field label="Horizontal crop position (9:16 window)">
                                   <input type="range" min="0" max="1" step=".05" value={s.crop_x} onChange={e => edit(s.id, {crop_x: +e.target.value})} />
                                 </Field>
+                              )}
+                              {s.fit === 'crop' && s.video_asset && (
+                                <div className="framing-notice">
+                                  Landscape clip cropped to vertical (9:16): ~31.6% of width visible. Adjust the horizontal slider to center your subject.
+                                </div>
+                              )}
+                              {p.scenes.filter((sc: Any) => sc.video_asset && sc.video_asset === s.video_asset).length > 1 && (
+                                <div className="framing-notice" style={{background: '#eff6ff', borderColor: '#bfdbfe', color: '#1e40af'}}>
+                                  This clip is reused across multiple scenes.
+                                </div>
                               )}
                               <small>Short footage loops to cover narration. Source clip audio is muted.</small>
                             </>
@@ -605,7 +634,7 @@ function App() {
                       )}
 
                       <div className="voicebox">
-                        <b>Narration & captions</b>
+                        <b>Narration & Roman Telugu captions</b>
                         <div className="actions">
                           <label className="filebutton">Upload scene narration<input type="file" accept="audio/*" disabled={busy} onChange={e => {
                             const f = e.target.files?.[0];
@@ -614,24 +643,122 @@ function App() {
                           }}/></label>
                           {s.audio_asset && <button onClick={() => edit(s.id, {audio_asset: '', audio_text_hash: '', cues: []})}>Use generated voice instead</button>}
                         </div>
-                        {s.audio_asset && <audio controls src={'/api/assets/' + s.audio_asset + '/media'} />}
+                        {s.audio_asset && <audio id={'audio-' + s.id} controls src={'/api/assets/' + s.audio_asset + '/media'} />}
                         {v && (
                           <>
-                            <audio controls src={'/api/jobs/' + latestVoice.id + '/audio/' + s.id} />
+                            <audio id={'audio-' + s.id} controls src={'/api/jobs/' + latestVoice.id + '/audio/' + s.id} />
                             <p className="muted">{v.duration.toFixed(1)}s · Caption timing: {v.alignment}</p>
-                            <button onClick={() => setCueEdit((x: Any) => ({...x, [s.id]: JSON.stringify(v.cues, null, 2)}))}>
-                              Load generated timings for editing
-                            </button>
+                            <div className="actions">
+                              <button onClick={() => edit(s.id, {cues: v.cues, caption_alignment_provenance: v.alignment})}>
+                                Load generated timings for editing
+                              </button>
+                              <button onClick={() => action(async () => {
+                                const r = await api(`/projects/${row.id}/scenes/${s.id}/cues/reset`, {}, 'POST');
+                                sync(r);
+                                tell('Automatic phrase timings reset.');
+                              })}>
+                                Reset automatic timings
+                              </button>
+                            </div>
                           </>
                         )}
+
+                        {/* Practical Visual Cue List */}
+                        {s.cues && s.cues.length > 0 && (
+                          <div className="cuelist">
+                            <span style={{fontSize: 12, fontWeight: 600}}>Caption Phrases ({s.cues.length}) — Click ▶ to seek audio</span>
+                            {s.cues.map((cue: Any, cIdx: number) => (
+                              <div className={'cuerow ' + (cue.needs_review ? 'review' : '')} key={cIdx}>
+                                <div className="cuetiming">
+                                  <button
+                                    type="button"
+                                    title="Play this cue"
+                                    onClick={() => {
+                                      const a = document.getElementById('audio-' + s.id) as HTMLAudioElement;
+                                      if (a) { a.currentTime = cue.start; a.play(); }
+                                    }}
+                                  >
+                                    ▶
+                                  </button>
+                                  <input
+                                    type="number"
+                                    step="0.05"
+                                    min="0"
+                                    value={cue.start}
+                                    onChange={e => {
+                                      const updated = [...s.cues];
+                                      updated[cIdx] = {...cue, start: +e.target.value, provenance: 'manual'};
+                                      edit(s.id, {cues: updated, caption_alignment_provenance: 'manual'});
+                                    }}
+                                    title="Start seconds"
+                                  />
+                                  <span>-</span>
+                                  <input
+                                    type="number"
+                                    step="0.05"
+                                    min="0"
+                                    value={cue.end}
+                                    onChange={e => {
+                                      const updated = [...s.cues];
+                                      updated[cIdx] = {...cue, end: +e.target.value, provenance: 'manual'};
+                                      edit(s.id, {cues: updated, caption_alignment_provenance: 'manual'});
+                                    }}
+                                    title="End seconds"
+                                  />
+                                </div>
+                                <div className="cuebody">
+                                  <input
+                                    value={cue.text}
+                                    onChange={e => {
+                                      const updated = [...s.cues];
+                                      updated[cIdx] = {...cue, text: e.target.value, provenance: 'manual'};
+                                      edit(s.id, {cues: updated, caption_alignment_provenance: 'manual'});
+                                    }}
+                                    placeholder="Roman Telugu caption phrase…"
+                                  />
+                                </div>
+                                <div className="cuetools">
+                                  <span className={'cuebadge ' + (cue.provenance || 'estimated')}>
+                                    {cue.provenance || 'estimated'}
+                                  </span>
+                                  <button
+                                    type="button"
+                                    disabled={busy || cue.text.split(' ').length < 2}
+                                    title="Split phrase into two"
+                                    onClick={() => action(async () => {
+                                      const r = await api(`/projects/${row.id}/scenes/${s.id}/cues/split`, {cue_index: cIdx}, 'POST');
+                                      sync(r);
+                                    })}
+                                  >
+                                    Split
+                                  </button>
+                                  {cIdx < s.cues.length - 1 && (
+                                    <button
+                                      type="button"
+                                      disabled={busy}
+                                      title="Merge with next phrase"
+                                      onClick={() => action(async () => {
+                                        const r = await api(`/projects/${row.id}/scenes/${s.id}/cues/merge`, {cue_index: cIdx}, 'POST');
+                                        sync(r);
+                                      })}
+                                    >
+                                      Merge
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
                         <details>
-                          <summary>Edit caption timestamps</summary>
+                          <summary>Advanced / Raw JSON cue editor</summary>
                           <p className="muted">JSON array of {'{start, end, text}'}. Seconds relative to this scene's original narration. An empty array uses automatic estimates. Preview every scene.</p>
                           <textarea rows={7} value={cueEdit[s.id] ?? JSON.stringify(s.cues, null, 2)} onChange={e => setCueEdit((x: Any) => ({...x, [s.id]: e.target.value}))} />
                           <button onClick={() => action(async () => {
                             const c = JSON.parse(cueEdit[s.id] ?? JSON.stringify(s.cues));
                             if (!Array.isArray(c)) throw new Error('Use a JSON array.');
-                            edit(s.id, {cues: c});
+                            edit(s.id, {cues: c, caption_alignment_provenance: 'manual'});
                             tell('Caption timings applied. Save and re-approve before rendering.');
                           })}>Apply timings</button>
                         </details>
@@ -672,6 +799,25 @@ function App() {
                 <section className="panel">
                   <span className="eyebrow">THE FINAL CUT</span>
                   <h2>Preview, adjust, export.</h2>
+                  <Field label="Caption Style Preset">
+                    <div className="preset-grid">
+                      {[
+                        ['classic_outline', 'Classic Outline', 'White text, bold dark border'],
+                        ['box_black', 'Black Box', 'High-contrast dark pill box'],
+                        ['yellow_glow', 'Yellow Accent', 'Vibrant yellow text, dark border'],
+                        ['pill_translucent', 'Translucent Pill', 'Soft translucent backdrop']
+                      ].map(([key, title, desc]) => (
+                        <div
+                          key={key}
+                          className={'preset-card ' + (p.caption_style === key ? 'active' : '')}
+                          onClick={() => change('caption_style', key)}
+                        >
+                          <b>{title}</b>
+                          <small>{desc}</small>
+                        </div>
+                      ))}
+                    </div>
+                  </Field>
                   <div className="grid two">
                     <Field label={'Caption size: ' + p.caption_size}>
                       <input type="range" min="30" max="90" value={p.caption_size} onChange={e => change('caption_size', +e.target.value)} />
@@ -845,8 +991,20 @@ function App() {
                 <div className="mediacard" key={a.id}>
                   <video className="mediathumb" preload="metadata" src={'/api/assets/' + a.id + '/media'} />
                   <div className="mediainfo">
-                    <b>{a.name || a.id}</b>
-                    <small>{a.duration ? a.duration.toFixed(1) + 's' : ''} · {a.provider}</small>
+                    <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6}}>
+                      <b>{a.name || a.id}</b>
+                      <span className={'orientbadge ' + (a.orientation || 'landscape')}>
+                        {a.orientation === 'portrait' ? '9:16' : '16:9'}
+                      </span>
+                    </div>
+                    <small>
+                      {a.duration ? a.duration.toFixed(1) + 's' : ''} · {a.width && a.height ? `${a.width}×${a.height} · ` : ''}{a.provider}
+                    </small>
+                    {a.orientation !== 'portrait' && (
+                      <small className="muted" style={{color: '#92400e'}}>
+                        Landscape 16:9: Center crop uses ~31.6% of frame width
+                      </small>
+                    )}
                     <div className="mediaactions">
                       {libraryTargetScene !== 'all' && (
                         <button className="primary" onClick={() => assignLibraryAsset(a.id)}>

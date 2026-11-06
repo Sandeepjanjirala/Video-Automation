@@ -44,6 +44,20 @@ def probe(path):
     duration = float(value.get('format', {}).get('duration', 0))
     if not math.isfinite(duration) or not 0 < duration <= 36000:
         raise ValueError('Media must have a valid duration between 0 and 36,000 seconds')
+    v_stream = next((s for s in value.get('streams', []) if s.get('codec_type') == 'video'), None)
+    if v_stream:
+        w = int(v_stream.get('width', 0))
+        h = int(v_stream.get('height', 0))
+        value['width'] = w
+        value['height'] = h
+        if w > 0 and h > 0:
+            if h > w:
+                value['orientation'] = 'portrait'
+            elif w > h:
+                value['orientation'] = 'landscape'
+            else:
+                value['orientation'] = 'square'
+            value['aspect_ratio'] = f"{w}:{h}"
     return value
 
 
@@ -61,38 +75,13 @@ def voice_for(scene, project, provider):
 
 
 def captions(scene, audio_duration, boundaries):
-    if scene['cues']:
-        if scene['cues'][-1]['end'] > audio_duration + 0.1:
-            raise ValueError('A manual caption cue extends beyond its narration. Correct its timestamp.')
-        return scene['cues'], 'manual'
-    words = scene['roman'].split()
-    if not words:
-        return [], 'empty'
-    # Index mapping is a useful initial alignment, not forced phonetic alignment.
-    mapped = len(boundaries) == len(words) and all(b['end'] <= audio_duration + 0.2 for b in boundaries)
-    weights = [max(len(w), 1) for w in words]
-    total = sum(weights)
-    cues, offset = [], 0
-    for start in range(0, len(words), 4):
-        stop = min(start + 4, len(words))
-        if mapped:
-            begin = boundaries[start]['start']
-            end = boundaries[stop - 1]['end']
-        else:
-            begin = audio_duration * sum(weights[:start]) / total
-            end = audio_duration * sum(weights[:stop]) / total
-        cues.append({'start': max(offset, begin), 'end': min(audio_duration, end), 'text': ' '.join(words[start:stop])})
-        offset = end
-    return cues, 'word-index mapping; review required' if mapped else 'estimated from text length; review required'
+    from . import timeline
+    return timeline.align_captions(scene, audio_duration, boundaries)
 
 
 def stamp(seconds, ass=False):
-    units = round(seconds * (100 if ass else 1000))
-    base = 100 if ass else 1000
-    hours, rem = divmod(units, 3600 * base)
-    mins, rem = divmod(rem, 60 * base)
-    secs, fraction = divmod(rem, base)
-    return f'{hours}:{mins:02}:{secs:02}.{fraction:02}' if ass else f'{hours:02}:{mins:02}:{secs:02},{fraction:03}'
+    from . import timeline
+    return timeline.stamp(seconds, ass=ass)
 
 
 def ass_text(text, width=32):
@@ -100,8 +89,25 @@ def ass_text(text, width=32):
     return r'\N'.join(textwrap.wrap(safe, width=width))
 
 
+def get_ass_style(caption_style: str, size: int, bottom: int) -> str:
+    """Return ASS V4+ Style line for specified preset."""
+    if caption_style == 'box_black':
+        return f"Style: Default,Arial,{size},&H00FFFFFF,&H00FFFFFF,&H00000000,&HB0000000,-1,0,0,0,100,100,0,0,3,6,0,2,90,140,{bottom},1"
+    elif caption_style == 'yellow_glow':
+        return f"Style: Default,Arial,{size},&H0000E6FF,&H0000E6FF,&H000E0E12,&H88000000,-1,0,0,0,100,100,0,0,1,4,2,2,90,140,{bottom},1"
+    elif caption_style == 'pill_translucent':
+        return f"Style: Default,Arial,{size},&H00FFFFFF,&H00FFFFFF,&H00202020,&H70101512,-1,0,0,0,100,100,0,0,3,8,0,2,90,140,{bottom},1"
+    else:  # 'classic_outline'
+        return f"Style: Default,Arial,{size},&H00FFFFFF,&H00FFFFFF,&H000E0E12,&H88000000,-1,0,0,0,100,100,0,0,1,4,2,2,90,140,{bottom},1"
+
+
 def write_ass(path, cues, project, title=None, total=0):
     # Fixed 1080p design coordinates are scaled by libass for draft resolution.
+    style_line = get_ass_style(
+        project.get('caption_style', 'classic_outline'),
+        project.get('caption_size', 56),
+        project.get('caption_bottom', 300)
+    )
     header = f'''[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -110,7 +116,7 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,{project['caption_size']},&H00FFFFFF,&H00FFFFFF,&H00120E0B,&H88000000,-1,0,0,0,100,100,0,0,1,3,1,2,90,140,{project['caption_bottom']},1
+{style_line}
 Style: Title,Arial,78,&H00B9F8CF,&H00FFFFFF,&H00120E0B,&H00000000,-1,0,0,0,100,100,0,0,1,1,0,5,100,100,0,1
 
 [Events]
@@ -142,34 +148,44 @@ def render(job):
     if not pf['ready']:
         raise ValueError(f"Preflight validation failed: {pf['errors'][0]['message']}")
     prepared = prepare_voices(job)
-    voice_total = sum(v['duration'] for v in prepared)
-    holds = sum(s['hold_seconds'] for s in p['scenes'])
-    speed = 1.0
-    if p['duration_mode'] == 'target':
-        if p['target_seconds'] <= holds:
-            raise ValueError('Target duration is shorter than the scene holds')
-        speed = voice_total / (p['target_seconds'] - holds)
-        if not 0.8 <= speed <= 1.25:
-            raise ValueError(f"Narration plus holds is {voice_total + holds:.1f}s. Target needs excessive speed change. Edit the script, change the target, or use natural duration.")
-    natural = voice_total / speed + holds
-    if natural > 180.5:
-        raise ValueError('This release supports up to 180 seconds. Shorten the script or increase speech rate.')
+
+    from . import timeline
+    tl = timeline.compute_timeline(p, prepared)
+    speed = tl.speed
+    offset = tl.total_duration
+
     draft = job['snapshot']['options'].get('quality', 'final') == 'draft'
     width, height = (540, 960) if draft else (1080, 1920)
     temp = DATA / 'tmp' / job['id']
     temp.mkdir(exist_ok=True)
-    scene_files, all_cues, report_scenes = [], [], []
-    offset = 0.0
-    for i, (scene, voice) in enumerate(zip(p['scenes'], prepared)):
+    scene_files, report_scenes = [], []
+
+    for i, (scene, voice, scene_tl) in enumerate(zip(p['scenes'], prepared, tl.scenes)):
         store.progress(job['id'], f"Rendering scene {i + 1}/{len(p['scenes'])} ({'draft' if draft else '1080p'})")
-        # Frame quantization makes independently cached scenes concatenate predictably.
-        length = math.ceil((voice['duration'] / speed + scene['hold_seconds']) * 30) / 30
-        cues = [{**c, 'start': c['start'] / speed, 'end': c['end'] / speed} for c in voice['cues']]
-        cache_key = store.digest({'renderer': 2, 'scene': scene, 'audio': Path(voice['audio_path']).name,
-                                  'speed': speed, 'width': width, 'caption_size': p['caption_size'],
-                                  'caption_bottom': p['caption_bottom']})
+        length = scene_tl.scene_duration
+        cues = scene_tl.cues
+
+        cache_key = store.digest({
+            'renderer': 3,
+            'scene_id': scene['id'],
+            'visual': scene['visual'],
+            'video_asset': scene['video_asset'],
+            'trim_start': scene['trim_start'],
+            'fit': scene['fit'],
+            'crop_x': scene['crop_x'],
+            'graphic_title': scene['graphic_title'],
+            'audio_name': Path(voice['audio_path']).name,
+            'speed': round(speed, 6),
+            'width': width,
+            'height': height,
+            'caption_size': p['caption_size'],
+            'caption_bottom': p['caption_bottom'],
+            'caption_style': p.get('caption_style', 'classic_outline'),
+            'duration': length,
+            'cues': [{'start': round(c['start'], 3), 'end': round(c['end'], 3), 'text': c['text']} for c in cues]
+        })
         cached = DATA / 'cache' / (cache_key + '.scene.mp4')
-        if not cached.exists():
+        if not (cached.exists() and cached.stat().st_size > 0):
             work = temp / str(i)
             work.mkdir(exist_ok=True)
             write_ass(work / 'captions.ass', cues, p,
@@ -200,28 +216,40 @@ def render(job):
                     shutil.copyfile(output, cached)
                 output.unlink(missing_ok=True)
         scene_files.append(cached)
-        all_cues.extend([{**c, 'start': c['start'] + offset, 'end': c['end'] + offset} for c in cues])
         report_scenes.append({'scene_id': scene['id'], 'duration': length, 'alignment': voice['alignment'],
                               'visual': store.asset(scene['video_asset']) if scene['visual'] != 'graphic' else {'provider': 'explicit graphic'},
                               'source_audio_muted': True})
-        offset += length
-    listing = temp / 'scenes.txt'
-    # Generated cache names only: no user-controlled concat directives or path quoting.
-    for i, source in enumerate(scene_files):
-        shutil.copyfile(source, temp / f'scene-{i}.mp4')
-    listing.write_text('\n'.join(f"file 'scene-{i}.mp4'" for i in range(len(scene_files))), 'utf-8')
-    store.progress(job['id'], 'Joining scenes and mixing audio')
+
+    # Cache joined video so music-only changes run instantly
+    joined_key = store.digest({'joined_v': 2, 'scenes': [s.name for s in scene_files]})
+    cached_joined = DATA / 'cache' / (joined_key + '.joined.mp4')
     joined = temp / 'joined.mp4'
-    run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '1',
-         '-i', 'scenes.txt', '-c', 'copy', '-movflags', '+faststart', joined], cwd=temp)
+    if cached_joined.exists() and cached_joined.stat().st_size > 0:
+        shutil.copyfile(cached_joined, joined)
+    else:
+        listing = temp / 'scenes.txt'
+        for i, source in enumerate(scene_files):
+            shutil.copyfile(source, temp / f'scene-{i}.mp4')
+        listing.write_text('\n'.join(f"file 'scene-{i}.mp4'" for i in range(len(scene_files))), 'utf-8')
+        store.progress(job['id'], 'Joining scenes into continuous video')
+        run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '1',
+             '-i', 'scenes.txt', '-c', 'copy', '-movflags', '+faststart', joined], cwd=temp)
+        try:
+            shutil.copyfile(joined, cached_joined)
+        except OSError:
+            pass
+
+    store.progress(job['id'], 'Mixing background audio and voice ducking')
     final = temp / 'reel.mp4'
     if p['music_asset']:
+        fade_out_st = max(0.0, offset - 0.8)
         run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-filter_complex_threads', '1',
              '-i', joined, '-stream_loop', '-1', '-i', store.asset_path(p['music_asset'], 'audio'),
-             '-filter_complex', f"[0:a]asplit=2[v][side];[1:a]volume={p['music_gain']}[m];[m][side]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=350[duck];[v][duck]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[a]",
+             '-filter_complex', f"[0:a]asplit=2[v][side];[1:a]volume={p['music_gain']},afade=t=in:st=0:d=0.4,afade=t=out:st={fade_out_st:.2f}:d=0.8[m];[m][side]sidechaincompress=threshold=0.03:ratio=8:attack=15:release=300[duck];[v][duck]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[a]",
              '-map', '0:v:0', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-t', str(offset), '-movflags', '+faststart', final])
     else:
         shutil.copyfile(joined, final)
+
     store.progress(job['id'], 'Validating output video and audio')
     info = probe(final)
     video = next((s for s in info['streams'] if s['codec_type'] == 'video'), {})
@@ -229,19 +257,26 @@ def render(job):
     if (video.get('width'), video.get('height')) != (width, height) or not audio or abs(float(info['format']['duration']) - offset) > 0.5:
         raise ValueError('Export validation failed: dimensions, audio, or duration did not match')
     run([executable('ffmpeg'), '-v', 'error', '-xerror', '-i', final, '-f', 'null', '-'], timeout=600)
-    (temp / 'captions.srt').write_text('\n\n'.join(f"{i+1}\n{stamp(c['start'])} --> {stamp(c['end'])}\n{c['text']}" for i, c in enumerate(all_cues)) + '\n', 'utf-8')
+
+    # Export SRT and timing manifest
+    (temp / 'captions.srt').write_text(timeline.to_srt(tl.all_cues), 'utf-8')
+    (temp / 'timing-manifest.json').write_text(json.dumps(tl.to_manifest(), indent=2, ensure_ascii=False), 'utf-8')
+
     report = {'project_id': job['project_id'], 'revision': job['revision'], 'created': store.now(),
               'duration': float(info['format']['duration']), 'dimensions': [width, height], 'scenes': report_scenes,
               'caption_note': 'Automatic Roman Telugu timings need preview review. Manual cues override automatic timings.',
+              'caption_style': p.get('caption_style', 'classic_outline'),
               'evidence_notes': p['evidence_notes'], 'research_sources': p['research_sources'],
               'music': store.asset(p['music_asset']) if p['music_asset'] else None,
               'speech_provider': job['snapshot']['options']['tts_provider']}
     (temp / 'source-report.json').write_text(json.dumps(report, indent=2, ensure_ascii=False), 'utf-8')
     (temp / 'project.json').write_text(json.dumps(job['snapshot'], indent=2, ensure_ascii=False), 'utf-8')
+
     destination = DATA / 'exports' / job['id']
     destination.mkdir(exist_ok=True)
-    for name in ('reel.mp4', 'captions.srt', 'source-report.json', 'project.json'):
+    exported_files = ['reel.mp4', 'captions.srt', 'timing-manifest.json', 'source-report.json', 'project.json']
+    for name in exported_files:
         shutil.copyfile(temp / name, destination / name)
-    shutil.rmtree(temp)
+    shutil.rmtree(temp, ignore_errors=True)
     return {'export_id': job['id'], 'duration': report['duration'], 'dimensions': report['dimensions'],
-            'files': ['reel.mp4', 'captions.srt', 'source-report.json', 'project.json']}
+            'files': exported_files}
