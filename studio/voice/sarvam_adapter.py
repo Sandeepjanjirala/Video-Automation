@@ -1,5 +1,5 @@
 """Sarvam AI TTS adapter for Telugu Reel Studio (Phase 4).
-Connects to Sarvam Bulbul neural TTS models with Telugu speakers (meera, pavithra, arvind, amartya).
+Connects to the documented Bulbul v3 Telugu REST contract.
 """
 import base64
 import json
@@ -32,7 +32,7 @@ class SarvamTTSAdapter:
     def synthesize(
         self,
         text: str,
-        voice: str = "meera",
+        voice: str = "shubh",
         rate: int = 0,
         pitch: int = 0,
         target_audio: Optional[Path] = None,
@@ -45,7 +45,9 @@ class SarvamTTSAdapter:
             raise ValueError("Configure your Sarvam API key in Settings & providers before synthesizing with Sarvam.")
 
         cap = get_voice_capability(voice, provider="sarvam")
-        speaker = cap.voice_id if cap.voice_id in ("meera", "pavithra", "arvind", "amartya") else "meera"
+        speaker = cap.voice_id
+        if not text.strip() or len(text) > cap.char_limit:
+            raise ValueError(f"Sarvam accepts 1–{cap.char_limit} characters per scene. Split this scene.")
         model = cap.model or "bulbul:v3"
 
         # Map rate (-25 to +25) to pace (0.75 to 1.25)
@@ -58,9 +60,8 @@ class SarvamTTSAdapter:
             "model": model,
             "language_code": "te-IN",
             "speaker": speaker,
-            "pitch": pitch,
             "pace": pace,
-            "enable_preprocessing": True
+            "speech_sample_rate": 24000
         }
 
         headers = {
@@ -75,13 +76,7 @@ class SarvamTTSAdapter:
             raise ValueError(f"Sarvam API connection failed ({type(exc).__name__}). Check internet connectivity.") from None
 
         if res.status_code >= 400:
-            detail = ""
-            try:
-                err_data = res.json()
-                detail = err_data.get("message") or err_data.get("error", "")
-            except Exception:
-                detail = res.text[:200]
-            raise ValueError(f"Sarvam API returned HTTP {res.status_code}: {detail or 'Check credentials and quota.'}")
+            raise ValueError(f"Sarvam API returned HTTP {res.status_code}. Check credentials, voice, and quota.")
 
         data = res.json()
         audio_b64 = ""
@@ -93,7 +88,7 @@ class SarvamTTSAdapter:
         if not audio_b64:
             raise ValueError("Sarvam API returned response without audio payload.")
 
-        raw_audio_bytes = base64.b64decode(audio_b64)
+        raw_audio_bytes = base64.b64decode(audio_b64, validate=True)
 
         unique = uuid.uuid4().hex[:8]
         if target_audio:
@@ -135,7 +130,6 @@ class SarvamTTSAdapter:
             "model": model,
             "duration": dur,
             "rate": rate,
-            "pitch": pitch,
             "timing_type": "duration_proportional",
             "boundaries_count": len(boundaries)
         }

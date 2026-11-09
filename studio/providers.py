@@ -139,46 +139,25 @@ Return JSON only.'''
 
 
 def safe_pixabay_url(url):
-    parsed = urlparse(url)
-    return (parsed.scheme == 'https' and not parsed.username and not parsed.password and
-            parsed.port in (None, 443) and parsed.hostname in ('pixabay.com', 'cdn.pixabay.com'))
+    from .stock import safe_stock_url
+    return safe_stock_url(url, 'pixabay')
 
 
-def stock_search(query='', video_id=None):
-    cfg = online()
-    if not cfg['pixabay_key']:
-        raise ValueError('Configure your Pixabay API key in Settings.')
-    if len(query) > 100:
-        raise ValueError('Stock search must be at most 100 characters.')
-    params = {'key': cfg['pixabay_key'], 'safesearch': 'true', 'per_page': 8}
-    params.update({'id': int(video_id)} if video_id else {'q': query})
-    key = store.digest({'provider': 'pixabay-v1', 'params': params})
-    path = DATA / 'cache' / (key + '.json')
-    if path.exists() and time.time() - path.stat().st_mtime < 86400:
-        return json.loads(path.read_text('utf-8'))
-    raw = request('GET', 'https://pixabay.com/api/videos/', params=params).json()
-    results = []
-    for hit in raw.get('hits', []):
-        choices = [v for v in hit.get('videos', {}).values() if v.get('url') and safe_pixabay_url(v['url']) and 0 < v.get('size', 0) < 180 * 1024 * 1024]
-        if not choices:
-            continue
-        selected = min(choices, key=lambda v: abs(max(v.get('width', 0), v.get('height', 0)) - 1920))
-        results.append({'id': hit['id'], 'creator': hit.get('user', ''), 'source_url': hit.get('pageURL', ''),
-                        'tags': hit.get('tags', ''), 'duration': hit.get('duration'), 'video': selected,
-                        'license_url': 'https://pixabay.com/service/license-summary/'})
-    temp = path.with_suffix(f'.{uuid.uuid4().hex[:8]}.tmp')
-    temp.write_text(json.dumps(results), 'utf-8')
-    temp.replace(path)
-    return results
+def stock_search(query='', video_id=None, provider='auto'):
+    from .stock import search
+    return search(query, video_id, provider)
 
 
-def download_stock(video_id):
+def download_stock(video_id, provider='pixabay'):
+    from .stock import safe_stock_url
+    if provider not in ('pixabay', 'pexels'):
+        raise ValueError('Choose a stock provider before downloading.')
     # Deduplicate: Check if this Pixabay clip was already downloaded
-    existing = store.find_asset(provider='pixabay', external_id=str(video_id))
+    existing = store.find_asset(provider=provider, external_id=str(video_id))
     if existing:
         return existing
 
-    hits = stock_search(video_id=video_id)
+    hits = stock_search(video_id=video_id, provider=provider)
     hit = next((h for h in hits if h['id'] == int(video_id)), None)
     if not hit:
         raise ValueError('Stock clip no longer available')
@@ -190,7 +169,7 @@ def download_stock(video_id):
         hasher = hashlib.sha256()
         with httpx.Client(timeout=90, follow_redirects=False) as client:
             for redirect in range(4):
-                if not safe_pixabay_url(url):
+                if not safe_stock_url(url, provider):
                     raise ValueError('Stock download host is not allowed')
                 with client.stream('GET', url) as response:
                     if response.is_redirect:
@@ -221,8 +200,8 @@ def download_stock(video_id):
         info = probe(path)
         if not any(s['codec_type'] == 'video' for s in info['streams']):
             raise ValueError('Downloaded file contains no video')
-        return store.add_asset({'id': aid, 'filename': path.name, 'name': f"Pixabay {video_id}", 'kind': 'video',
-                                'provider': 'pixabay', 'external_id': str(video_id), 'sha256': file_hash,
+        return store.add_asset({'id': aid, 'filename': path.name, 'name': f"{provider.title()} {video_id}", 'kind': 'video',
+                                'provider': provider, 'external_id': str(video_id), 'sha256': file_hash,
                                 'source_url': hit['source_url'], 'creator': hit['creator'],
                                 'license_url': hit['license_url'], 'retrieved': store.now(), 'duration': float(info['format']['duration'])})
     except Exception as exc:
@@ -255,6 +234,7 @@ def synthesize(text, voice, rate, provider, pitch=0, delivery_preset='conversati
     eff_pitch = preset_info['effective_pitch']
 
     # 3. Contract caching check
+    audio_format = 'wav' if cap.provider == 'sarvam' else 'mp3'
     contract_key = compute_synthesis_contract_key(
         provider=cap.provider,
         voice=cap.voice_id,
@@ -264,9 +244,9 @@ def synthesize(text, voice, rate, provider, pitch=0, delivery_preset='conversati
         rate=eff_rate,
         pitch=eff_pitch,
         dictionary=pronunciation_dict,
-        audio_format='mp3'
+        audio_format=audio_format
     )
-    cached = get_cached_synthesis(contract_key)
+    cached = get_cached_synthesis(contract_key, audio_format=audio_format)
     if cached:
         audio, boundaries, _ = cached
         return audio, boundaries
@@ -279,9 +259,9 @@ def synthesize(text, voice, rate, provider, pitch=0, delivery_preset='conversati
 
     # 5. Synthesize via provider adapter
     unique_suffix = f'.{uuid.uuid4().hex[:8]}.part'
-    audio_dest = DATA / 'cache' / f'{contract_key}.mp3'
+    audio_dest = DATA / 'cache' / f'{contract_key}.{audio_format}'
     meta_dest = DATA / 'cache' / f'{contract_key}.timing.json'
-    temp_audio = audio_dest.with_suffix(unique_suffix + '.mp3')
+    temp_audio = audio_dest.with_suffix(unique_suffix + '.' + audio_format)
     temp_meta = meta_dest.with_suffix(unique_suffix + '.json')
 
     adapter = get_adapter_for_provider(cap.provider)
@@ -294,7 +274,7 @@ def synthesize(text, voice, rate, provider, pitch=0, delivery_preset='conversati
             target_audio=temp_audio,
             target_meta=temp_meta
         )
-        audio, _ = store_cached_synthesis(contract_key, audio, boundaries, metadata)
+        audio, _ = store_cached_synthesis(contract_key, audio, boundaries, metadata, audio_format=audio_format)
         record_usage(cap.provider, estimated_units=len(final_text), actual_units=len(final_text))
         return audio, boundaries
     except Exception as exc:

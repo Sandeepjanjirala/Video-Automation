@@ -7,9 +7,11 @@ and Pixabay search proxy.
 import os
 import uuid
 import hashlib
+import json
 import mimetypes
 import subprocess
 import secrets
+import shutil
 import threading
 from pathlib import Path
 from datetime import datetime, timezone
@@ -27,8 +29,8 @@ from rest_framework.views import APIView
 
 from studio.config import public_settings, save_settings, executable, DATA
 from studio.media import probe, run as media_run
-from studio import store
-from studio.models import Project as PydanticProject
+from studio import captions, framing, store
+from studio.models import Project as PydanticProject, Scene as PydanticScene
 import pydantic
 from core import services
 from .models import (
@@ -514,6 +516,105 @@ class ProjectPreflightView(APIView):
         return Response(report)
 
 
+class ProjectCaptionTimingView(APIView):
+    """POST /api/projects/{pid}/caption-timing - Measured narration timing for the caption editor.
+    Accepts the editor's current (possibly unsaved) project body; never saves.
+    """
+
+    def post(self, request, pid: str, *args, **kwargs):
+        proj = Project.objects.filter(id=pid).first()
+        if not proj:
+            return Response({'detail': 'Project not found'}, status=status.HTTP_400_BAD_REQUEST)
+        body = request.data.get('project') if isinstance(request.data, dict) else None
+        try:
+            speech = captions.speech_project(body if isinstance(body, dict) else proj.body)
+        except pydantic.ValidationError as err:
+            return Response({'detail': err.errors(include_context=False)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        jobs = Job.objects.filter(project_id=pid, kind='voice', state='succeeded').order_by('-created_at')[:30]
+        voice_jobs = [{'id': j.id, 'snapshot': j.snapshot, 'result': j.result} for j in jobs]
+        return Response({'scenes': captions.project_timing(speech, voice_jobs)})
+
+
+def caption_settings(data, saved):
+    """Caption size, margin and style from an unsaved editor body, falling back to the saved project."""
+    return PydanticProject.model_validate({
+        field: data.get(field, saved.get(field, default))
+        for field, default in (('caption_size', 56), ('caption_bottom', 300), ('caption_style', 'classic'))
+    }).model_dump()
+
+
+class ProjectFramingPreviewView(APIView):
+    """POST /api/projects/{pid}/framing-preview - One JPEG frame rendered with the export's filters.
+    Body: {scene, source_time?, caption?, quality?: 'final'|'draft', caption_size?, caption_bottom?, caption_style?}.
+    Uses the editor's unsaved scene; never saves. Geometry is returned in X-Framing-Geometry.
+    """
+
+    def post(self, request, pid: str, *args, **kwargs):
+        proj = Project.objects.filter(id=pid).first()
+        if not proj:
+            return Response({'detail': 'Project not found'}, status=status.HTTP_400_BAD_REQUEST)
+        data = request.data if isinstance(request.data, dict) else {}
+        try:
+            scene = PydanticScene.model_validate(data.get('scene')).model_dump()
+            if scene['visual'] == 'graphic' or not scene['video_asset']:
+                raise ValueError('Choose a video or image for this scene first')
+            settings_body = caption_settings(data, proj.body or {})
+            caption = str(data.get('caption') or '')[:160]
+            source_time = data.get('source_time')
+            source_time = None if source_time in (None, '') else float(source_time)
+            width, height = (540, 960) if data.get('quality') == 'draft' else (1080, 1920)
+            path = store.asset_path(scene['video_asset'], 'image' if scene['visual'] == 'image' else 'video')
+            work = DATA / 'tmp' / f'framing_{uuid.uuid4().hex}'
+            work.mkdir(parents=True, exist_ok=True)
+            try:
+                image, geometry = framing.preview_frame(scene, path, framing.source_info(path), width, height,
+                                                        source_time, work, settings_body, caption)
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
+        except pydantic.ValidationError as err:
+            return Response({'detail': err.errors(include_context=False)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        except (TypeError, ValueError) as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        response = HttpResponse(image, content_type='image/jpeg')
+        response['Cache-Control'] = 'no-store'
+        response['X-Framing-Geometry'] = json.dumps(geometry)
+        return response
+
+
+class ProjectCaptionPreviewView(APIView):
+    """POST /api/projects/{pid}/caption-preview - A scene frame with a caption in the chosen style.
+    Same body as framing-preview, but title-card scenes are allowed (drawn as the renderer does).
+    Captions use media.write_ass, so this is exactly what draft and final exports draw.
+    """
+
+    def post(self, request, pid: str, *args, **kwargs):
+        proj = Project.objects.filter(id=pid).first()
+        if not proj:
+            return Response({'detail': 'Project not found'}, status=status.HTTP_400_BAD_REQUEST)
+        data = request.data if isinstance(request.data, dict) else {}
+        try:
+            scene = PydanticScene.model_validate(data.get('scene')).model_dump()
+            if scene['visual'] != 'graphic':
+                return ProjectFramingPreviewView().post(request, pid)
+            settings_body = caption_settings(data, proj.body or {})
+            width, height = (540, 960) if data.get('quality') == 'draft' else (1080, 1920)
+            work = DATA / 'tmp' / f'framing_{uuid.uuid4().hex}'
+            work.mkdir(parents=True, exist_ok=True)
+            try:
+                image = framing.title_frame(scene, width, height, work, settings_body, str(data.get('caption') or '')[:160])
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
+        except pydantic.ValidationError as err:
+            return Response({'detail': err.errors(include_context=False)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        except (TypeError, ValueError) as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        response = HttpResponse(image, content_type='image/jpeg')
+        response['Cache-Control'] = 'no-store'
+        return response
+
+
 # ==============================================================================
 # 4. Jobs & Background Operations (Stage M5)
 # ==============================================================================
@@ -559,6 +660,9 @@ class ProjectJobsView(APIView):
             video_id = int(data.get('video_id', 0))
         except (TypeError, ValueError):
             return Response({'detail': 'video_id must be an integer'}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        stock_provider = data.get('stock_provider', 'pixabay')
+        if stock_provider not in ('pixabay', 'pexels'):
+            return Response({'detail': 'Choose Pixabay or Pexels for the selected clip'}, status=422)
         scene_id = str(data.get('scene_id', ''))[:48]
         operation_key = data.get('operation_key')
         if operation_key is not None:
@@ -571,6 +675,7 @@ class ProjectJobsView(APIView):
             'quality': quality,
             'script': script,
             'video_id': video_id,
+            'stock_provider': stock_provider,
             'scene_id': scene_id,
         }
 
@@ -784,14 +889,12 @@ class JobAudioArtifactView(APIView):
         if not item or not item.get('audio_path'):
             return Response({'detail': 'Scene audio not found'}, status=status.HTTP_400_BAD_REQUEST)
 
-        audio_path = Path(item['audio_path']).resolve()
-        cache_dir = (DATA / 'cache').resolve()
-        assets_dir = (DATA / 'assets').resolve()
-
-        if audio_path.parent not in (cache_dir, assets_dir) or not audio_path.is_file():
+        audio_path = captions.servable_audio(item['audio_path'])
+        if not audio_path:
             return Response({'detail': 'Invalid audio path'}, status=status.HTTP_400_BAD_REQUEST)
 
-        return FileResponse(open(audio_path, 'rb'), content_type='audio/mpeg')
+        # Range support lets the caption editor seek; Sarvam narration is WAV, Edge is MP3.
+        return ranged_file_response(request, audio_path, 'audio/wav' if audio_path.suffix == '.wav' else 'audio/mpeg')
 
 
 class ExportArtifactView(APIView):
@@ -799,7 +902,7 @@ class ExportArtifactView(APIView):
 
     def get(self, request, jid: str, name: str, *args, **kwargs):
         import re
-        if not re.fullmatch(r'[a-f0-9]{32}', jid) or name not in ('reel.mp4', 'captions.srt', 'source-report.json', 'project.json'):
+        if not re.fullmatch(r'[a-f0-9]{32}', jid) or name not in ('reel.mp4', 'captions.srt', 'source-report.json', 'project.json', 'timing-manifest.json'):
             return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
 
         try:
@@ -893,9 +996,9 @@ class AssetListCreateView(APIView):
             return Response({'detail': 'No file uploaded'}, status=status.HTTP_400_BAD_REQUEST)
 
         extension = Path(file.name or '').suffix.lower()
-        if extension not in ('.mp4', '.mov', '.mkv', '.webm', '.mp3', '.wav', '.m4a', '.ogg', '.aac'):
+        if extension not in ('.mp4', '.mov', '.mkv', '.webm', '.mp3', '.wav', '.m4a', '.ogg', '.aac', '.jpg', '.jpeg', '.png', '.webp'):
             return Response(
-                {'detail': 'Upload MP4/MOV/MKV/WEBM video or MP3/WAV/M4A/OGG/AAC audio'},
+                {'detail': 'Upload MP4/MOV/MKV/WEBM video, JPEG/PNG/WebP image, or MP3/WAV/M4A/OGG/AAC audio'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -923,7 +1026,8 @@ class AssetListCreateView(APIView):
                 return Response(serialize_asset_dict(existing))
 
             # Media stream validation via FFprobe
-            info = probe(path)
+            is_image = extension in ('.jpg', '.jpeg', '.png', '.webp')
+            info = probe(path, allow_still=is_image)
             video = any(
                 s.get('codec_type') == 'video' and not s.get('disposition', {}).get('attached_pic')
                 for s in info.get('streams', [])
@@ -938,7 +1042,7 @@ class AssetListCreateView(APIView):
                 'id': aid,
                 'filename': path.name,
                 'name': Path(file.name or '').name[:180],
-                'kind': 'video' if video else 'audio',
+                'kind': 'image' if is_image else 'video' if video else 'audio',
                 'duration': duration_val,
                 'sha256': file_hash,
                 'provider': 'upload',
@@ -960,7 +1064,7 @@ class AssetListCreateView(APIView):
                     workspace_id='default',
                     filename=path.name,
                     name=Path(file.name or '').name[:180],
-                    kind='video' if video else 'audio',
+                    kind='image' if is_image else 'video' if video else 'audio',
                     duration=duration_val,
                     sha256=file_hash,
                     provider='upload',
@@ -1010,6 +1114,22 @@ class AssetMediaView(APIView):
         return ranged_file_response(request, file_path)
 
 
+class AssetFramingView(APIView):
+    """GET /api/assets/{aid}/framing - Picture size FFmpeg sees (after rotation) for framing previews."""
+
+    def get(self, request, aid: str, *args, **kwargs):
+        try:
+            meta = store.asset(aid)
+            if meta['kind'] not in ('video', 'image'):
+                raise ValueError('Framing is only available for videos and images')
+            info = framing.source_info(store.asset_path(aid, meta['kind']))
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'id': aid, 'kind': meta['kind'], 'width': info['width'], 'height': info['height'],
+                         'rotation': info['rotation'],
+                         'duration': info['duration'] if meta['kind'] == 'video' else 0})
+
+
 class AssetThumbnailView(APIView):
     """GET /api/assets/{aid}/thumbnail - Return cached thumbnail or generate via FFmpeg."""
 
@@ -1019,6 +1139,8 @@ class AssetThumbnailView(APIView):
         except Asset.DoesNotExist:
             return Response({'detail': 'Media asset not found'}, status=status.HTTP_400_BAD_REQUEST)
 
+        if a.kind == 'image':
+            return AssetMediaView().get(request, aid)
         if a.kind != 'video':
             return Response(
                 {'detail': 'Thumbnails only available for video assets'},
@@ -1091,7 +1213,7 @@ class StockSearchView(APIView):
             )
         try:
             from studio.providers import stock_search
-            results = stock_search(q)
+            results = stock_search(q, provider=request.query_params.get('provider', 'auto'))
             return Response(results)
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
@@ -1115,6 +1237,25 @@ class SettingsView(APIView):
                 return Response(res, status=status.HTTP_200_OK)
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class VoiceTransliterateView(APIView):
+    """Return an editable candidate; conversion never overwrites the project."""
+
+    def post(self, request, *args, **kwargs):
+        if not isinstance(request.data, dict):
+            return Response({'detail': 'Expected a text and provider object'}, status=422)
+        try:
+            from studio.transliteration import convert
+            return Response(convert(request.data.get('text'), request.data.get('provider')))
+        except ValueError as exc:
+            from studio.config import SECRETS, settings
+            message = str(exc)
+            for key in SECRETS:
+                secret = settings().get(key)
+                if secret:
+                    message = message.replace(secret, '[redacted]')
+            return Response({'detail': message}, status=400)
 
 
 class VoiceNormalizeView(APIView):
@@ -1159,7 +1300,7 @@ class VoicePreviewView(APIView):
                 scene_id=str(data.get('scene_id') or ''),
                 text=str(text_val),
                 provider=str(data.get('provider') or 'edge'),
-                voice=str(data.get('voice') or 'te-IN-ShrutiNeural'),
+                voice=str(data.get('voice') or 'te-IN-MohanNeural'),
                 delivery_preset=str(data.get('preset') or 'conversational'),
                 rate=int(data.get('rate') or 0),
                 pitch=int(data.get('pitch') or 0),

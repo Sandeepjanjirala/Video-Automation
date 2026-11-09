@@ -19,13 +19,22 @@
       spoken_text: '',
       roman: '',
       keywords: '',
+      narration_source_roman: '',
+      generation_prompt: '',
+      prompt_seconds: 5,
+      stock_provider: 'auto',
+      short_clip_mode: 'loop',
       visual: 'upload',
       video_asset: '',
       audio_asset: '',
       audio_text_hash: '',
       trim_start: 0,
+      trim_end: 0,
       fit: 'crop',
+      frame_aspect: 'full',
+      zoom: 1,
       crop_x: 0.5,
+      crop_y: 0.5,
       hold_seconds: 0,
       graphic_title: '',
       rights_reviewed: false,
@@ -44,7 +53,7 @@
       target_seconds: 60,
       duration_mode: 'natural',
       tts_provider: 'edge',
-      voice: 'te-IN-ShrutiNeural',
+      voice: 'te-IN-MohanNeural',
       speech_rate: 0,
       delivery_preset: 'conversational',
       pronunciation_dict: {},
@@ -61,6 +70,7 @@
       music_rights_reviewed: false,
       caption_size: 56,
       caption_bottom: 300,
+      caption_style: 'classic',
       script_approved_hash: '',
       draft_script: ''
     };
@@ -90,6 +100,7 @@
     takeHistory: [],
     preflight: null,
     stockResults: {}, // sceneId -> array of stock hits
+    clearedCues: {}, // sceneId -> captions cleared by a text change, restorable once
     researchOpen: false,
 
     uid: generateUid,

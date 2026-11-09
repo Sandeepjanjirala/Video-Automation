@@ -17,13 +17,6 @@ const StudioSettings = (() => {
       e.stopPropagation();
     });
 
-    // TTS Provider toggle conditional fields
-    $(document).on('change', '#setting-tts-provider', function() {
-      const val = $(this).val();
-      $('.tts-provider-fields').hide();
-      $(`.tts-provider-${val}`).show();
-    });
-
     // Save settings
     $(document).on('click', '#btn-save-settings', async function() {
       await saveSettings();
@@ -58,13 +51,10 @@ const StudioSettings = (() => {
     $('#setting-pixabay-key').val('').attr('placeholder', cfg.pixabay_key_configured ? '●●●●●●●● (saved key)' : 'Enter Pixabay key');
     $('#hint-pixabay-key').text(cfg.pixabay_key_configured ? 'A key is saved.' : 'Needed for stock search and downloads.');
 
-    const tts = cfg.tts_provider || 'edge';
-    $('#setting-tts-provider').val(tts);
-    $('.tts-provider-fields').hide();
-    $(`.tts-provider-${tts}`).show();
+    $('#setting-pexels-key').val('').attr('placeholder', cfg.pexels_key_configured ? 'Saved key (leave blank to keep)' : 'Enter Pexels key');
 
     $('#setting-sarvam-key').val('').attr('placeholder', cfg.sarvam_key_configured ? '●●●●●●●● (saved key)' : 'Enter Sarvam key');
-    $('#hint-sarvam-key').text(cfg.sarvam_key_configured ? 'A key is saved.' : 'Needed for Sarvam Bulbul neural synthesis.');
+    $('#hint-sarvam-key').text(cfg.sarvam_key_configured ? 'A key is saved.' : 'Optional metered Telugu conversion and final voice upgrade.');
 
     $('#setting-azure-key').val('').attr('placeholder', cfg.azure_key_configured ? '●●●●●●●● (saved key)' : 'Enter Azure key');
     $('#setting-azure-region').val(cfg.azure_region || 'centralindia');
@@ -83,7 +73,6 @@ const StudioSettings = (() => {
         online_enabled: $('#setting-online-enabled').is(':checked'),
         gemini_model: $('#setting-gemini-model').val().trim(),
         daily_ai_calls: parseInt($('#setting-daily-ai-calls').val(), 10) || 20,
-        tts_provider: $('#setting-tts-provider').val(),
         azure_region: $('#setting-azure-region').val().trim(),
         ffmpeg: $('#setting-ffmpeg').val().trim(),
         ffprobe: $('#setting-ffprobe').val().trim()
@@ -95,6 +84,9 @@ const StudioSettings = (() => {
 
       const pixabay = $('#setting-pixabay-key').val().trim();
       if (pixabay) payload.pixabay_key = pixabay;
+
+      const pexels = $('#setting-pexels-key').val().trim();
+      if (pexels) payload.pexels_key = pexels;
 
       const sarvam = $('#setting-sarvam-key').val().trim();
       if (sarvam) payload.sarvam_key = sarvam;

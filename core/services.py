@@ -191,6 +191,7 @@ def apply_job_result(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
                     curr_s['visual'] = 'stock'
                     curr_s['rights_reviewed'] = False
                     curr_s['trim_start'] = 0
+                    curr_s['trim_end'] = 0
                     modified = True
 
         elif kind == 'stock_all':
@@ -217,6 +218,7 @@ def apply_job_result(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
                     curr_s['visual'] = 'stock'
                     curr_s['rights_reviewed'] = False
                     curr_s['trim_start'] = 0
+                    curr_s['trim_end'] = 0
                     modified = True
 
         elif kind == 'research':
@@ -305,10 +307,11 @@ def assign_media_to_scenes(pid: str, asset_id: str, scene_ids: List[str]) -> Pro
 
         for s in p_data.get('scenes', []):
             if all_scenes or s['id'] in scene_id_set:
-                if asset_obj.kind == 'video':
+                if asset_obj.kind in ('video', 'image'):
                     s['video_asset'] = asset_id
-                    s['visual'] = 'upload'
+                    s['visual'] = 'image' if asset_obj.kind == 'image' else 'upload'
                     s['trim_start'] = 0
+                    s['trim_end'] = 0
                     s['rights_reviewed'] = True
                 elif asset_obj.kind == 'audio':
                     s['audio_asset'] = asset_id
@@ -391,6 +394,7 @@ def accept_voice_take_mutation(pid: str, take_id: str) -> Dict[str, Any]:
 
         now_dt = now_utc()
         new_rev = proj.revision + 1
+        invalidate_stale_scene_fields(proj.body, p_data)
         validated = PydanticProject.model_validate(p_data).model_dump()
         proj.revision = new_rev
         proj.body = validated

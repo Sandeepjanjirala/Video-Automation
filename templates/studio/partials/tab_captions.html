@@ -1,0 +1,64 @@
+<div id="tab-captions" class="tab-panel" style="display:none;">
+  <section class="panel">
+    <div class="sectionhead">
+      <div>
+        <h2>Caption editor</h2>
+        <span class="muted">Telugu or Roman Telugu text, timed against measured narration audio</span>
+      </div>
+      <span id="captions-unsaved-badge" class="badge">No unsaved captions</span>
+    </div>
+    <p class="muted">Times are seconds from the start of each scene's narration (for example <code>1.25</code> or <code>0:01.25</code>).
+      Play a caption to check it, or pause the audio and set a start or end from the playhead.
+      Saved captions replace automatic timing for that scene. Save, then approve the new revision before rendering.</p>
+    <div class="actions">
+      <button type="button" class="primary" id="btn-save-captions" disabled>Save captions</button>
+      <button type="button" id="btn-approve-captions">Approve current revision</button>
+      <button type="button" class="ghost" id="btn-reload-caption-timing">Reload audio measurements</button>
+    </div>
+    <div id="captions-summary" role="status"></div>
+  </section>
+  <section class="panel" id="caption-style-panel">
+    <div class="sectionhead">
+      <div>
+        <h2>Caption style</h2>
+        <span class="muted">Applies to every caption in this reel, in previews, drafts and final exports</span>
+      </div>
+    </div>
+    <div class="stylegrid">
+      <div>
+        <div id="caption-style-options" class="styleoptions" role="radiogroup" aria-label="Caption style"></div>
+        <div class="grid two">
+          <label class="field"><span>Caption size (1080p pixels)</span>
+            <input type="number" id="style-caption-size" class="project-field-bind caption-size-input" data-field="caption_size" min="30" max="90" value="56">
+          </label>
+          <label class="field"><span>Bottom safe margin (px)</span>
+            <input type="number" id="style-caption-bottom" class="project-field-bind caption-bottom-input" data-field="caption_bottom" min="180" max="600" value="300">
+          </label>
+        </div>
+        <div class="grid two">
+          <label class="field"><span>Preview on</span><select id="caption-style-scene"></select></label>
+          <label class="field"><span>Preview text (not saved)</span><input type="text" id="caption-style-text" lang="te" maxlength="160"></label>
+        </div>
+        <p class="muted">Styles change only how captions look; text, timings, size and position stay as they are.
+          Save and approve the project before exporting.</p>
+      </div>
+      <div class="stylepreview">
+        <div class="framestage" id="caption-style-stage">
+          <img id="caption-style-bg" class="frameexact" alt="Scene frame without captions">
+          <div class="framecaption" aria-hidden="true"></div>
+          <img id="caption-style-exact" class="frameexact" alt="Caption rendered by FFmpeg" hidden>
+          <span class="framelabel">Live preview</span>
+        </div>
+        <div class="frameactions">
+          <button type="button" id="btn-caption-style-exact">Render exact caption</button>
+          <button type="button" id="btn-caption-style-live" hidden>Back to live preview</button>
+          <button type="button" class="ghost" id="btn-caption-style-refresh">Refresh background</button>
+        </div>
+        <small id="caption-style-status" class="muted" aria-live="polite"></small>
+      </div>
+    </div>
+  </section>
+  <div id="caption-scenes-container">
+    <!-- Rendered by StudioCaptions.render -->
+  </div>
+</div>

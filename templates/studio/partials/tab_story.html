@@ -66,10 +66,12 @@
   <section class="panel">
     <div class="sectionhead">
       <h2>Quick script importer</h2>
-      <span class="muted">Paste full Telugu text to auto-split into scenes</span>
+      <span class="muted">Your script, split locally into editable scenes</span>
     </div>
     <div class="field">
-      <textarea id="input-import-script" class="project-field-bind" data-field="draft_script" rows="3" placeholder="Paste full Telugu paragraph or multi-line script here..."></textarea>
+      <label for="script-input-format">Script format</label>
+      <select id="script-input-format"><option value="roman">Telugu written in English letters</option><option value="telugu">Telugu script (తెలుగు)</option></select>
+      <textarea id="input-import-script" class="project-field-bind" data-field="draft_script" rows="3" placeholder="e.g. Mana Andhra Pradesh lo enno aasakthikaramaina vishayalu unnayi..."></textarea>
     </div>
     <div class="actions">
       <button type="button" id="btn-import-split" class="ghost">
@@ -77,6 +79,7 @@
       </button>
       <button type="button" class="primary" data-action="queue-job" data-kind="draft" data-script-input="#input-import-script">Prepare my script with AI</button>
     </div>
+    <p class="muted">Split into scenes is free and offline. Convert each scene to Telugu and review it below. The optional AI preparation uses your configured Gemini API quota.</p>
   </section>
 
   <!-- Scenes Editor -->

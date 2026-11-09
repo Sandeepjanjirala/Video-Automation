@@ -52,6 +52,10 @@ const StudioJobs = (() => {
       StudioState.tell('Please select or create a project first.', true);
       return;
     }
+    if ((kind === 'render' || kind === 'voice') && window.StudioCaptions &&
+        !StudioCaptions.confirmLeave('This job would use the last saved captions. Continue without them?')) {
+      return;
+    }
 
     try {
       StudioState.setBusy(true);
@@ -202,6 +206,10 @@ const StudioJobs = (() => {
     if (!$container.length) return;
 
     const list = jobs || [];
+    // Polling must not replace media elements while the user is listening.
+    const signature = JSON.stringify(list);
+    if ($container.data('jobs-signature') === signature) return;
+    $container.data('jobs-signature', signature);
     const pending = list.filter(j => j.state === 'queued' || j.state === 'running').length;
     
     if ($badge.length) {
@@ -300,6 +308,9 @@ const StudioJobs = (() => {
     if (!$exportContainer.length) return;
 
     const exportJobs = (jobs || []).filter(j => j.kind === 'render' && j.state === 'succeeded');
+    const signature = JSON.stringify(exportJobs.map(j => [j.id, j.revision, j.result?.dimensions, j.result?.files]));
+    if ($exportContainer.data('exports-signature') === signature) return;
+    $exportContainer.data('exports-signature', signature);
     if (exportJobs.length === 0) {
       $exportContainer.html('<p class="muted">No exported reels yet. Complete the steps above and click Render.</p>');
       return;
@@ -311,13 +322,16 @@ const StudioJobs = (() => {
       const resLabel = (j.result?.dimensions || []).join('x') || 'Rendered reel';
 
       html += `<div class="card export-card" style="margin-bottom:1.5rem;padding:1rem;border-radius:var(--radius);background:var(--surface);border:1px solid var(--border);" data-jid="${escapeHtml(j.id)}">`;
-      html += `  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">`;
-      html += `    <div>`;
-      html += `      <h4 style="margin:0;">1080×1920 Vertical Reel</h4>`;
+      html += `  <div style="display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">`;
+      html += `    <div style="min-width:0;overflow-wrap:anywhere;">`;
+      html += `      <h4 style="margin:0;">${escapeHtml(resLabel)} ${j.result?.dimensions?.[0] === 540 ? 'Draft Preview' : 'Vertical Reel'}</h4>`;
       html += `      <span class="muted" style="font-size:0.85rem;">Job: ${escapeHtml(j.id)} · v${escapeHtml(j.revision || 1)} · ${escapeHtml(resLabel)}</span>`;
       html += `    </div>`;
       html += `    <a href="${videoSrc}" download="reel_${escapeHtml(j.id)}.mp4" class="btn primary" style="font-size:0.85rem;padding:0.4rem 0.8rem;text-decoration:none;">Download MP4</a>`;
       html += `  </div>`;
+      if (j.result?.files?.includes('timing-manifest.json')) {
+        html += `<p><a href="/api/exports/${encodeURIComponent(j.id)}/timing-manifest.json" download="timing-manifest.json">Download timing manifest (JSON)</a></p>`;
+      }
       html += `  <div class="video-preview-wrapper" style="max-width:360px;margin:0 auto;border-radius:var(--radius);overflow:hidden;background:#000;">`;
       html += `    <video controls preload="metadata" style="width:100%;display:block;max-height:540px;" src="${videoSrc}">`;
       html += `      Your browser does not support the video tag.`;

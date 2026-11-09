@@ -55,7 +55,7 @@
         Projects.saveProject();
       });
 
-      $(document).on('click', '#btn-approve-project, #btn-approve-script, #btn-approve-voice, #btn-approve-export', function() {
+      $(document).on('click', '#btn-approve-project, #btn-approve-script, #btn-approve-voice, #btn-approve-captions, #btn-approve-export', function() {
         Projects.approveRevision();
       });
 
@@ -116,6 +116,18 @@
       $(document).on('studio:dirty-changed studio:busy-ended', function() {
         Projects.updateHeaderBadges();
       });
+
+      // Browsers show their own generic wording; returnValue only requests the prompt.
+      $(window).on('beforeunload', function(e) {
+        if (!StudioState.isDirty && !(window.StudioCaptions && StudioCaptions.hasUnsaved())) return undefined;
+        e.preventDefault();
+        if (e.originalEvent) e.originalEvent.returnValue = '';
+        return '';
+      });
+    },
+
+    captionsAllow: function(action) {
+      return !window.StudioCaptions || StudioCaptions.confirmLeave(action);
     },
 
     renderProjectList: function() {
@@ -142,6 +154,8 @@
       if (StudioState.current && StudioState.current.id === pid) return;
       if (StudioState.isDirty) {
         if (!confirm('Discard unsaved edits and switch project?')) return;
+      } else if (!Projects.captionsAllow('Discard them and switch project?')) {
+        return;
       }
       Projects.loadProject(pid);
     },
@@ -208,6 +222,8 @@
     },
 
     createProject: function() {
+      if (StudioState.isDirty && !confirm('Discard unsaved edits and create a new project?')) return Promise.resolve(null);
+      if (!StudioState.isDirty && !Projects.captionsAllow('Discard them and create a new project?')) return Promise.resolve(null);
       StudioState.setBusy(true);
       const emptyBody = StudioState.createEmptyProject();
       return StudioApi.request('/projects', 'POST', emptyBody)
@@ -249,6 +265,7 @@
 
     approveRevision: function() {
       if (!StudioState.current) return Promise.resolve(null);
+      if (!Projects.captionsAllow('They are not part of this revision. Approve without them?')) return Promise.resolve(null);
       StudioState.setBusy(true);
       const pid = StudioState.current.id;
 

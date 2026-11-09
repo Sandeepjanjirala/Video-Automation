@@ -5,13 +5,16 @@
 (function($) {
   'use strict';
 
+  const esc = value => $('<div>').text(value || '').html().replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   const Scenes = {
     init: function() {
+      StudioWorkflow.init();
       // Scene text and field change bindings
       $(document).on('input change', '.scene-narration-input, .input-scene-narration', function() {
         const sid = $(this).closest('.scriptrow').data('id');
         Scenes.updateSceneField(sid, {
           narration: $(this).val(),
+          narration_source_roman: '',
           spoken_text: '',
           take_id: '',
           cues: []
@@ -48,11 +51,12 @@
         }
         const p = StudioState.current.project;
         if (p.scenes.some(s => s.narration.trim()) && !confirm('Replace the current storyboard with this script?')) return;
-        p.scenes = parts.map(narration => ({...StudioState.createEmptyScene(), narration}));
+        const isRoman = $('#script-input-format').val() !== 'telugu';
+        p.scenes = parts.map(text => ({...StudioState.createEmptyScene(), narration: isRoman ? '' : text, roman: isRoman ? text : ''}));
         StudioState.markDirty(true);
         Projects.populateEditor();
         Projects.triggerAutosave();
-        StudioState.setNotice('Script split into scenes. Add Roman Telugu captions, or use Prepare my script with AI.');
+        StudioState.setNotice('Script split locally. Use Convert to Telugu on each scene, or paste your reviewed Telugu narration.');
       });
 
       // Move scene up
@@ -65,21 +69,6 @@
       $(document).on('click', '.btn-remove-scene', function() {
         const sid = $(this).closest('.scriptrow').data('id');
         Scenes.removeScene(sid);
-      });
-
-      // Manual caption cues apply
-      $(document).on('click', '.btn-apply-cues', function() {
-        const sid = $(this).data('scene-id');
-        const $textarea = $(`#cues-editor-${sid}`);
-        try {
-          const raw = $textarea.val().trim() || '[]';
-          const parsed = JSON.parse(raw);
-          if (!Array.isArray(parsed)) throw new Error('Cues must be a JSON array.');
-          Scenes.updateSceneField(sid, { cues: parsed });
-          StudioState.setNotice('Caption timings applied. Save and re-approve before rendering.');
-        } catch (e) {
-          StudioState.setNotice('Invalid cues JSON: ' + e.message, true);
-        }
       });
 
       // Listen for project editor sync
@@ -95,6 +84,12 @@
       const s = scenes.find(x => x.id === sid);
       if (!s) return;
 
+      if (Array.isArray(updates.cues) && !updates.cues.length && s.cues && s.cues.length) {
+        // Text or narration changes invalidate timings; keep them restorable in the caption editor.
+        StudioState.clearedCues = StudioState.clearedCues || {};
+        StudioState.clearedCues[sid] = s.cues;
+        StudioState.setNotice('Caption timings for this scene were cleared because its text or narration changed. You can restore them on the Captions tab.');
+      }
       Object.assign(s, updates);
       StudioState.markDirty(true);
       Projects.triggerAutosave();
@@ -163,7 +158,7 @@
         const numStr = String(idx + 1).padStart(2, '0');
         const disableMoveUp = (idx === 0) ? ' disabled' : '';
         const attachedAudioMsg = s.audio_asset
-          ? '<span class="muted">Uploaded narration attached; re-attach after text changes.</span>'
+          ? '<span class="muted">Narration attached; text or voice changes may require a new take.</span>'
           : '';
 
         const rowHtml = `
@@ -172,16 +167,18 @@
             <div class="scriptbody">
               <div class="grid two">
                 <label class="field">
-                  <span>Telugu narration</span>
+                  <span>Telugu narration — review before recording</span>
                   <textarea class="scene-narration-input input-scene-narration" lang="te" rows="4" placeholder="తెలుగులో మీ కథ…">${$('<div>').text(s.narration || '').html()}</textarea>
                 </label>
                 <label class="field">
-                  <span>Roman Telugu captions</span>
+                  <span>Roman Telugu input / captions</span>
                   <textarea class="scene-roman-input input-scene-caption" rows="4" placeholder="Telugulo mee katha…">${$('<div>').text(s.roman || '').html()}</textarea>
                 </label>
               </div>
               <label class="field"><span>English footage search keywords</span><input type="text" class="scene-keywords-input input-scene-visual-prompt" maxlength="100" value="${$('<div>').text(s.keywords || '').html().replace(/"/g, '&quot;')}"></label>
               <div class="rowtools">
+                <button type="button" class="btn-scene-transliterate" data-scene-id="${s.id}">Convert to Telugu</button>
+                <button type="button" class="btn-scene-prompt" data-scene-id="${s.id}">Prompt</button>
                 <button type="button" class="btn-move-scene-up"${disableMoveUp}>Move up</button>
                 <button type="button" class="btn-remove-scene">Remove scene</button>
                 <label class="filebutton ghost">Upload narration<input type="file" class="scene-upload-audio-input" data-scene-id="${s.id}" accept="audio/*"></label>
@@ -206,55 +203,40 @@
         const visualBadgeClass = s.visual === 'graphic' ? 'approved' : s.video_asset ? '' : 'red';
         const visualBadgeText = s.visual === 'graphic' ? 'graphic title card' : s.video_asset ? s.visual : 'media missing';
 
+        // Framing preview mirrors the renderer's crop, zoom and trim (framing.js).
         const previewHtml = (s.video_asset && s.visual !== 'graphic')
-          ? `<video class="clippreview" controls preload="metadata" src="/api/assets/${s.video_asset}/media"></video>`
-          : `<div class="visualplaceholder"><span>✦</span><p>${s.visual === 'graphic' ? (s.graphic_title || 'Your graphic title') : 'Select footage or upload a clip'}</p></div>`;
+          ? StudioFraming.stageHtml(s)
+          : `<div class="visualplaceholder"><span>✦</span><p>${esc(s.visual === 'graphic' ? (s.graphic_title || 'Your graphic title') : 'Select footage or upload a clip')}</p></div>`;
 
         const isGraphic = (s.visual === 'graphic');
-        const isCrop = (s.fit === 'crop');
 
         const visualConfigHtml = isGraphic ? `
           <label class="field">
             <span>Graphic heading (English / Roman Telugu)</span>
-            <input type="text" class="scene-field-bind" data-field="graphic_title" value="${$('<div>').text(s.graphic_title || '').html()}" />
+            <input type="text" class="scene-field-bind" data-field="graphic_title" value="${esc(s.graphic_title)}" />
           </label>
         ` : `
           <label class="field">
             <span>English stock search terms</span>
-            <input type="text" class="scene-field-bind" data-field="keywords" maxlength="100" value="${$('<div>').text(s.keywords || '').html()}" />
+            <input type="text" class="scene-field-bind" data-field="keywords" maxlength="100" value="${esc(s.keywords)}" />
           </label>
           <div class="actions">
-            <button type="button" class="btn-find-stock" data-scene-id="${s.id}" ${!s.keywords ? 'disabled' : ''}>Find on Pixabay</button>
+            <button type="button" class="btn-find-stock" data-scene-id="${s.id}" ${!s.keywords ? 'disabled' : ''}>Find free stock</button>
             <button type="button" class="btn-open-library-single" data-scene-id="${s.id}">Choose from library</button>
             <label class="filebutton">
-              Upload video
-              <input type="file" class="scene-upload-video-input" data-scene-id="${s.id}" accept="video/*" />
+              Upload video / image
+              <input type="file" class="scene-upload-video-input" data-scene-id="${s.id}" accept="video/*,image/jpeg,image/png,image/webp" />
             </label>
           </div>
+          <label class="field"><span>Stock source</span><select class="scene-field-bind" data-field="stock_provider">
+            <option value="auto" ${!s.stock_provider || s.stock_provider === 'auto' ? 'selected' : ''}>Pixabay first, then Pexels if no results</option>
+            <option value="pixabay" ${s.stock_provider === 'pixabay' ? 'selected' : ''}>Pixabay</option>
+            <option value="pexels" ${s.stock_provider === 'pexels' ? 'selected' : ''}>Pexels</option>
+          </select></label>
           <div id="stock-results-${s.id}"></div>
-          <div class="grid two">
-            <label class="field">
-              <span>Trim start (seconds)</span>
-              <input type="number" class="scene-field-bind" data-field="trim_start" min="0" step="0.1" value="${s.trim_start || 0}" />
-            </label>
-            <label class="field">
-              <span>Framing</span>
-              <select class="scene-field-bind" data-field="fit">
-                <option value="crop" ${s.fit === 'crop' ? 'selected' : ''}>Fill vertical frame</option>
-                <option value="contain" ${s.fit === 'contain' ? 'selected' : ''}>Fit entire clip with padding</option>
-              </select>
-            </label>
-          </div>
-          ${isCrop ? `
-            <label class="field">
-              <span>Horizontal crop position</span>
-              <input type="range" class="scene-field-bind" data-field="crop_x" min="0" max="1" step="0.05" value="${s.crop_x !== undefined ? s.crop_x : 0.5}" />
-            </label>
-          ` : ''}
-          <small class="muted">Short footage loops to cover narration. Source clip audio is muted.</small>
+          ${s.video_asset ? StudioFraming.controlsHtml(s) : '<small class="muted">Choose footage or an image to adjust its framing and trim.</small>'}
+          <small class="muted">Clip audio is muted. Scene length follows the selected narration.</small>
         `;
-
-        const cuesJson = JSON.stringify(s.cues || [], null, 2);
 
         const cardHtml = `
           <section class="panel scene-visual-card" data-id="${s.id}">
@@ -273,10 +255,12 @@
                   <span>Visual source</span>
                   <select class="scene-visual-source-select">
                     <option value="upload" ${s.visual === 'upload' ? 'selected' : ''}>Uploaded footage</option>
-                    <option value="stock" ${s.visual === 'stock' ? 'selected' : ''}>Pixabay stock footage</option>
+                    <option value="stock" ${s.visual === 'stock' ? 'selected' : ''}>Stock footage</option>
+                    <option value="image" ${s.visual === 'image' ? 'selected' : ''}>Uploaded image</option>
                     <option value="graphic" ${s.visual === 'graphic' ? 'selected' : ''}>Simple animated title card (explicit choice)</option>
                   </select>
                 </label>
+                <button type="button" class="btn-scene-prompt" data-scene-id="${s.id}">Prompt for this scene</button>
                 ${visualConfigHtml}
                 <label class="field">
                   <span>Hold after narration (seconds)</span>
@@ -286,33 +270,30 @@
                   <input type="checkbox" class="scene-rights-checkbox" ${s.rights_reviewed ? 'checked' : ''} />
                   I reviewed visual relevance and permission to use it.
                 </label>
-                <details style="margin-top:14px;">
-                  <summary><b>Caption timing cues</b> (${s.cues ? s.cues.length : 0} manual words)</summary>
-                  <p class="muted">Word-level start/end timestamps override automatic text-proportional timing.</p>
-                  <textarea id="cues-editor-${s.id}" rows="4" style="font-family:monospace;font-size:12px;">${$('<div>').text(cuesJson).html()}</textarea>
-                  <div class="actions">
-                    <button type="button" class="btn-apply-cues" data-scene-id="${s.id}">Apply timings</button>
-                  </div>
-                </details>
+                <div class="actions">
+                  <span class="muted">${s.cues && s.cues.length ? s.cues.length + ' saved manual caption(s)' : 'Automatic caption timing'}</span>
+                  <button type="button" class="btn-open-captions" data-scene-id="${s.id}">Edit captions &amp; timing</button>
+                </div>
               </div>
             </div>
           </section>
         `;
         $container.append(cardHtml);
       });
+      StudioFraming.mount();
     }
   };
 
   // Scene visual field bindings
   $(document).on('change', '.scene-visual-source-select', function() {
-    const sid = $(this).closest('.scene-visual-card').data('id');
+    const sid = $(this).closest('.scene-visual-card').attr('data-id');
     const val = $(this).val();
     Scenes.updateSceneField(sid, { visual: val, rights_reviewed: false });
     Scenes.renderSceneVisuals();
   });
 
   $(document).on('input change', '.scene-field-bind', function() {
-    const sid = $(this).closest('.scene-visual-card').data('id');
+    const sid = $(this).closest('.scene-visual-card').attr('data-id');
     const field = $(this).data('field');
     let val = $(this).val();
     if ($(this).attr('type') === 'number' || $(this).attr('type') === 'range') {
@@ -321,13 +302,13 @@
     const update = {};
     update[field] = val;
     Scenes.updateSceneField(sid, update);
-    if (field === 'fit' || field === 'graphic_title') {
+    if (field === 'graphic_title') {
       Scenes.renderSceneVisuals();
     }
   });
 
   $(document).on('change', '.scene-rights-checkbox', function() {
-    const sid = $(this).closest('.scene-visual-card').data('id');
+    const sid = $(this).closest('.scene-visual-card').attr('data-id');
     const checked = $(this).is(':checked');
     Scenes.updateSceneField(sid, { rights_reviewed: checked });
     Projects.updateHeaderBadges();

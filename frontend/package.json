@@ -1,6 +1,9 @@
 {
   "name": "telugu-reel-studio-test-tooling",
   "private": true,
+  "engines": {
+    "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+  },
   "description": "Headless browser testing harnesses for Django Templates + jQuery UI",
   "dependencies": {
     "@testing-library/dom": "10.4.2",

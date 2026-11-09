@@ -45,8 +45,16 @@ def run(args, cwd=None, timeout=1800, job_id=None):
             store.unregister_subprocess(job_id, proc.pid if proc else None)
 
 
-def probe(path):
+def probe(path, allow_still=False):
     value = json.loads(run([executable('ffprobe'), '-v', 'error', '-show_streams', '-show_format', '-of', 'json', path], timeout=45))
+    if allow_still:
+        streams = value.get('streams', [])
+        if (len(streams) != 1 or streams[0].get('codec_name') not in ('png', 'mjpeg', 'webp')
+                or value.get('format', {}).get('format_name') not in ('image2', 'png_pipe', 'jpeg_pipe', 'webp_pipe')
+                or not 0 < streams[0].get('width', 0) * streams[0].get('height', 0) <= 40000000):
+            raise ValueError('Upload a still JPEG, PNG or WebP image, at most 40 megapixels.')
+        value.setdefault('format', {})['duration'] = '0'
+        return value
     duration = float(value.get('format', {}).get('duration', 0))
     if not math.isfinite(duration) or not 0 < duration <= 36000:
         raise ValueError('Media must have a valid duration between 0 and 36,000 seconds')
@@ -73,7 +81,7 @@ def voice_for(scene, project, provider):
     pdict = project.get('pronunciation_dict') or {}
     return synthesize(
         text=text,
-        voice=project.get('voice', 'te-IN-ShrutiNeural'),
+        voice=project.get('voice', 'te-IN-MohanNeural'),
         rate=project.get('speech_rate', 0),
         provider=provider,
         delivery_preset=preset,
@@ -86,7 +94,11 @@ def captions(scene, audio_duration, boundaries):
         if scene['cues'][-1]['end'] > audio_duration + 0.1:
             raise ValueError('A manual caption cue extends beyond its narration. Correct its timestamp.')
         return scene['cues'], 'manual'
-    words = scene['roman'].split()
+    return auto_captions(scene['roman'], audio_duration, boundaries)
+
+
+def auto_captions(text, audio_duration, boundaries):
+    words = text.split()
     if not words:
         return [], 'empty'
     # Index mapping is a useful initial alignment, not forced phonetic alignment.
@@ -107,18 +119,47 @@ def captions(scene, audio_duration, boundaries):
     return cues, 'word-index mapping; review required' if mapped else 'estimated from text length; review required'
 
 
-def stamp(seconds, ass=False):
-    units = round(seconds * (100 if ass else 1000))
-    base = 100 if ass else 1000
-    hours, rem = divmod(units, 3600 * base)
-    mins, rem = divmod(rem, 60 * base)
-    secs, fraction = divmod(rem, base)
-    return f'{hours}:{mins:02}:{secs:02}.{fraction:02}' if ass else f'{hours:02}:{mins:02}:{secs:02},{fraction:03}'
+# Compatibility import for callers; ASS and SRT share timestamp formatting.
+from .timeline import stamp
 
 
 def ass_text(text, width=32):
     safe = text.replace('\\', '/').replace('{', '(').replace('}', ')').replace('\r', ' ').replace('\n', ' ')
     return r'\N'.join(textwrap.wrap(safe, width=width))
+
+
+# Captions are always ASS. The ass filter shapes complex scripts by default on every FFmpeg
+# version; FFmpeg 7.1's subtitles filter lays Telugu out without shaping (broken conjuncts).
+CAPTION_FILTER = 'ass=captions.ass'
+
+# Arial has no Telugu glyphs. Nirmala UI ships with Windows; the Docker image installs Noto.
+TELUGU_FONT = 'Nirmala UI' if os.name == 'nt' else 'Noto Sans Telugu'
+TELUGU_SCRIPT = re.compile(r'[ఀ-౿]')
+
+
+# Caption style presets as ASS colours (&HAABBGGRR, alpha 00 = opaque) and border settings.
+# 'classic' is the original style and must stay byte-identical. Box styles pad by a quarter
+# of the font size: BorderStyle 3 draws an OutlineColour box per line, BorderStyle 4 (libass
+# 0.17+) one BackColour box per caption, so translucent lines never overlap and darken.
+# libass also outlines BorderStyle 4 text, so its OutlineColour is fully transparent.
+CAPTION_STYLES = {
+    'classic': {'primary': '&H00FFFFFF', 'outline_colour': '&H00120E0B', 'back': '&H88000000',
+                'border': 1, 'outline': 3, 'shadow': 1},
+    'black_box': {'primary': '&H00FFFFFF', 'outline_colour': '&H00000000', 'back': '&H00000000',
+                  'border': 3, 'outline': 'pad', 'shadow': 0},
+    'yellow_accent': {'primary': '&H0000D7FF', 'outline_colour': '&H00000000', 'back': '&H88000000',
+                      'border': 1, 'outline': 4, 'shadow': 2},
+    'translucent': {'primary': '&H00FFFFFF', 'outline_colour': '&HFF000000', 'back': '&H66000000',
+                    'border': 4, 'outline': 'pad', 'shadow': 0},
+}
+
+
+def caption_style_line(name, font, project):
+    size = project['caption_size']
+    preset = CAPTION_STYLES[project.get('caption_style') or 'classic']
+    outline = round(size / 4) if preset['outline'] == 'pad' else preset['outline']
+    return (f"Style: {name},{font},{size},{preset['primary']},&H00FFFFFF,{preset['outline_colour']},{preset['back']},"
+            f"-1,0,0,0,100,100,0,0,{preset['border']},{outline},{preset['shadow']},2,90,140,{project['caption_bottom']},1")
 
 
 def write_ass(path, cues, project, title=None, total=0):
@@ -131,13 +172,16 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,{project['caption_size']},&H00FFFFFF,&H00FFFFFF,&H00120E0B,&H88000000,-1,0,0,0,100,100,0,0,1,3,1,2,90,140,{project['caption_bottom']},1
+{caption_style_line('Default', 'Arial', project)}
+{caption_style_line('Telugu', TELUGU_FONT, project)}
 Style: Title,Arial,78,&H00B9F8CF,&H00FFFFFF,&H00120E0B,&H00000000,-1,0,0,0,100,100,0,0,1,1,0,5,100,100,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
-    rows = [f"Dialogue: 0,{stamp(c['start'], True)},{stamp(c['end'], True)},Default,,0,0,0,,{ass_text(c['text'])}" for c in cues]
+    rows = [f"Dialogue: 0,{stamp(c['start'], True)},{stamp(c['end'], True)},"
+            f"{'Telugu' if TELUGU_SCRIPT.search(c['text']) else 'Default'},,0,0,0,,{ass_text(c['text'])}"
+            for c in cues]
     if title:
         rows.insert(0, f'Dialogue: 0,0:00:00.00,{stamp(total, True)},Title,,0,0,0,,{{\\fad(250,200)}}{ass_text(title, 20)}')
     path.write_text(header + '\n'.join(rows), 'utf-8')

@@ -139,6 +139,31 @@
     },
 
     /**
+     * POST JSON and receive a binary body (e.g. a JPEG frame rendered by FFmpeg).
+     * @returns {Promise<{blob: Blob, headers: Headers}>}
+     */
+    blob: function(path, data) {
+      const headers = {'Content-Type': 'application/json; charset=utf-8'};
+      if (studioToken) {
+        headers['x-studio-token'] = studioToken;
+      }
+      return window.fetch('/api' + path, {method: 'POST', headers: headers, body: JSON.stringify(data)})
+        .then(async (res) => {
+          if (!res.ok) {
+            let detail = res.statusText || `HTTP ${res.status}`;
+            try {
+              const body = await res.json();
+              detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail);
+            } catch (e) {}
+            const err = new Error(detail);
+            err.status = res.status;
+            throw err;
+          }
+          return {blob: await res.blob(), headers: res.headers};
+        });
+    },
+
+    /**
      * Multipart Form Data Upload
      * @param {string} path - e.g. '/assets'
      * @param {FormData} formData

@@ -51,6 +51,8 @@ const StudioApp = (() => {
     if (tab === 'export') {
       StudioProjects.updatePreflight();
     }
+    StudioCaptions.onTabChange(tab);
+    StudioCaptionStyle.onTabChange(tab);
   }
 
   function updateBusyState(busy) {
@@ -61,6 +63,8 @@ const StudioApp = (() => {
       $('button:not(.allow-busy), input:not(.allow-busy), textarea:not(.allow-busy), select:not(.allow-busy)').prop('disabled', false);
       $('#global-busy-spinner').hide();
       StudioProjects.updateHeaderBadges();
+      // Re-enabling every control above must not enable caption actions that need audio.
+      StudioCaptions.refreshControls();
     }
   }
 
@@ -131,6 +135,9 @@ $(document).ready(() => {
   StudioVoice.init();
   StudioScenes.init();
   StudioProjects.init();
+  StudioCaptions.init();
+  StudioFraming.init();
+  StudioCaptionStyle.init();
   StudioSettings.init();
   StudioApp.init();
 });

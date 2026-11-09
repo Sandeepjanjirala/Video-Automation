@@ -46,7 +46,7 @@ def generate_voice_take(
     scene_id: str,
     text: str,
     provider: str = "edge",
-    voice: str = "te-IN-ShrutiNeural",
+    voice: str = "te-IN-MohanNeural",
     delivery_preset: str = "conversational",
     rate: int = 0,
     pitch: int = 0,
@@ -66,6 +66,8 @@ def generate_voice_take(
     eff_rate = preset_settings["effective_rate"]
     eff_pitch = preset_settings["effective_pitch"]
 
+    audio_format = "wav" if cap.provider == "sarvam" else "mp3"
+
     # 3. Check contract cache
     contract_key = compute_synthesis_contract_key(
         provider=cap.provider,
@@ -76,10 +78,10 @@ def generate_voice_take(
         rate=eff_rate,
         pitch=eff_pitch,
         dictionary=pronunciation_dict,
-        audio_format="mp3"
+        audio_format=audio_format
     )
 
-    cached = None if explicit_regenerate else get_cached_synthesis(contract_key)
+    cached = None if explicit_regenerate else get_cached_synthesis(contract_key, audio_format=audio_format)
     if cached:
         audio_file, boundaries, metadata = cached
     else:
@@ -96,12 +98,12 @@ def generate_voice_take(
             pitch=eff_pitch
         )
         # Store in contract cache
-        audio_file, _ = store_cached_synthesis(contract_key, audio_file, boundaries, metadata, overwrite=explicit_regenerate)
+        audio_file, _ = store_cached_synthesis(contract_key, audio_file, boundaries, metadata, audio_format=audio_format, overwrite=explicit_regenerate)
 
     # 4. Copy to asset library for project playback
     take_id = f"take_{uuid.uuid4().hex[:12]}"
     asset_id = uuid.uuid4().hex
-    asset_filename = f"{asset_id}.mp3"
+    asset_filename = f"{asset_id}.{audio_format}"
     dest_path = DATA / "assets" / asset_filename
     dest_path.parent.mkdir(parents=True, exist_ok=True)
 
