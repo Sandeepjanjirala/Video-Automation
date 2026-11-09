@@ -666,3 +666,183 @@ def test_shared_timeline_rejects_invalid_inputs(fault):
     elif fault == 'excessive_speed': p['duration_mode'] = 'target'
     elif fault == 'holds': p.update(duration_mode='target'); p['scenes'][0]['hold_seconds'] = 10
     with pytest.raises(ValueError): compute_timeline(p, v)
+
+
+# Stage 2: caption editor ---------------------------------------------------------------
+
+TELUGU_LINE = 'ఇది ఒక చిన్న పరీక్ష'
+
+
+def edge_fixture(monkeypatch, seconds=2.0):
+    """Offline stand-in for Edge: real MP3 in the synthesis cache plus word boundaries."""
+    calls = []
+    def synthesize(text, **kw):
+        calls.append(text)
+        path = DATA / 'cache' / f'fixture_{store.digest([text, kw, seconds])[:12]}.mp3'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if not path.exists():
+            media.run([executable('ffmpeg'), '-v', 'error', '-y', '-f', 'lavfi', '-i',
+                       f'sine=frequency=500:duration={seconds}', '-c:a', 'libmp3lame', path])
+        step = seconds / 4
+        return path, [{'start': i * step, 'end': (i + 1) * step - 0.05, 'text': f'w{i}'} for i in range(4)]
+    monkeypatch.setattr(providers, 'synthesize', synthesize)
+    return calls
+
+
+def caption_project():
+    body = project()
+    body['scenes'][0].update(narration=TELUGU_LINE, roman='Idi oka chinna pariksha')
+    body['scenes'].append({**body['scenes'][0], 'id': 'scene2', 'graphic_title': 'Second'})
+    return body
+
+
+def caption_timing(pid, body=None):
+    res = client().post(f'/api/projects/{pid}/caption-timing', {'project': body} if body else {},
+                        content_type='application/json')
+    assert res.status_code == 200, res.content
+    return {t['scene_id']: t for t in res.json()['scenes']}
+
+
+def test_caption_text_accepts_telugu_and_roman_but_rejects_blank_or_overlap():
+    scene = {'id': 's', 'cues': [{'start': 0, 'end': 1, 'text': TELUGU_LINE},
+                                 {'start': 1, 'end': 2, 'text': 'Roman Telugu'}]}
+    assert Scene.model_validate(scene).cues[0].text == TELUGU_LINE
+    with pytest.raises(ValueError, match='empty'):
+        Scene.model_validate({'id': 's', 'cues': [{'start': 0, 'end': 1, 'text': '   '}]})
+    scene['cues'][1]['start'] = 0.9
+    with pytest.raises(ValueError, match='overlap'):
+        Scene.model_validate(scene)
+    body = project()
+    body['scenes'][0]['cues'] = scene['cues']
+    assert client().post('/api/projects', body, content_type='application/json').status_code == 422
+
+
+def test_caption_timing_uses_measured_prepared_narration_and_detects_stale_speech(monkeypatch):
+    calls = edge_fixture(monkeypatch, seconds=2.0)
+    row = store.save_project(caption_project())
+    store.approve(row['id'], row['revision'])
+    assert caption_timing(row['id'])['scene1']['status'] == 'unmeasured'
+    job = store.enqueue(row['id'], row['revision'], 'voice')
+    from studio.tasks import task_voice_pipeline
+    assert task_voice_pipeline.run(job['id'])['status'] == 'succeeded'
+    voice = store.job(job['id'])['result']['voices'][0]
+    assert len(voice['boundaries']) == 4
+
+    first = caption_timing(row['id'])['scene1']
+    assert first['status'] == 'measured'
+    assert first['duration'] == pytest.approx(media.duration(Path(voice['audio_path'])))
+    assert first['duration'] == pytest.approx(2.0, abs=0.1)
+    assert first['audio_url'] == f"/api/jobs/{job['id']}/audio/scene1"
+    roman = first['automatic']['roman']
+    assert roman['alignment'].startswith('word-index mapping')
+    assert roman['cues'] == [{'start': 0, 'end': pytest.approx(1.95), 'text': 'Idi oka chinna pariksha'}]
+    assert first['automatic']['telugu']['cues'][0]['text'] == TELUGU_LINE
+
+    # Range requests let the editor seek within prepared narration.
+    audio = client().get(first['audio_url'], HTTP_RANGE='bytes=0-15')
+    assert audio.status_code == 206
+    assert len(b''.join(audio.streaming_content)) == 16
+    audio.close()
+
+    # Unsaved text/voice edits are measured against what the renderer would actually use.
+    edited = copy.deepcopy(row['project'])
+    edited['scenes'][1]['narration'] = 'వేరే కథ'
+    edited['scenes'][0]['cues'] = [{'start': 'unfinished draft', 'end': 1, 'text': ''}]
+    timing = caption_timing(row['id'], edited)
+    assert timing['scene1']['status'] == 'measured'
+    assert timing['scene2']['status'] == 'unmeasured'
+    edited['speech_rate'] = 10
+    assert {t['status'] for t in caption_timing(row['id'], edited).values()} == {'unmeasured'}
+    assert len(calls) == 2  # measuring never synthesizes
+    bad = client().post(f"/api/projects/{row['id']}/caption-timing", {'project': {'scenes': [{'id': '../x'}]}},
+                        content_type='application/json')
+    assert bad.status_code == 422
+
+
+def test_caption_timing_measures_attached_recording_and_flags_mismatch(tmp_path):
+    audio = tmp_path / 'voice.wav'
+    media.run([executable('ffmpeg'), '-v', 'error', '-y', '-f', 'lavfi', '-i', 'sine=duration=1.7', audio])
+    asset = client().post('/api/assets', {'file': SimpleUploadedFile(audio.name, audio.read_bytes())}).json()
+    body = caption_project()
+    body['scenes'][0].update(audio_asset=asset['id'], audio_text_hash=store.digest(TELUGU_LINE))
+    row = store.save_project(body)
+    timing = caption_timing(row['id'])['scene1']
+    assert timing['status'] == 'measured'
+    assert timing['duration'] == pytest.approx(1.7, abs=0.05)
+    assert timing['audio_url'] == f"/api/assets/{asset['id']}/media"
+    assert timing['automatic']['roman']['alignment'].startswith('estimated')
+    edited = copy.deepcopy(row['project'])
+    edited['scenes'][0]['audio_text_hash'] = 'stale'
+    assert caption_timing(row['id'], edited)['scene1']['status'] == 'stale'
+
+
+def test_telugu_caption_style_and_roman_style_are_both_written(tmp_path):
+    path = tmp_path / 'captions.ass'
+    media.write_ass(path, [{'start': 0, 'end': 1, 'text': TELUGU_LINE},
+                           {'start': 1, 'end': 2, 'text': 'Roman Telugu'}], project())
+    text = path.read_text('utf-8')
+    assert f'Style: Telugu,{media.TELUGU_FONT},56,' in text
+    assert f',Telugu,,0,0,0,,{TELUGU_LINE}' in text
+    assert ',Default,,0,0,0,,Roman Telugu' in text
+
+
+@pytest.mark.parametrize('quality,dimensions', [('draft', (540, 960)), ('final', (1080, 1920))])
+def test_caption_editor_workflow_exports_edited_captions(monkeypatch, quality, dimensions):
+    """Prepare narration, save edited captions over HTTP as the editor does, approve, render, verify."""
+    edge_fixture(monkeypatch, seconds=2.4)
+    c = client()
+    pid = c.post('/api/projects', caption_project(), content_type='application/json').json()['id']
+    assert c.post(f'/api/projects/{pid}/approve', {'revision': 1}, content_type='application/json').status_code == 200
+    queued = c.post(f'/api/projects/{pid}/jobs', {'revision': 1, 'kind': 'voice'}, content_type='application/json')
+    assert queued.status_code == 200, queued.content
+    from studio.tasks import task_voice_pipeline
+    assert task_voice_pipeline.run(queued.json()['id'])['status'] == 'succeeded'
+    timing = caption_timing(pid)
+    measured = timing['scene1']['duration']
+
+    body = c.get(f'/api/projects/{pid}').json()['project']
+    # Scene 1: Telugu-script captions, split in two; scene 2 keeps automatic Roman timing.
+    body['scenes'][0]['cues'] = [{'start': 0.1, 'end': 1.2, 'text': 'ఇది ఒక'},
+                                 {'start': 1.2, 'end': round(measured, 3), 'text': 'చిన్న పరీక్ష'}]
+    saved = c.put(f'/api/projects/{pid}', {'revision': 1, 'project': body}, content_type='application/json')
+    assert saved.status_code == 200, saved.content
+    revision = saved.json()['revision']
+    assert saved.json()['project']['scenes'][0]['cues'][0]['text'] == 'ఇది ఒక'
+    # Caption edits do not change narration, so the measurement still applies.
+    assert caption_timing(pid)['scene1']['status'] == 'measured'
+    overlap = copy.deepcopy(body)
+    overlap['scenes'][0]['cues'][1]['start'] = 1.0
+    assert c.put(f'/api/projects/{pid}', {'revision': revision, 'project': overlap},
+                 content_type='application/json').status_code == 422
+
+    assert c.post(f'/api/projects/{pid}/approve', {'revision': revision}, content_type='application/json').status_code == 200
+    render = c.post(f'/api/projects/{pid}/jobs', {'revision': revision, 'kind': 'render', 'quality': quality},
+                    content_type='application/json')
+    assert render.status_code == 200, render.content
+    jid = render.json()['id']
+    assert task_render_pipeline.run(jid)['status'] == 'succeeded'
+    directory = DATA / 'exports' / jid
+    video = next(s for s in media.probe(directory / 'reel.mp4')['streams'] if s['codec_type'] == 'video')
+    assert (video['width'], video['height']) == dimensions
+    manifest = json.loads((directory / 'timing-manifest.json').read_text('utf-8'))
+    first, second = manifest['scenes']
+    assert first['alignment'] == 'manual'
+    assert first['raw_voice_duration'] == pytest.approx(measured)
+    assert [cue['text'] for cue in first['cues']] == ['ఇది ఒక', 'చిన్న పరీక్ష']
+    assert first['cues'][1]['end'] == pytest.approx(round(measured, 3))
+    assert second['alignment'].startswith('word-index mapping')
+    assert [(cue['start'], cue['end'], cue['text']) for cue in second['cues']] == [
+        (pytest.approx(cue['start']), pytest.approx(cue['end']), cue['text'])
+        for cue in timing['scene2']['automatic']['roman']['cues']]
+    from studio.timeline import to_srt
+    srt = (directory / 'captions.srt').read_text('utf-8')
+    assert srt == to_srt(manifest['all_cues'])
+    assert 'చిన్న పరీక్ష' in srt and 'Idi oka chinna pariksha' in srt
+    assert media.duration(directory / 'reel.mp4') == pytest.approx(manifest['total_duration'], abs=0.1)
+    media.run([executable('ffmpeg'), '-v', 'error', '-xerror', '-i', directory / 'reel.mp4', '-f', 'null', '-'])
+
+
+def test_caption_editor_dom_behaviour():
+    page = DATA.parent / 'captions.html'
+    page.write_bytes(client().get('/').content)
+    subprocess.run(['node', 'tests/audit_captions_ui.cjs', str(page)], check=True, timeout=45)

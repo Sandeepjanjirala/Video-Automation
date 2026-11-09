@@ -1,3 +1,72 @@
+# Stage 2: Telugu caption editor — 6 November 2026
+
+Implemented in Django + jQuery on `improve/free-preview-editor`, on top of the
+uncommitted Stage 1 work. No commits, pushes, merges or deletions were performed.
+No database migrations were needed. Stage 3 was not started.
+
+- New **Captions** tab (`studio/static/js/captions.js`, `tab_captions.html`) replacing
+  the raw JSON cue textarea. Per-scene audio player with playhead, editable start/end
+  (`1.25` or `0:01.25`) and Telugu/Roman text, Play (seeks to the caption and stops at
+  its end), Start/End = playhead, Split (at playhead or midpoint), Merge with next,
+  Delete, Reset to automatic timing (from Roman captions or Telugu narration), and
+  Discard. Edits are drafts until **Save captions**; unedited automatic Roman timing
+  is kept automatic so its alignment label stays accurate.
+- Measured timings: `POST /api/projects/<pid>/caption-timing` (`studio/captions.py`)
+  reports, for the editor's current possibly unsaved body, the ffprobe-measured length
+  of the audio the render will use — an attached recording, or prepared narration whose
+  speech inputs (text, voice, rate, preset, dictionary, take) still match. Synthesis is
+  contract-cached, so this is the same file the renderer reuses. It never synthesizes
+  and never saves. Voice jobs now store word boundaries for resets; older jobs fall back
+  to text-proportional estimates over the measured length. Prepared-narration audio is
+  now served with HTTP Range support (needed for seeking) and the correct WAV/MP3 type.
+- Validation: invalid times, end ≤ start, start after the narration, end past the
+  narration plus the renderer's existing 100 ms tolerance, empty or >160-character text,
+  >200 captions and overlaps are errors that block saving; captions under 0.3 s and
+  unmeasured scenes are warnings. The server model still rejects overlaps.
+- Unsaved-change protection: browser leave-page prompt, confirmations before switching
+  or creating a project, approving, preparing narration or rendering with unsaved
+  caption edits; failed saves keep drafts and restore the project's previous captions;
+  captions cleared by a text/narration change can be restored once for review.
+- Telugu-script captions are now accepted (blank text rejected). They use a `Telugu`
+  ASS style (Nirmala UI on Windows, Noto Sans Telugu elsewhere; `fonts-noto-core`
+  added to the Dockerfile — the Docker image was **not** rebuilt or tested). Roman
+  captions keep the unchanged `Default` style, so existing renders and caches are
+  unaffected. The Stage 1 timeline, SRT and timing manifest consume saved cues unchanged.
+
+Verification: **56 tests passed in 35.12 seconds** (49 Stage 1 + 7 new) using the
+isolated audit runner. New coverage: Telugu/blank/overlap cue validation; measured
+prepared narration with word-index automatic cues, stale detection after unsaved
+narration or speech-rate edits, no synthesis while measuring, and 206 Range audio;
+measured attached recordings and hash mismatch; Telugu ASS style; full HTTP workflow
+(prepare narration → save edited Telugu captions → overlap rejected → approve → draft
+and final renders) checking dimensions, manifest/SRT agreement with saved and automatic
+cues, measured durations and full decode; and a jsdom regression of the editor
+(parsing, validation, split/merge/reset/discard/restore, playback seek, save blocking,
+leave/switch/approve/render guards, failed save). Artifacts:
+`test-outputs/studio_audit_0579e741f5e3/`. Django checks, migration drift check and
+git diff check passed.
+
+Real Chrome workflow (`test-outputs/stage2/`): new two-scene project, manual reviewed
+Telugu, video/PNG uploads, approval, live free Mohan narration (no paid calls), then in
+the Captions tab: "Not measured" before narration; measured 3.648 s / 2.88 s afterwards
+(browser audio duration identical); Telugu reset; split at playhead; Play seeked to
+1.117 s and stopped at 2.228 s for a caption ending at 2.21 s; End = playhead; invalid
+and overlap warnings with save blocked; merge; project-switch confirmation dismissed with
+edits intact; save + approve; 540x960 draft and 1080x1920 final exports whose manifests
+match the saved cues and measured durations exactly; SRTs contain Telugu and Roman text;
+both MP4s fully decode. Final-frame inspection shows correctly shaped Telugu
+("నమస్కారం, మన", conjuncts formed) and Roman captions. Leave-page prompt confirmed.
+Mobile 390px: no horizontal overflow. Browser page errors: zero.
+
+Notes: repeated workflow runs while fixing the script left five diagnostic projects
+titled "Stage 2 caption editor verification"; the final one is
+`3cbdf621a3de4edc961f82d56111f7f5`. They were not deleted. The server and worker were
+restarted (no jobs pending) and are running at http://127.0.0.1:8788. Automatic
+alignment remains word-index mapping or estimates and still needs review; this is not
+forced alignment.
+
+---
+
 # Stage 1: shared timeline and timing manifest — 6 November 2026
 
 Implemented in Django + jQuery without merging or copying the old architecture.

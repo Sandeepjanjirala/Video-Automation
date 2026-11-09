@@ -16,8 +16,9 @@ class Cue(StrictModel):
     def check(self):
         if self.end <= self.start:
             raise ValueError('Caption end must follow its start')
-        if re.search(r'[\u0c00-\u0c7f]', self.text):
-            raise ValueError('Captions must use Roman Telugu (English letters)')
+        # Caption text may be Roman Telugu or Telugu script; media.write_ass picks a Telugu font.
+        if not self.text.strip():
+            raise ValueError('Caption text cannot be empty')
         return self
 
 

@@ -34,8 +34,11 @@
           <button type="button" class="tab-btn" data-tab="voice">
             <span>02</span> Voice &amp; visuals
           </button>
+          <button type="button" class="tab-btn" data-tab="captions">
+            <span>03</span> Captions
+          </button>
           <button type="button" class="tab-btn" data-tab="export">
-            <span>03</span> Preview &amp; export
+            <span>04</span> Preview &amp; export
           </button>
         </div>
 
@@ -45,7 +48,10 @@
         <!-- Tab 02: Voice & Visuals -->
         {% include "studio/partials/tab_voice.html" %}
 
-        <!-- Tab 03: Preview & Export -->
+        <!-- Tab 03: Caption Editor -->
+        {% include "studio/partials/tab_captions.html" %}
+
+        <!-- Tab 04: Preview & Export -->
         {% include "studio/partials/tab_export.html" %}
 
         <!-- Production Background Jobs -->

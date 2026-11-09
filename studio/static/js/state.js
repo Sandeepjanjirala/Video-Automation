@@ -95,6 +95,7 @@
     takeHistory: [],
     preflight: null,
     stockResults: {}, // sceneId -> array of stock hits
+    clearedCues: {}, // sceneId -> captions cleared by a text change, restorable once
     researchOpen: false,
 
     uid: generateUid,

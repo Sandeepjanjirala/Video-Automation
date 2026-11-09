@@ -27,7 +27,7 @@ from rest_framework.views import APIView
 
 from studio.config import public_settings, save_settings, executable, DATA
 from studio.media import probe, run as media_run
-from studio import store
+from studio import captions, store
 from studio.models import Project as PydanticProject
 import pydantic
 from core import services
@@ -514,6 +514,27 @@ class ProjectPreflightView(APIView):
         return Response(report)
 
 
+class ProjectCaptionTimingView(APIView):
+    """POST /api/projects/{pid}/caption-timing - Measured narration timing for the caption editor.
+    Accepts the editor's current (possibly unsaved) project body; never saves.
+    """
+
+    def post(self, request, pid: str, *args, **kwargs):
+        proj = Project.objects.filter(id=pid).first()
+        if not proj:
+            return Response({'detail': 'Project not found'}, status=status.HTTP_400_BAD_REQUEST)
+        body = request.data.get('project') if isinstance(request.data, dict) else None
+        try:
+            speech = captions.speech_project(body if isinstance(body, dict) else proj.body)
+        except pydantic.ValidationError as err:
+            return Response({'detail': err.errors(include_context=False)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        jobs = Job.objects.filter(project_id=pid, kind='voice', state='succeeded').order_by('-created_at')[:30]
+        voice_jobs = [{'id': j.id, 'snapshot': j.snapshot, 'result': j.result} for j in jobs]
+        return Response({'scenes': captions.project_timing(speech, voice_jobs)})
+
+
 # ==============================================================================
 # 4. Jobs & Background Operations (Stage M5)
 # ==============================================================================
@@ -788,14 +809,12 @@ class JobAudioArtifactView(APIView):
         if not item or not item.get('audio_path'):
             return Response({'detail': 'Scene audio not found'}, status=status.HTTP_400_BAD_REQUEST)
 
-        audio_path = Path(item['audio_path']).resolve()
-        cache_dir = (DATA / 'cache').resolve()
-        assets_dir = (DATA / 'assets').resolve()
-
-        if audio_path.parent not in (cache_dir, assets_dir) or not audio_path.is_file():
+        audio_path = captions.servable_audio(item['audio_path'])
+        if not audio_path:
             return Response({'detail': 'Invalid audio path'}, status=status.HTTP_400_BAD_REQUEST)
 
-        return FileResponse(open(audio_path, 'rb'), content_type='audio/mpeg')
+        # Range support lets the caption editor seek; Sarvam narration is WAV, Edge is MP3.
+        return ranged_file_response(request, audio_path, 'audio/wav' if audio_path.suffix == '.wav' else 'audio/mpeg')
 
 
 class ExportArtifactView(APIView):

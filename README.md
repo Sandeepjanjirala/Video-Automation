@@ -77,8 +77,9 @@ be run against the same job stream simultaneously.
 6. New projects use **Edge Mohan**, a free online male Telugu narrator. Enable
    online services for synthesis, or upload recordings for offline work. Voice Lab
    auditions, accepted takes, caching and revision history remain available.
-7. Save and approve after edits. Prepare narration to review it, then render a
-   **540×960 draft**. Inspect framing, pronunciation, and captions.
+7. Save and approve after edits. Prepare narration to review it, then open the
+   **Captions** tab (see below) and render a **540×960 draft**. Inspect framing,
+   pronunciation, and captions.
 8. Once satisfied, optionally choose **Upgrade to Sarvam voice**. This selects
    Shubh (Bulbul v3 male); Ratan is also available. The selection itself makes no
    paid call. Save and approve, then prepare narration or render with Sarvam.
@@ -95,6 +96,29 @@ Target duration is 10–180 seconds. Natural mode uses actual narration duration
 Target-fit mode permits only 0.8–1.25× adjustment; excessive changes require script
 editing. Output is H.264/AAC at 30 fps. Caption timing is approximate unless manually
 edited; automatic word-index alignment still needs review.
+
+### Caption editor
+
+The **Captions** tab edits each scene's caption text (Roman Telugu or Telugu script)
+and start/end times, in seconds from the start of that scene's narration (`1.25` or
+`0:01.25`). Timings are checked against the *measured* length of the audio the render
+will use: an attached recording, or prepared narration whose text and voice settings
+still match. Scenes without such audio show **Not measured**; choose **Prepare
+narration** first. Measuring never synthesizes speech.
+
+- **Play** seeks to a caption and stops at its end; **Start/End = playhead** copy the
+  paused audio position. **Split** divides at the playhead (or midpoint), **Merge with
+  next** joins two captions, and **Reset to automatic timing** rebuilds captions from
+  the measured audio using the Roman captions or the Telugu narration.
+- Invalid times, empty text, captions past the narration's end (100 ms tolerance) and
+  overlaps are flagged and block saving. Very short captions only warn.
+- Edits are drafts until **Save captions**, which creates a new revision to approve.
+  The page warns before leaving, switching or creating a project, approving, preparing
+  narration or rendering while caption edits are unsaved. If a text or narration change
+  clears a scene's timings, **Restore previous captions** brings them back for review.
+- Saved captions flow unchanged into the shared timeline, SRT and `timing-manifest.json`.
+  Telugu-script captions render with Nirmala UI on Windows; the Docker image installs
+  `fonts-noto-core` for Noto Sans Telugu.
 
 ## Providers, files, and recovery
 

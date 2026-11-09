@@ -52,6 +52,10 @@ const StudioJobs = (() => {
       StudioState.tell('Please select or create a project first.', true);
       return;
     }
+    if ((kind === 'render' || kind === 'voice') && window.StudioCaptions &&
+        !StudioCaptions.confirmLeave('This job would use the last saved captions. Continue without them?')) {
+      return;
+    }
 
     try {
       StudioState.setBusy(true);

@@ -94,7 +94,11 @@ def captions(scene, audio_duration, boundaries):
         if scene['cues'][-1]['end'] > audio_duration + 0.1:
             raise ValueError('A manual caption cue extends beyond its narration. Correct its timestamp.')
         return scene['cues'], 'manual'
-    words = scene['roman'].split()
+    return auto_captions(scene['roman'], audio_duration, boundaries)
+
+
+def auto_captions(text, audio_duration, boundaries):
+    words = text.split()
     if not words:
         return [], 'empty'
     # Index mapping is a useful initial alignment, not forced phonetic alignment.
@@ -124,6 +128,11 @@ def ass_text(text, width=32):
     return r'\N'.join(textwrap.wrap(safe, width=width))
 
 
+# Arial has no Telugu glyphs. Nirmala UI ships with Windows; the Docker image installs Noto.
+TELUGU_FONT = 'Nirmala UI' if os.name == 'nt' else 'Noto Sans Telugu'
+TELUGU_SCRIPT = re.compile(r'[ఀ-౿]')
+
+
 def write_ass(path, cues, project, title=None, total=0):
     # Fixed 1080p design coordinates are scaled by libass for draft resolution.
     header = f'''[Script Info]
@@ -135,12 +144,15 @@ WrapStyle: 0
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 Style: Default,Arial,{project['caption_size']},&H00FFFFFF,&H00FFFFFF,&H00120E0B,&H88000000,-1,0,0,0,100,100,0,0,1,3,1,2,90,140,{project['caption_bottom']},1
+Style: Telugu,{TELUGU_FONT},{project['caption_size']},&H00FFFFFF,&H00FFFFFF,&H00120E0B,&H88000000,-1,0,0,0,100,100,0,0,1,3,1,2,90,140,{project['caption_bottom']},1
 Style: Title,Arial,78,&H00B9F8CF,&H00FFFFFF,&H00120E0B,&H00000000,-1,0,0,0,100,100,0,0,1,1,0,5,100,100,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
-    rows = [f"Dialogue: 0,{stamp(c['start'], True)},{stamp(c['end'], True)},Default,,0,0,0,,{ass_text(c['text'])}" for c in cues]
+    rows = [f"Dialogue: 0,{stamp(c['start'], True)},{stamp(c['end'], True)},"
+            f"{'Telugu' if TELUGU_SCRIPT.search(c['text']) else 'Default'},,0,0,0,,{ass_text(c['text'])}"
+            for c in cues]
     if title:
         rows.insert(0, f'Dialogue: 0,0:00:00.00,{stamp(total, True)},Title,,0,0,0,,{{\\fad(250,200)}}{ass_text(title, 20)}')
     path.write_text(header + '\n'.join(rows), 'utf-8')

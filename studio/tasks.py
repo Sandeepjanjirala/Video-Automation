@@ -235,7 +235,9 @@ def task_voice_pipeline(self, job_id: str):
                     'audio_path': str(path),
                     'duration': seconds,
                     'cues': cues,
-                    'alignment': alignment
+                    'alignment': alignment,
+                    # The caption editor rebuilds automatic cues from these word timings.
+                    'boundaries': boundaries
                 })
 
             lease.check_ownership()

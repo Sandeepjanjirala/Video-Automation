@@ -1,0 +1,23 @@
+<div id="tab-captions" class="tab-panel" style="display:none;">
+  <section class="panel">
+    <div class="sectionhead">
+      <div>
+        <h2>Caption editor</h2>
+        <span class="muted">Telugu or Roman Telugu text, timed against measured narration audio</span>
+      </div>
+      <span id="captions-unsaved-badge" class="badge">No unsaved captions</span>
+    </div>
+    <p class="muted">Times are seconds from the start of each scene's narration (for example <code>1.25</code> or <code>0:01.25</code>).
+      Play a caption to check it, or pause the audio and set a start or end from the playhead.
+      Saved captions replace automatic timing for that scene. Save, then approve the new revision before rendering.</p>
+    <div class="actions">
+      <button type="button" class="primary" id="btn-save-captions" disabled>Save captions</button>
+      <button type="button" id="btn-approve-captions">Approve current revision</button>
+      <button type="button" class="ghost" id="btn-reload-caption-timing">Reload audio measurements</button>
+    </div>
+    <div id="captions-summary" role="status"></div>
+  </section>
+  <div id="caption-scenes-container">
+    <!-- Rendered by StudioCaptions.render -->
+  </div>
+</div>

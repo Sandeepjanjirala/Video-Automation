@@ -71,21 +71,6 @@
         Scenes.removeScene(sid);
       });
 
-      // Manual caption cues apply
-      $(document).on('click', '.btn-apply-cues', function() {
-        const sid = $(this).data('scene-id');
-        const $textarea = $(`#cues-editor-${sid}`);
-        try {
-          const raw = $textarea.val().trim() || '[]';
-          const parsed = JSON.parse(raw);
-          if (!Array.isArray(parsed)) throw new Error('Cues must be a JSON array.');
-          Scenes.updateSceneField(sid, { cues: parsed });
-          StudioState.setNotice('Caption timings applied. Save and re-approve before rendering.');
-        } catch (e) {
-          StudioState.setNotice('Invalid cues JSON: ' + e.message, true);
-        }
-      });
-
       // Listen for project editor sync
       $(document).on('studio:editor-populated', function() {
         Scenes.renderScriptEditor();
@@ -99,6 +84,12 @@
       const s = scenes.find(x => x.id === sid);
       if (!s) return;
 
+      if (Array.isArray(updates.cues) && !updates.cues.length && s.cues && s.cues.length) {
+        // Text or narration changes invalidate timings; keep them restorable in the caption editor.
+        StudioState.clearedCues = StudioState.clearedCues || {};
+        StudioState.clearedCues[sid] = s.cues;
+        StudioState.setNotice('Caption timings for this scene were cleared because its text or narration changed. You can restore them on the Captions tab.');
+      }
       Object.assign(s, updates);
       StudioState.markDirty(true);
       Projects.triggerAutosave();
@@ -268,8 +259,6 @@
           <small class="muted">Images hold for the whole scene. Clip audio is muted. Scene length follows the selected narration.</small>
         `;
 
-        const cuesJson = JSON.stringify(s.cues || [], null, 2);
-
         const cardHtml = `
           <section class="panel scene-visual-card" data-id="${s.id}">
             <div class="sectionhead">
@@ -302,14 +291,10 @@
                   <input type="checkbox" class="scene-rights-checkbox" ${s.rights_reviewed ? 'checked' : ''} />
                   I reviewed visual relevance and permission to use it.
                 </label>
-                <details style="margin-top:14px;">
-                  <summary><b>Caption timing cues</b> (${s.cues ? s.cues.length : 0} manual words)</summary>
-                  <p class="muted">Word-level start/end timestamps override automatic text-proportional timing.</p>
-                  <textarea id="cues-editor-${s.id}" rows="4" style="font-family:monospace;font-size:12px;">${$('<div>').text(cuesJson).html()}</textarea>
-                  <div class="actions">
-                    <button type="button" class="btn-apply-cues" data-scene-id="${s.id}">Apply timings</button>
-                  </div>
-                </details>
+                <div class="actions">
+                  <span class="muted">${s.cues && s.cues.length ? s.cues.length + ' saved manual caption(s)' : 'Automatic caption timing'}</span>
+                  <button type="button" class="btn-open-captions" data-scene-id="${s.id}">Edit captions &amp; timing</button>
+                </div>
               </div>
             </div>
           </section>
