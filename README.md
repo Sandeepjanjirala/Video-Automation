@@ -53,6 +53,18 @@ Compose runs migrations before the API, dispatcher, and workers. The image inclu
 templates, static assets, FFmpeg, and fonts. Local and distributed workers must not
 be run against the same job stream simultaneously.
 
+The image is based on Debian 13 (FFmpeg 7.1, libass 0.17.3, Noto Telugu fonts). Its
+`test` build target adds Node.js 24 and the development dependencies, so the complete
+audit suite (including the browser-DOM tests) runs in a container:
+
+```powershell
+docker build --target test -t studio-test .
+docker run --rm -e STUDIO_DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/postgres studio-test
+```
+
+Point it at a disposable PostgreSQL server: the runner creates and drops its own uniquely
+named database. Plain `docker build .` still produces the application image used by Compose.
+
 ## Make a reel from your script
 
 1. Create a story and paste your script into **Quick script importer**.

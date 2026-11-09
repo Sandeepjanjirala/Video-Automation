@@ -274,7 +274,7 @@ def task_render_pipeline(self, job_id: str):
             for i, scene in enumerate(p['scenes']):
                 lease.check_ownership()
                 store.progress(job_id, f"Preparing narration {i + 1}/{len(p['scenes'])}", stage_name='narration')
-                from .media import voice_for, duration, captions, write_ass, probe, run
+                from .media import CAPTION_FILTER, voice_for, duration, captions, write_ass, probe, run
                 from .framing import COLOUR_TAGS, source_info, visual_inputs
                 vpath, boundaries = voice_for(scene, p, provider)
                 sec = duration(vpath)
@@ -310,7 +310,7 @@ def task_render_pipeline(self, job_id: str):
                 length = timing.scene_duration
                 cues = timing.cues
                 cache_key = store.digest({
-                    'renderer': 5,
+                    'renderer': 6,
                     'scene': scene,
                     'audio': Path(voice['audio_path']).name,
                     'audio_mtime_ns': Path(voice['audio_path']).stat().st_mtime_ns,
@@ -349,7 +349,7 @@ def task_render_pipeline(self, job_id: str):
                         args += inputs
                     output = work / 'scene.mp4'
                     args += ['-i', voice['audio_path'], '-map', '0:v:0', '-map', '1:a:0',
-                             '-vf', vf + f",setsar=1,fps=30,subtitles=captions.ass,{COLOUR_TAGS}",
+                             '-vf', vf + f",setsar=1,fps=30,{CAPTION_FILTER},{COLOUR_TAGS}",
                              '-af', f'atempo={speed:.8f},loudnorm=I=-16:TP=-1.5:LRA=11,apad',
                              '-t', str(length), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24' if draft else '20',
                              '-pix_fmt', 'yuv420p', '-threads', '4', '-c:a', 'aac', '-b:a', '192k',

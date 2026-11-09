@@ -128,6 +128,10 @@ def ass_text(text, width=32):
     return r'\N'.join(textwrap.wrap(safe, width=width))
 
 
+# Captions are always ASS. The ass filter shapes complex scripts by default on every FFmpeg
+# version; FFmpeg 7.1's subtitles filter lays Telugu out without shaping (broken conjuncts).
+CAPTION_FILTER = 'ass=captions.ass'
+
 # Arial has no Telugu glyphs. Nirmala UI ships with Windows; the Docker image installs Noto.
 TELUGU_FONT = 'Nirmala UI' if os.name == 'nt' else 'Noto Sans Telugu'
 TELUGU_SCRIPT = re.compile(r'[ఀ-౿]')
@@ -137,6 +141,7 @@ TELUGU_SCRIPT = re.compile(r'[ఀ-౿]')
 # 'classic' is the original style and must stay byte-identical. Box styles pad by a quarter
 # of the font size: BorderStyle 3 draws an OutlineColour box per line, BorderStyle 4 (libass
 # 0.17+) one BackColour box per caption, so translucent lines never overlap and darken.
+# libass also outlines BorderStyle 4 text, so its OutlineColour is fully transparent.
 CAPTION_STYLES = {
     'classic': {'primary': '&H00FFFFFF', 'outline_colour': '&H00120E0B', 'back': '&H88000000',
                 'border': 1, 'outline': 3, 'shadow': 1},
@@ -144,7 +149,7 @@ CAPTION_STYLES = {
                   'border': 3, 'outline': 'pad', 'shadow': 0},
     'yellow_accent': {'primary': '&H0000D7FF', 'outline_colour': '&H00000000', 'back': '&H88000000',
                       'border': 1, 'outline': 4, 'shadow': 2},
-    'translucent': {'primary': '&H00FFFFFF', 'outline_colour': '&H00000000', 'back': '&H66000000',
+    'translucent': {'primary': '&H00FFFFFF', 'outline_colour': '&HFF000000', 'back': '&H66000000',
                     'border': 4, 'outline': 'pad', 'shadow': 0},
 }
 

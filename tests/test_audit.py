@@ -1151,6 +1151,8 @@ def test_caption_style_presets_keep_size_position_and_fonts(tmp_path):
         assert (d[3], d[5], d[6], d[15]) == (preset['primary'], preset['outline_colour'], preset['back'], str(preset['border']))
         if preset['outline'] == 'pad':
             assert d[16] == '16'                                            # box padding: a quarter of the size
+        if style == 'translucent':
+            assert d[5] == '&HFF000000'                                     # no halo around text on the panel
         seen.add(tuple(d[3:18]))
     assert len(seen) == 4
 
@@ -1161,14 +1163,15 @@ def test_telugu_captions_use_complex_shaping_in_every_style(tmp_path, style):
     ass = tmp_path / 'captions.ass'
     media.write_ass(ass, [{'start': 0, 'end': 5, 'text': 'క్షమించండి శ్రీ స్త్రీ ద్వారం'}],
                     {'caption_size': 64, 'caption_bottom': 300, 'caption_style': style})
+    # media.CAPTION_FILTER is what exports and previews use (FFmpeg 7.1's subtitles filter skips shaping).
     frames = {}
-    for shaping in ('', ':shaping=complex', ':shaping=simple'):
-        out = tmp_path / f'shape{shaping.replace(":", "_").replace("=", "")}.png'
+    for name, vf in (('export', media.CAPTION_FILTER), ('complex', 'ass=captions.ass:shaping=complex'),
+                     ('simple', 'ass=captions.ass:shaping=simple')):
+        frames[name] = tmp_path / f'shape-{name}.png'
         media.run([executable('ffmpeg'), '-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=0x406080:s=1080x1920',
-                   '-vf', f'subtitles=captions.ass{shaping}', '-frames:v', '1', out], cwd=tmp_path)
-        frames[shaping] = out
-    assert psnr(frames[''], frames[':shaping=complex']) == float('inf')     # exports shape Telugu
-    assert psnr(frames[''], frames[':shaping=simple']) < 40                  # and shaping changes the glyphs
+                   '-vf', vf, '-frames:v', '1', frames[name]], cwd=tmp_path)
+    assert psnr(frames['export'], frames['complex']) == float('inf')         # exports shape Telugu
+    assert psnr(frames['export'], frames['simple']) < 40                     # and shaping changes the glyphs
 
 
 def caption_band(path, out):
@@ -1217,10 +1220,10 @@ def test_caption_style_preview_matches_draft_and_final_exports(tmp_path, quality
             bands[(style, scene)] = (a, b)
             score = scores[f'{style}/{scene}'] = psnr(a, b)
             assert score > 30, (style, scene, score)
-    # Each style looks different in the export, and a mismatched preview is detected.
-    for scene in ('clip', 'title'):
-        for one, two in zip(STYLES, STYLES[1:]):
-            assert psnr(bands[(one, scene)][1], bands[(two, scene)][1]) < 30, (one, two, scene)
+    # Each style looks different in the export (on the bright clip; on the near-black title card a
+    # black box is barely distinguishable from an outline), and a mismatched preview is detected.
+    for one, two in zip(STYLES, STYLES[1:]):
+        assert psnr(bands[(one, 'clip')][1], bands[(two, 'clip')][1]) < 30, (one, two)
     scores['wrong_style'] = psnr(bands[('classic', 'clip')][0], bands[('black_box', 'clip')][1])
     assert scores['wrong_style'] < 25
     (DATA.parent / f'caption-style-psnr-{quality}.json').write_text(json.dumps(scores), 'utf-8')
