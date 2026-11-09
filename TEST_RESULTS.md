@@ -1,3 +1,55 @@
+# Stage 5: final verification and PR preparation — 9 November 2026
+
+Verification of the complete Django + jQuery application, plus the fixes it led to.
+No existing projects, data, settings or branches were changed or deleted; the local
+`main` branch was not touched. Artifacts: `test-outputs/stage5/` and
+`test-outputs/stage5/pr-prep/`.
+
+Fixes made during verification:
+- **Translucent caption halo**: libass also outlines BorderStyle 4 text, which drew a dark
+  halo around translucent captions. Its OutlineColour is now fully transparent; the other
+  three presets are byte-identical.
+- **Telugu shaping on FFmpeg 7.1**: Debian 13's FFmpeg 7.1 `subtitles` filter laid Telugu
+  out without complex shaping (broken conjuncts). Captions are always ASS, so exports and
+  previews now use the `ass` filter (`media.CAPTION_FILTER`), which shapes by default on
+  every version; on FFmpeg 9 its output is pixel-identical to before. Scene render cache
+  version bumped so no scene rendered with the old filter is reused.
+- **Docker**: base image moved to Debian 13 (FFmpeg 7.1.5, libass 0.17.3, Noto Telugu
+  fonts); new `test` build target with Node.js 24.22.2 and dev dependencies.
+- **Tests**: the shaping test compares the export filter with `ass` complex/simple shaping
+  (works on FFmpeg 5.1–9); style distinctness is checked on the bright clip only (a black
+  box on the near-black title card is barely distinguishable from an outline).
+
+Results:
+- Windows: **72 passed** (isolated runner); `manage.py check` clean; no migration
+  changes; `migrate --plan` on the working database: nothing pending. `doctor.py`:
+  FFmpeg 9.0.2 with libass/HarfBuzz/FriBidi/libx264, loudnorm, sidechaincompress; Nirmala UI.
+- Docker (`docker build --target test`, run on a private network with a temporary
+  PostgreSQL container; the working database and running app were not used): **72
+  passed**, including the DOM tests; `manage.py check` clean; no migration changes.
+  Telugu captions in all four styles rendered with joined conjuncts; EXIF photos and
+  rotated videos upright.
+- Real Chrome, full workflow (projects `5a83638c…` and, after the fixes, `64fc40ae…`):
+  Roman script → scenes → Gemini and reviewed manual Telugu; prompt saved and copied;
+  Pixabay search, download and apply; video and EXIF-photo uploads; crop, zoom, drag,
+  position, trim from the playhead with loop (playback stayed in 1.0–2.45 s), hold last
+  frame, 4:5 photo; Edge Mohan narration (3.792, 3.312, 3.264 s); Telugu reset, split,
+  merge, seek/stop, overlap warning blocking save, project-switch and leave-page guards;
+  exact previews of all four styles; black-box draft and final exports.
+- MP4 checks (draft and final): H.264 30 fps, AAC 48 kHz stereo, uniform BT.709
+  limited-range tags, 10.42 s vs manifest 10.40 s, contiguous scenes, manifest durations
+  equal measured narration, SRT equals manifest, −16.1 LUFS, every scene audible; all 7
+  captions vs exact FFmpeg preview: draft 30.6–37.6 dB, final 30.2–41.2 dB; loop restart
+  38.0/42.9 dB; held frames identical. Final reel:
+  `test-outputs/stage5/pr-prep/FINAL-TEST-REEL-1080x1920.mp4`.
+- All four styles re-exported in Chrome after the fixes: classic, black box and yellow
+  unchanged; translucent export vs exact 36.2 (draft) / 37.6 (final) dB.
+- Existing projects: all 20 earlier projects opened on every tab without changes; the
+  13 without a caption style show Classic; the oldest rendered a valid draft.
+- Failure recovery: a Sarvam job without a key failed before any request with an
+  actionable message; "Re-run with current" recovered it after switching back to Edge;
+  a cancelled render left no export; the next render succeeded. No page errors.
+
 # Stage 4: caption style presets — 9 November 2026
 
 Implemented in Django + jQuery on `improve/free-preview-editor`, on top of the
