@@ -10,6 +10,7 @@ from .views import (
     ProjectDraftView,
     ProjectPreflightView,
     ProjectCaptionTimingView,
+    ProjectFramingPreviewView,
     ProjectApproveView,
     ProjectApplyJobView,
     ProjectAssignMediaView,
@@ -26,6 +27,7 @@ from .views import (
     AssetDetailView,
     AssetMediaView,
     AssetThumbnailView,
+    AssetFramingView,
     StockSearchView,
     SettingsView,
     VoiceNormalizeView,
@@ -53,6 +55,7 @@ urlpatterns = [
     path('projects/<str:pid>/draft', ProjectDraftView.as_view(), name='project_draft'),
     path('projects/<str:pid>/preflight', ProjectPreflightView.as_view(), name='project_preflight'),
     path('projects/<str:pid>/caption-timing', ProjectCaptionTimingView.as_view(), name='project_caption_timing'),
+    path('projects/<str:pid>/framing-preview', ProjectFramingPreviewView.as_view(), name='project_framing_preview'),
     path('projects/<str:pid>/assign-media', ProjectAssignMediaView.as_view(), name='project_assign_media'),
     path('projects/<str:pid>/voice_lock', ProjectVoiceLockView.as_view(), name='project_voice_lock'),
     path('projects/<str:pid>/pronunciation_dict', ProjectPronunciationDictView.as_view(), name='project_pronunciation_dict'),
@@ -89,5 +92,6 @@ urlpatterns = [
     path('assets/<str:aid>/media', AssetMediaView.as_view(), name='asset_media'),
     path('assets/<str:aid>/file', AssetMediaView.as_view(), name='asset_file'),
     path('assets/<str:aid>/thumbnail', AssetThumbnailView.as_view(), name='asset_thumbnail'),
+    path('assets/<str:aid>/framing', AssetFramingView.as_view(), name='asset_framing'),
 ]
 

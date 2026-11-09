@@ -135,6 +135,7 @@ $(document).ready(() => {
   StudioScenes.init();
   StudioProjects.init();
   StudioCaptions.init();
+  StudioFraming.init();
   StudioSettings.init();
   StudioApp.init();
 });

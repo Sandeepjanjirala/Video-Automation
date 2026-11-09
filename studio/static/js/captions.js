@@ -384,6 +384,12 @@
   const Captions = {
     parseTime, validate, splitCue, mergeCue, hasUnsaved, confirmLeave, saveAll, loadTiming, render,
 
+    // Measured narration seconds, once the Captions tab has measured this scene.
+    measuredDuration: function(sid) {
+      const t = measured(sid);
+      return t ? t.duration : null;
+    },
+
     refreshControls: function() {
       scenes().forEach(s => refreshScene(s.id));
     },

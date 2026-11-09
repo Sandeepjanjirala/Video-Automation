@@ -9,7 +9,7 @@ const path = require('node:path');
   const w = dom.window;
   const root = path.join(__dirname, '..', 'studio', 'static');
   w.eval(fs.readFileSync(path.join(root, 'vendor/jquery.min.js'), 'utf8'));
-  for (const name of ['state', 'workflow', 'scenes', 'projects', 'voice', 'jobs', 'media']) {
+  for (const name of ['state', 'workflow', 'framing', 'scenes', 'projects', 'voice', 'jobs', 'media']) {
     w.eval(fs.readFileSync(path.join(root, 'js', name + '.js'), 'utf8'));
   }
   const $ = w.jQuery;
@@ -133,7 +133,7 @@ const path = require('node:path');
   p.scenes[0].visual = 'image';
   p.scenes[0].video_asset = 'a'.repeat(32);
   w.Scenes.renderSceneVisuals();
-  assert.equal($('.scene-visual-card').first().find('img.clippreview').length, 1);
+  assert.equal($('.scene-visual-card').first().find('.framestage img.framemedia').length, 1);
   p.scenes[0].visual = 'graphic';
   p.scenes[0].graphic_title = '<img src=x onerror=alert(1)>';
   w.Scenes.renderSceneVisuals();

@@ -26,6 +26,7 @@ from core.models import (
     ApplicationReceipt, OutboxEvent, VoiceTake
 )
 from .config import DATA, setup
+from .framing import segment
 from .models import Project as PydanticProject
 
 # Default writer alias under least privilege; falls back to 'default'
@@ -359,8 +360,12 @@ def preflight(project_data: Any) -> Dict[str, Any]:
                 asset_path(s[field], 'image' if field == 'video_asset' and vis == 'image' else kind)
                 if field == 'audio_asset' and s.get('audio_text_hash') != digest(s.get('narration', '')):
                     raise ValueError('Narration recording no longer matches the script; re-attach it or generate a new take')
-                if field == 'video_asset' and vis != 'image' and s.get('trim_start', 0) >= asset(s[field]).get('duration', 0):
-                    raise ValueError('Trim start must be before the end of the video')
+                if field == 'video_asset' and vis != 'image':
+                    clip_seconds = asset(s[field]).get('duration', 0)
+                    segment(s, clip_seconds)
+                    if s.get('trim_end', 0) > clip_seconds + 0.05:
+                        warnings.append({'scene_index': idx, 'scene_id': sid, 'field': 'trim_end',
+                                         'message': f"Scene {idx}: trim end is past the clip's end ({clip_seconds:.2f} s); the clip's end is used"})
             except ValueError as exc:
                 errors.append({'scene_index': idx, 'scene_id': sid, 'field': field, 'message': f'Scene {idx}: {exc}'})
 

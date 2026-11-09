@@ -38,8 +38,12 @@ class Scene(StrictModel):
     audio_asset: str = Field(default='', pattern=r'^[a-f0-9]{0,32}$')
     audio_text_hash: str = ''
     trim_start: float = Field(default=0, ge=0, le=36000)
+    trim_end: float = Field(default=0, ge=0, le=36000)  # 0 = the clip's end
     fit: Literal['crop', 'contain'] = 'crop'
+    frame_aspect: Literal['full', '4:5', '1:1', '16:9'] = 'full'
+    zoom: float = Field(default=1.0, ge=1, le=3)
     crop_x: float = Field(default=0.5, ge=0, le=1)
+    crop_y: float = Field(default=0.5, ge=0, le=1)
     hold_seconds: float = Field(default=0, ge=0, le=30)
     graphic_title: str = Field(default='', max_length=150)
     rights_reviewed: bool = False
@@ -52,6 +56,8 @@ class Scene(StrictModel):
     def check(self):
         if re.search(r'[\u0c00-\u0c7f]', self.roman):
             raise ValueError('Roman caption field must use English letters, not Telugu script')
+        if self.trim_end and self.trim_end <= self.trim_start:
+            raise ValueError('Trim end must be after trim start')
         last = 0.0
         for cue in self.cues:
             if cue.start < last:

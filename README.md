@@ -74,6 +74,7 @@ be run against the same job stream simultaneously.
    is local and free; this app does not call a video generation API. External free
    quotas, watermarks and usage terms depend on that service. Choose **Loop clip**
    or **Hold the last frame** for short footage; images hold for the narration.
+   Adjust each scene's framing and trim in its preview (see **Framing preview** below).
 6. New projects use **Edge Mohan**, a free online male Telugu narrator. Enable
    online services for synthesis, or upload recordings for offline work. Voice Lab
    auditions, accepted takes, caching and revision history remain available.
@@ -119,6 +120,30 @@ narration** first. Measuring never synthesizes speech.
 - Saved captions flow unchanged into the shared timeline, SRT and `timing-manifest.json`.
   Telugu-script captions render with Nirmala UI on Windows; the Docker image installs
   `fonts-noto-core` for Noto Sans Telugu.
+
+### Framing preview
+
+Each scene with an uploaded or stock video or image shows a 9:16 preview of exactly
+how it will sit in the reel:
+
+- **Frame shape**: full vertical 9:16, or a 4:5, 1:1 or 16:9 band centred in the reel.
+  **Framing** fills that shape (cropping edges) or shows the whole picture with padding.
+- **Zoom** (1–3×) and **horizontal/vertical position** choose the visible part; drag
+  the preview to reposition. Position sliders are disabled on an axis with nothing to crop.
+- Videos: **Play** previews the trimmed part, looping it or holding its last frame as
+  the export will. **Trim start/end** accept seconds or **Start/End = playhead**; end 0
+  means the clip's end. Trimmed loops now restart at the trim start (previously
+  `-stream_loop` restarted at 0 s).
+- **Render exact frame** asks FFmpeg for the frame at the playhead using the export's
+  filters and caption style, at 1080×1920. The live preview's caption is a
+  position guide; the exact frame shows real libass text.
+
+The preview and renderer share one geometry (`studio/framing.py`, mirrored in
+`studio/static/js/framing.js`), computed in even output pixels from the picture size
+FFmpeg sees after phone rotation metadata (EXIF photos and rotated videos) and
+non-square pixels. Every scene is normalised to BT.709 limited range, so a full-range
+JPEG scene no longer switches the joined reel's colour range. Older projects keep
+their previous framing via defaults (zoom 1, centred, full frame, no trim end).
 
 ## Providers, files, and recovery
 

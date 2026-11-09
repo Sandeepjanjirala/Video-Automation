@@ -1,3 +1,48 @@
+# Stage 3: accurate video and image framing previews — 6 November 2026
+
+Implemented in Django + jQuery on `improve/free-preview-editor`, on top of the
+uncommitted Stage 1 and Stage 2 work. No commits, pushes, merges or deletions.
+No database migrations were needed (scenes are JSON). Stage 4 was not started.
+
+- `studio/framing.py`: shared geometry (frame shape window, fill/contain, zoom,
+  position → even-pixel scale/crop/pad), FFmpeg filter chain, display-size probe
+  (rotation from video side data and EXIF, non-square pixels), trim segments, scene
+  input planning and one-frame previews. `studio/static/js/framing.js` mirrors the
+  geometry for the live preview.
+- New scene fields with backward-compatible defaults: `frame_aspect`, `zoom`, `crop_y`,
+  `trim_end` (validated: zoom 1–3, positions 0–1, trim end after trim start).
+- Renderer: uses the shared chain; trimmed loops are cut and framed once, then looped
+  (fixes loops restarting at 0 s); freeze holds the trim end; zoomed sources are cropped
+  before scaling. Scene cache version bumped to 5.
+- Bug found and fixed during verification: full-range BT.601 JPEG scenes switched the
+  joined reel's colour range/matrix mid-stream. All scenes are now BT.709 limited range
+  with identical tags; preview JPEGs are converted for JPEG viewers.
+- APIs: `GET /api/assets/<id>/framing` (picture size FFmpeg sees) and
+  `POST /api/projects/<pid>/framing-preview` (exact JPEG frame for an unsaved scene,
+  geometry in `X-Framing-Geometry`; added to the mutation allowlist; never saves).
+- Preflight: trim errors use the shared segment rules; a trim end past the clip is a warning.
+- UI: scene cards show a 9:16 live preview (drag to pan, caption position guide,
+  trimmed playback with loop/hold), frame shape, framing, zoom, position, trim with
+  playhead buttons, and Render exact frame. Choosing new media resets trim end.
+
+Verification: **63 tests passed in 42.51 seconds** (56 previous + 7 new) with the
+isolated audit runner. New coverage: 864 geometry cases identical in Python and the
+browser module plus jsdom editor behaviour (sliders, drag, trim validation, loop/hold
+playback, exact-frame request, reset, all-digit scene IDs, legacy scenes); rotation,
+EXIF orientation and pixel-aspect detection; exact preview vs exported MP4 for draft
+and final (quarter-size PSNR > 28 dB, wrong-crop negative control, single colour
+range/matrix across the reel); source frame identity between preview and export
+under trim; trimmed loop/hold colours; field validation and preflight.
+
+Real Chrome (`test-outputs/stage3/`, project `2468b46ff5764d05b13c004279f874d1`): four
+scenes (landscape video, rotated phone video, EXIF photo, square PNG) with Edge Mohan
+narration. Rotations detected; drag panned; trim set from the playhead; playback looped
+within 1.50–4.00 s. Export vs exact preview (caption band excluded): draft 38.4, 32.6,
+33.2, 38.6 dB; final 38.5, 33.1, 31.8, 42.5 dB. Loop restart matched the trim start
+(37.7/38.2 dB); held last frames identical (≈80 dB). Live browser preview vs exact
+frame 27–35 dB (screenshot scaling and browser colour conversion). Side-by-side images
+`compare-scene1..4.png` show identical framing. No page errors; no overflow at 390 px.
+
 # Stage 2: Telugu caption editor — 6 November 2026
 
 Implemented in Django + jQuery on `improve/free-preview-editor`, on top of the

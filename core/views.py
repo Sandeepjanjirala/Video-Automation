@@ -7,9 +7,11 @@ and Pixabay search proxy.
 import os
 import uuid
 import hashlib
+import json
 import mimetypes
 import subprocess
 import secrets
+import shutil
 import threading
 from pathlib import Path
 from datetime import datetime, timezone
@@ -27,8 +29,8 @@ from rest_framework.views import APIView
 
 from studio.config import public_settings, save_settings, executable, DATA
 from studio.media import probe, run as media_run
-from studio import captions, store
-from studio.models import Project as PydanticProject
+from studio import captions, framing, store
+from studio.models import Project as PydanticProject, Scene as PydanticScene
 import pydantic
 from core import services
 from .models import (
@@ -535,6 +537,48 @@ class ProjectCaptionTimingView(APIView):
         return Response({'scenes': captions.project_timing(speech, voice_jobs)})
 
 
+class ProjectFramingPreviewView(APIView):
+    """POST /api/projects/{pid}/framing-preview - One JPEG frame rendered with the export's filters.
+    Body: {scene, source_time?, caption?, quality?: 'final'|'draft', caption_size?, caption_bottom?}.
+    Uses the editor's unsaved scene; never saves. Geometry is returned in X-Framing-Geometry.
+    """
+
+    def post(self, request, pid: str, *args, **kwargs):
+        proj = Project.objects.filter(id=pid).first()
+        if not proj:
+            return Response({'detail': 'Project not found'}, status=status.HTTP_400_BAD_REQUEST)
+        data = request.data if isinstance(request.data, dict) else {}
+        try:
+            scene = PydanticScene.model_validate(data.get('scene')).model_dump()
+            if scene['visual'] == 'graphic' or not scene['video_asset']:
+                raise ValueError('Choose a video or image for this scene first')
+            saved = proj.body or {}
+            settings_body = PydanticProject.model_validate({
+                'caption_size': data.get('caption_size', saved.get('caption_size', 56)),
+                'caption_bottom': data.get('caption_bottom', saved.get('caption_bottom', 300)),
+            }).model_dump()
+            caption = str(data.get('caption') or '')[:160]
+            source_time = data.get('source_time')
+            source_time = None if source_time in (None, '') else float(source_time)
+            width, height = (540, 960) if data.get('quality') == 'draft' else (1080, 1920)
+            path = store.asset_path(scene['video_asset'], 'image' if scene['visual'] == 'image' else 'video')
+            work = DATA / 'tmp' / f'framing_{uuid.uuid4().hex}'
+            work.mkdir(parents=True, exist_ok=True)
+            try:
+                image, geometry = framing.preview_frame(scene, path, framing.source_info(path), width, height,
+                                                        source_time, work, settings_body, caption)
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
+        except pydantic.ValidationError as err:
+            return Response({'detail': err.errors(include_context=False)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        except (TypeError, ValueError) as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        response = HttpResponse(image, content_type='image/jpeg')
+        response['Cache-Control'] = 'no-store'
+        response['X-Framing-Geometry'] = json.dumps(geometry)
+        return response
+
+
 # ==============================================================================
 # 4. Jobs & Background Operations (Stage M5)
 # ==============================================================================
@@ -1032,6 +1076,22 @@ class AssetMediaView(APIView):
             )
 
         return ranged_file_response(request, file_path)
+
+
+class AssetFramingView(APIView):
+    """GET /api/assets/{aid}/framing - Picture size FFmpeg sees (after rotation) for framing previews."""
+
+    def get(self, request, aid: str, *args, **kwargs):
+        try:
+            meta = store.asset(aid)
+            if meta['kind'] not in ('video', 'image'):
+                raise ValueError('Framing is only available for videos and images')
+            info = framing.source_info(store.asset_path(aid, meta['kind']))
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'id': aid, 'kind': meta['kind'], 'width': info['width'], 'height': info['height'],
+                         'rotation': info['rotation'],
+                         'duration': info['duration'] if meta['kind'] == 'video' else 0})
 
 
 class AssetThumbnailView(APIView):

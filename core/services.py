@@ -191,6 +191,7 @@ def apply_job_result(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
                     curr_s['visual'] = 'stock'
                     curr_s['rights_reviewed'] = False
                     curr_s['trim_start'] = 0
+                    curr_s['trim_end'] = 0
                     modified = True
 
         elif kind == 'stock_all':
@@ -217,6 +218,7 @@ def apply_job_result(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
                     curr_s['visual'] = 'stock'
                     curr_s['rights_reviewed'] = False
                     curr_s['trim_start'] = 0
+                    curr_s['trim_end'] = 0
                     modified = True
 
         elif kind == 'research':
@@ -309,6 +311,7 @@ def assign_media_to_scenes(pid: str, asset_id: str, scene_ids: List[str]) -> Pro
                     s['video_asset'] = asset_id
                     s['visual'] = 'image' if asset_obj.kind == 'image' else 'upload'
                     s['trim_start'] = 0
+                    s['trim_end'] = 0
                     s['rights_reviewed'] = True
                 elif asset_obj.kind == 'audio':
                     s['audio_asset'] = asset_id

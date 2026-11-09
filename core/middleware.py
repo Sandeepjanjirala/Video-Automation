@@ -25,6 +25,7 @@ class LocalSecurityMiddleware(MiddlewareMixin):
             # - PUT /api/projects/<pid> (project update with optimistic lock)
             # - POST /api/projects/<pid>/approve (project revision approval)
             # - POST /api/projects/<pid>/caption-timing (read-only measurement of an unsaved body)
+            # - POST /api/projects/<pid>/framing-preview (read-only frame render of an unsaved scene)
             # - PUT /api/projects/<pid>/draft (autosave draft save)
             # - DELETE /api/projects/<pid>/draft (autosave draft delete)
             # - POST /api/projects/<pid>/jobs/<jid>/apply & /apply-job/<jid> (job result application)
@@ -59,6 +60,8 @@ class LocalSecurityMiddleware(MiddlewareMixin):
                 elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/approve', normalized_path):
                     is_allowed_mutation = True
                 elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/caption-timing', normalized_path):
+                    is_allowed_mutation = True
+                elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/framing-preview', normalized_path):
                     is_allowed_mutation = True
                 elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/assign-media', normalized_path):
                     is_allowed_mutation = True

@@ -275,6 +275,7 @@ def task_render_pipeline(self, job_id: str):
                 lease.check_ownership()
                 store.progress(job_id, f"Preparing narration {i + 1}/{len(p['scenes'])}", stage_name='narration')
                 from .media import voice_for, duration, captions, write_ass, probe, run
+                from .framing import COLOUR_TAGS, source_info, visual_inputs
                 vpath, boundaries = voice_for(scene, p, provider)
                 sec = duration(vpath)
 
@@ -309,7 +310,7 @@ def task_render_pipeline(self, job_id: str):
                 length = timing.scene_duration
                 cues = timing.cues
                 cache_key = store.digest({
-                    'renderer': 4,
+                    'renderer': 5,
                     'scene': scene,
                     'audio': Path(voice['audio_path']).name,
                     'audio_mtime_ns': Path(voice['audio_path']).stat().st_mtime_ns,
@@ -340,21 +341,14 @@ def task_render_pipeline(self, job_id: str):
                         args += ['-f', 'lavfi', '-i', f'color=c=0x12251F:s={width}x{height}:r=30:d={length}']
                         vf = f"drawbox=x=0:y={int(height * .24)}:w=iw:h=4:color=0xB9F8CF:t=fill"
                     else:
-                        if scene['visual'] == 'image':
-                            args += ['-loop', '1', '-framerate', '30', '-i', store.asset_path(scene['video_asset'], 'image')]
-                        else:
-                            if scene.get('short_clip_mode', 'loop') == 'loop':
-                                args += ['-stream_loop', '-1']
-                            args += ['-ss', str(scene['trim_start']), '-i', store.asset_path(scene['video_asset'], 'video')]
-                        if scene['fit'] == 'crop':
-                            vf = f"scale={width}:{height}:force_original_aspect_ratio=increase,crop={width}:{height}:(iw-ow)*{scene['crop_x']}:(ih-oh)/2"
-                        else:
-                            vf = f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=0x12251F"
-                    if scene['visual'] != 'graphic' and scene.get('short_clip_mode') == 'freeze':
-                        vf += f',tpad=stop_mode=clone:stop_duration={length}'
+                        # Same geometry as the editor's framing preview (studio/framing.py).
+                        source_path = store.asset_path(scene['video_asset'], 'image' if scene['visual'] == 'image' else 'video')
+                        inputs, vf = visual_inputs(scene, source_path, source_info(source_path), length,
+                                                   width, height, work, run, job_id)
+                        args += inputs
                     output = work / 'scene.mp4'
                     args += ['-i', voice['audio_path'], '-map', '0:v:0', '-map', '1:a:0',
-                             '-vf', vf + ",setsar=1,fps=30,subtitles=captions.ass",
+                             '-vf', vf + f",setsar=1,fps=30,subtitles=captions.ass,{COLOUR_TAGS}",
                              '-af', f'atempo={speed:.8f},loudnorm=I=-16:TP=-1.5:LRA=11,apad',
                              '-t', str(length), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24' if draft else '20',
                              '-pix_fmt', 'yuv420p', '-threads', '4', '-c:a', 'aac', '-b:a', '192k',

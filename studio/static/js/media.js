@@ -67,7 +67,8 @@
               video_asset: asset.id,
               visual: asset.kind === 'image' ? 'image' : 'upload',
               rights_reviewed: true,
-              trim_start: 0
+              trim_start: 0,
+              trim_end: 0
             });
             Scenes.renderSceneVisuals();
             StudioState.setNotice('Uploaded visual assigned to scene. Save project to keep selection.');
@@ -298,7 +299,8 @@
           video_asset: assetId,
           visual: kind === 'image' ? 'image' : 'upload',
           rights_reviewed: true,
-          trim_start: 0
+          trim_start: 0,
+          trim_end: 0
         });
         $('#media-library-modal, #modal-media-library').hide();
         Scenes.renderSceneVisuals();

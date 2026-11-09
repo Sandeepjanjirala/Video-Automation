@@ -846,3 +846,259 @@ def test_caption_editor_dom_behaviour():
     page = DATA.parent / 'captions.html'
     page.write_bytes(client().get('/').content)
     subprocess.run(['node', 'tests/audit_captions_ui.cjs', str(page)], check=True, timeout=45)
+
+
+# Stage 3: framing previews -------------------------------------------------------------
+
+from studio import framing
+
+
+def ffmpeg(*args):
+    media.run([executable('ffmpeg'), '-v', 'error', '-y', *args])
+
+
+def upload_file(path):
+    res = client().post('/api/assets', {'file': SimpleUploadedFile(path.name, path.read_bytes())})
+    assert res.status_code == 200, res.content
+    return res.json()
+
+
+def framing_project(scenes, tmp_path, tone_seconds=2.0):
+    """Project whose scenes share one attached narration tone; returns (pid, saved body)."""
+    tone = tmp_path / f'tone{tone_seconds}.wav'
+    ffmpeg('-f', 'lavfi', '-i', f'sine=frequency=420:duration={tone_seconds}', tone)
+    voice = upload_file(tone)
+    body = project()
+    base = {**body['scenes'][0], 'audio_asset': voice['id'], 'audio_text_hash': store.digest(body['scenes'][0]['narration'])}
+    body['scenes'] = [{**base, **scene} for scene in scenes]
+    res = client().post('/api/projects', body, content_type='application/json')
+    assert res.status_code == 200, res.content
+    return res.json()['id'], res.json()['project']
+
+
+def render_over_http(pid, quality):
+    c = client()
+    revision = c.get(f'/api/projects/{pid}').json()['revision']
+    assert c.post(f'/api/projects/{pid}/approve', {'revision': revision}, content_type='application/json').status_code == 200
+    queued = c.post(f'/api/projects/{pid}/jobs', {'revision': revision, 'kind': 'render', 'quality': quality},
+                    content_type='application/json')
+    assert queued.status_code == 200, queued.content
+    jid = queued.json()['id']
+    assert task_render_pipeline.run(jid)['status'] == 'succeeded', store.job(jid)['progress']
+    directory = DATA / 'exports' / jid
+    return directory, json.loads((directory / 'timing-manifest.json').read_text('utf-8'))
+
+
+def psnr(a, b, b_at=None):
+    """PSNR in dB between the first frame of a and the frame of b at b_at seconds.
+    Compared at quarter size, so draft H.264 noise on test patterns does not mask framing shifts."""
+    import re
+    args = [executable('ffmpeg'), '-hide_banner', '-i', str(a)]
+    args += (['-ss', f'{b_at:.4f}'] if b_at is not None else []) + ['-i', str(b)]
+    scale = 'scale=iw/4:ih/4:flags=area,format=rgb24,setpts=0'
+    args += ['-filter_complex', f'[0:v]{scale}[a];[1:v]{scale}[b];[a][b]psnr',
+             '-frames:v', '1', '-f', 'null', '-']
+    out = subprocess.run(args, capture_output=True, text=True, encoding='utf-8', errors='replace').stderr
+    value = re.search(r'average:(\S+)', out).group(1)
+    return float('inf') if value == 'inf' else float(value)
+
+
+def centre_colour(path, at):
+    raw = subprocess.run([executable('ffmpeg'), '-v', 'error', '-ss', f'{at:.3f}', '-i', str(path), '-frames:v', '1',
+                          '-vf', 'crop=iw/2:ih/4:iw/4:ih/4,scale=1:1:flags=area', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],
+                         capture_output=True, check=True).stdout
+    return 'rgb'[max(range(3), key=lambda i: raw[i])]
+
+
+def test_framing_geometry_matches_browser_and_editor_dom(tmp_path):
+    cases = []
+    for src in ((1920, 1080), (1080, 1920), (1200, 1600), (181, 333), (4000, 3000), (640, 640)):
+        for size in ((1080, 1920), (540, 960)):
+            for fit in ('crop', 'contain'):
+                for aspect in framing.ASPECTS:
+                    for zoom, x, y in ((1, .5, .5), (1.37, 0, 1), (2.5, .123, .877), (3, 1, 0)):
+                        args = [src[0], src[1], size[0], size[1], fit, aspect, zoom, x, y]
+                        g = framing.geometry(*args)
+                        assert g['crop_x'] + g['crop_w'] <= g['scale_w'] and g['crop_y'] + g['crop_h'] <= g['scale_h']
+                        assert g['pad_x'] + g['crop_w'] <= size[0] and g['pad_y'] + g['crop_h'] <= size[1]
+                        assert all(g[k] % 2 == 0 for k in ('scale_w', 'scale_h', 'crop_w', 'crop_h',
+                                                           'crop_x', 'crop_y', 'pad_x', 'pad_y'))
+                        cases.append({'args': args, 'expected': g})
+    data = tmp_path / 'geometry.json'
+    data.write_text(json.dumps(cases), 'utf-8')
+    page = DATA.parent / 'framing.html'
+    page.write_bytes(client().get('/').content)
+    subprocess.run(['node', 'tests/audit_framing_ui.cjs', str(page), str(data)], check=True, timeout=60)
+
+
+def test_framing_reads_rotation_exif_and_pixel_aspect(tmp_path):
+    import struct
+    base, rotated, wide, photo = (tmp_path / n for n in ('base.mp4', 'rotated.mp4', 'wide.mp4', 'photo.jpg'))
+    ffmpeg('-f', 'lavfi', '-i', 'testsrc2=s=320x180:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', base)
+    ffmpeg('-display_rotation', '90', '-i', base, '-c', 'copy', rotated)
+    ffmpeg('-f', 'lavfi', '-i', 'testsrc2=s=320x240:d=1', '-vf', 'setsar=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', wide)
+    plain = tmp_path / 'plain.jpg'
+    ffmpeg('-f', 'lavfi', '-i', 'testsrc2=s=400x200', '-frames:v', '1', plain)
+    # EXIF orientation 6 (rotate 90 degrees), as phone cameras write it.
+    tiff = b'II*\x00' + struct.pack('<I', 8) + struct.pack('<H', 1) + struct.pack('<HHII', 0x0112, 3, 1, 6) + struct.pack('<I', 0)
+    app1 = b'Exif\x00\x00' + tiff
+    raw = plain.read_bytes()
+    photo.write_bytes(raw[:2] + b'\xff\xe1' + struct.pack('>H', len(app1) + 2) + app1 + raw[2:])
+
+    info = {name: framing.source_info(path) for name, path in (('rotated', rotated), ('wide', wide), ('photo', photo))}
+    assert (info['rotated']['width'], info['rotated']['height']) == (180, 320)
+    assert (info['wide']['width'], info['wide']['height'], info['wide']['normalize']) == (640, 240, True)
+    assert (info['photo']['width'], info['photo']['height']) == (200, 400)
+    # The renderer's filters see exactly those sizes: 'contain' fills the 1080-wide frame without distortion.
+    for name, path in (('rotated', rotated), ('wide', wide), ('photo', photo)):
+        g = framing.geometry(info[name]['width'], info[name]['height'], 1080, 1920, 'contain')
+        out = tmp_path / f'{name}.png'
+        ffmpeg('-i', path, '-frames:v', '1', '-vf', framing.filter_chain(g, info[name]), out)
+        stream = media.probe(out, allow_still=True)['streams'][0]
+        assert (stream['width'], stream['height']) == (1080, 1920)
+    for name, path in (('rotated', rotated), ('photo', photo)):
+        res = client().get(f"/api/assets/{upload_file(path)['id']}/framing")
+        assert res.status_code == 200, res.content
+        assert (res.json()['width'], res.json()['height']) == (info[name]['width'], info[name]['height'])
+    tone = tmp_path / 'tone.wav'
+    ffmpeg('-f', 'lavfi', '-i', 'sine=duration=0.5', tone)
+    assert client().get(f"/api/assets/{upload_file(tone)['id']}/framing").status_code == 400
+
+
+@pytest.mark.parametrize('quality,dimensions', [('draft', (540, 960)), ('final', (1080, 1920))])
+def test_exact_frame_preview_matches_exported_mp4(tmp_path, quality, dimensions):
+    footage, picture = tmp_path / 'footage.mp4', tmp_path / 'picture.jpg'
+    ffmpeg('-f', 'lavfi', '-i', 'testsrc2=s=1920x1080:r=30:d=4', '-c:v', 'libx264', '-crf', '8', '-pix_fmt', 'yuv420p', footage)
+    ffmpeg('-f', 'lavfi', '-i', 'testsrc2=s=1600x1200', '-frames:v', '1', '-q:v', '2', picture)
+    video, image = upload_file(footage), upload_file(picture)
+    cue = lambda text: [{'start': 0, 'end': 1.9, 'text': text}]
+    pid, body = framing_project([
+        {'id': 'clip', 'visual': 'upload', 'video_asset': video['id'], 'trim_start': 1.0, 'zoom': 1.6,
+         'crop_x': 0.2, 'crop_y': 0.7, 'cues': cue('నమస్కారం, మన కథ')},
+        {'id': 'photo', 'visual': 'image', 'video_asset': image['id'], 'fit': 'contain', 'frame_aspect': '4:5',
+         'zoom': 1.3, 'crop_x': 0.8, 'cues': cue('Mana katha')},
+        {'id': 'wide', 'visual': 'upload', 'video_asset': video['id'], 'frame_aspect': '16:9', 'zoom': 2.6,
+         'crop_x': 0.9, 'crop_y': 0.1, 'trim_start': 0.5, 'trim_end': 3.5, 'cues': cue('Idi oka pariksha')},
+    ], tmp_path)
+    directory, manifest = render_over_http(pid, quality)
+    reel = directory / 'reel.mp4'
+    offsets = {s['scene_id']: s['start_offset'] for s in manifest['scenes']}
+    # A full-range BT.601 JPEG scene must not switch the joined reel's colour range or matrix.
+    tags = subprocess.run([executable('ffprobe'), '-v', 'error', '-select_streams', 'v:0', '-show_entries',
+                           'frame=pix_fmt,color_range,color_space,color_primaries,color_transfer', '-of', 'csv=p=0',
+                           str(reel)], capture_output=True, text=True, check=True).stdout.split()
+    assert {tag.rstrip(',') for tag in tags} == {'yuv420p,tv,bt709,bt709,bt709'}, set(tags)
+
+    def preview(scene, at, **changes):
+        res = client().post(f'/api/projects/{pid}/framing-preview',
+                            {'scene': {**scene, **changes}, 'source_time': at, 'caption': scene['cues'][0]['text'],
+                             'quality': quality}, content_type='application/json')
+        assert res.status_code == 200, res.content
+        assert res['Content-Type'] == 'image/jpeg'
+        path = tmp_path / f"preview-{scene['id']}-{len(changes)}.jpg"
+        path.write_bytes(res.content)
+        return path, json.loads(res['X-Framing-Geometry'])
+
+    # Sample half a frame past a frame boundary, so both sides pick the same source frame.
+    t = 0.5 + 1 / 60
+    scores = {}
+    for scene in body['scenes']:
+        source_time = scene['trim_start'] + t if scene['visual'] != 'image' else None
+        frame, geometry = preview(scene, source_time)
+        path = store.asset_path(scene['video_asset'], 'image' if scene['visual'] == 'image' else 'video')
+        assert geometry == framing.scene_geometry(scene, framing.source_info(path), *dimensions)
+        assert media.probe(frame, allow_still=True)['streams'][0]['width'] == dimensions[0]
+        scores[scene['id']] = psnr(frame, reel, b_at=offsets[scene['id']] + t)
+        assert scores[scene['id']] > 28, scores
+    # Negative control: a different crop is clearly detected, so the threshold is meaningful.
+    shifted, _ = preview(body['scenes'][0], body['scenes'][0]['trim_start'] + t, crop_x=0.8)
+    scores['clip_with_wrong_crop'] = psnr(shifted, reel, b_at=offsets['clip'] + t)
+    assert scores['clip_with_wrong_crop'] < scores['clip'] - 8, scores
+    (DATA.parent / f'framing-psnr-{quality}.json').write_text(json.dumps(scores), 'utf-8')
+
+    # Invalid input is reported, not rendered.
+    bad = client().post(f'/api/projects/{pid}/framing-preview', {'scene': {**body['scenes'][0], 'trim_start': 9}},
+                        content_type='application/json')
+    assert bad.status_code == 422 and 'Trim start' in bad.json()['detail']
+    graphic = client().post(f'/api/projects/{pid}/framing-preview', {'scene': {**body['scenes'][0], 'visual': 'graphic'}},
+                            content_type='application/json')
+    assert graphic.status_code == 422
+    assert not list((DATA / 'tmp').glob('framing_*'))
+
+
+def test_trimmed_clips_loop_and_hold_inside_the_trim(tmp_path):
+    """Red 0-1 s, green 1-2 s, blue 2-3 s; every scene must show only its trimmed colours."""
+    bands = tmp_path / 'bands.mp4'
+    ffmpeg('-f', 'lavfi', '-i', 'color=red:s=320x240:r=30:d=1', '-f', 'lavfi', '-i', 'color=green:s=320x240:r=30:d=1',
+           '-f', 'lavfi', '-i', 'color=blue:s=320x240:r=30:d=1', '-filter_complex', '[0:v][1:v][2:v]concat=n=3:v=1:a=0',
+           '-c:v', 'libx264', '-pix_fmt', 'yuv420p', bands)
+    clip = upload_file(bands)
+    pid, _ = framing_project([
+        {'id': 'loopgreen', 'visual': 'upload', 'video_asset': clip['id'], 'trim_start': 1, 'trim_end': 2},
+        {'id': 'holdgreen', 'visual': 'upload', 'video_asset': clip['id'], 'trim_start': 1, 'trim_end': 1.5,
+         'short_clip_mode': 'freeze'},
+        {'id': 'loopblue', 'visual': 'upload', 'video_asset': clip['id'], 'trim_start': 2},
+        {'id': 'whole', 'visual': 'upload', 'video_asset': clip['id']},
+    ], tmp_path, tone_seconds=2.6)
+    directory, manifest = render_over_http(pid, 'draft')
+    reel = directory / 'reel.mp4'
+    offsets = {s['scene_id']: s['start_offset'] for s in manifest['scenes']}
+    seen = {sid: [centre_colour(reel, offsets[sid] + at) for at in (0.3, 1.3, 2.3)] for sid in offsets}
+    # Before Stage 3, -stream_loop restarted at 0 s, so trimmed loops showed red after one pass.
+    assert seen == {'loopgreen': ['g', 'g', 'g'], 'holdgreen': ['g', 'g', 'g'],
+                    'loopblue': ['b', 'b', 'b'], 'whole': ['r', 'g', 'b']}, seen
+
+
+def frame_number(path, frame=0):
+    """Read the frame index a 'ramp' clip encodes in luma (Y = 16 + 3n), from frame `frame` of path."""
+    raw = subprocess.run([executable('ffmpeg'), '-v', 'error', '-i', str(path), '-frames:v', '1', '-vf',
+                          f'select=eq(n\\,{frame}),crop=iw/2:ih/4:iw/4:ih/4,scale=2:2:flags=area:out_range=tv',
+                          '-f', 'rawvideo', '-pix_fmt', 'yuv420p', '-'], capture_output=True, check=True).stdout
+    return round((sum(raw[:4]) / 4 - 16) / 3)
+
+
+def test_trim_preview_and_export_show_the_same_source_frame(tmp_path):
+    ramp = tmp_path / 'ramp.mp4'
+    # Luma 16 + 3n identifies frame n of a 30 fps clip.
+    ffmpeg('-f', 'lavfi', '-i', "color=black:s=640x360:r=30:d=2.2,format=yuv420p,geq=lum='16+3*N':cb=128:cr=128",
+           '-c:v', 'libx264', '-crf', '0', '-pix_fmt', 'yuv420p', ramp)
+    clip = upload_file(ramp)
+    pid, body = framing_project([
+        {'id': 'trimmed', 'visual': 'upload', 'video_asset': clip['id'], 'trim_start': 1.0, 'trim_end': 2.0, 'zoom': 1.4},
+    ], tmp_path, tone_seconds=1.5)
+    directory, _ = render_over_http(pid, 'draft')
+    reel = directory / 'reel.mp4'
+    # A browser playhead part-way through scene frame k shows source frame 30 + k.
+    for k in (0, 15, 27):
+        res = client().post(f'/api/projects/{pid}/framing-preview',
+                            {'scene': body['scenes'][0], 'source_time': 1.0 + (k + 0.4) / 30, 'quality': 'draft'},
+                            content_type='application/json')
+        assert res.status_code == 200, res.content
+        still = tmp_path / f'ramp-{k}.jpg'
+        still.write_bytes(res.content)
+        assert (frame_number(still), frame_number(reel, k)) == (30 + k, 30 + k), k
+    # The loop restarts at the trim start: scene frame 36 is trim frame 6 again.
+    assert frame_number(reel, 36) == 36
+
+
+def test_framing_fields_validate_and_old_scenes_keep_defaults(tmp_path):
+    old = {'id': 'legacy', 'fit': 'contain', 'crop_x': 0.3}
+    scene = Scene.model_validate(old)
+    assert (scene.zoom, scene.crop_y, scene.frame_aspect, scene.trim_end) == (1, 0.5, 'full', 0)
+    for bad in ({'zoom': 0.5}, {'zoom': 3.5}, {'crop_y': 1.2}, {'frame_aspect': '21:9'},
+                {'trim_start': 2, 'trim_end': 1.5}):
+        with pytest.raises(ValueError):
+            Scene.model_validate({**old, **bad})
+    footage = tmp_path / 'short.mp4'
+    ffmpeg('-f', 'lavfi', '-i', 'testsrc2=s=320x240:r=30:d=2', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', footage)
+    clip = upload_file(footage)
+    body = project()
+    body['scenes'][0].update(visual='upload', video_asset=clip['id'], trim_start=0.5, trim_end=9)
+    report = store.preflight(body)
+    assert report['ready'], report
+    assert any('trim end is past' in w['message'] for w in report['warnings'])
+    body['scenes'][0].update(trim_start=1.99, trim_end=0)
+    assert any('Trim start must be before the end' in e['message'] for e in store.preflight(body)['errors'])
+    res = client().post('/api/projects', {**body, 'scenes': [{**body['scenes'][0], 'trim_start': 1, 'trim_end': 0.5}]},
+                        content_type='application/json')
+    assert res.status_code == 422

@@ -203,12 +203,12 @@
         const visualBadgeClass = s.visual === 'graphic' ? 'approved' : s.video_asset ? '' : 'red';
         const visualBadgeText = s.visual === 'graphic' ? 'graphic title card' : s.video_asset ? s.visual : 'media missing';
 
+        // Framing preview mirrors the renderer's crop, zoom and trim (framing.js).
         const previewHtml = (s.video_asset && s.visual !== 'graphic')
-          ? (s.visual === 'image' ? `<img class="clippreview" alt="Scene visual" src="/api/assets/${s.video_asset}/media">` : `<video class="clippreview" controls preload="metadata" src="/api/assets/${s.video_asset}/media"></video>`)
+          ? StudioFraming.stageHtml(s)
           : `<div class="visualplaceholder"><span>✦</span><p>${esc(s.visual === 'graphic' ? (s.graphic_title || 'Your graphic title') : 'Select footage or upload a clip')}</p></div>`;
 
         const isGraphic = (s.visual === 'graphic');
-        const isCrop = (s.fit === 'crop');
 
         const visualConfigHtml = isGraphic ? `
           <label class="field">
@@ -234,29 +234,8 @@
             <option value="pexels" ${s.stock_provider === 'pexels' ? 'selected' : ''}>Pexels</option>
           </select></label>
           <div id="stock-results-${s.id}"></div>
-          <div class="grid two">
-            <label class="field">
-              <span>Trim start (seconds)</span>
-              <input type="number" class="scene-field-bind" data-field="trim_start" min="0" step="0.1" value="${s.trim_start || 0}" />
-            </label>
-            <label class="field">
-              <span>Framing</span>
-              <select class="scene-field-bind" data-field="fit">
-                <option value="crop" ${s.fit === 'crop' ? 'selected' : ''}>Fill vertical frame</option>
-                <option value="contain" ${s.fit === 'contain' ? 'selected' : ''}>Fit entire clip with padding</option>
-              </select>
-            </label>
-          </div>
-          ${isCrop ? `
-            <label class="field">
-              <span>Horizontal crop position</span>
-              <input type="range" class="scene-field-bind" data-field="crop_x" min="0" max="1" step="0.05" value="${s.crop_x !== undefined ? s.crop_x : 0.5}" />
-            </label>
-          ` : ''}
-          <label class="field"><span>If the clip is shorter than narration</span><select class="scene-field-bind" data-field="short_clip_mode">
-            <option value="loop" ${s.short_clip_mode !== 'freeze' ? 'selected' : ''}>Loop clip</option><option value="freeze" ${s.short_clip_mode === 'freeze' ? 'selected' : ''}>Hold the last frame</option>
-          </select></label>
-          <small class="muted">Images hold for the whole scene. Clip audio is muted. Scene length follows the selected narration.</small>
+          ${s.video_asset ? StudioFraming.controlsHtml(s) : '<small class="muted">Choose footage or an image to adjust its framing and trim.</small>'}
+          <small class="muted">Clip audio is muted. Scene length follows the selected narration.</small>
         `;
 
         const cardHtml = `
@@ -301,19 +280,20 @@
         `;
         $container.append(cardHtml);
       });
+      StudioFraming.mount();
     }
   };
 
   // Scene visual field bindings
   $(document).on('change', '.scene-visual-source-select', function() {
-    const sid = $(this).closest('.scene-visual-card').data('id');
+    const sid = $(this).closest('.scene-visual-card').attr('data-id');
     const val = $(this).val();
     Scenes.updateSceneField(sid, { visual: val, rights_reviewed: false });
     Scenes.renderSceneVisuals();
   });
 
   $(document).on('input change', '.scene-field-bind', function() {
-    const sid = $(this).closest('.scene-visual-card').data('id');
+    const sid = $(this).closest('.scene-visual-card').attr('data-id');
     const field = $(this).data('field');
     let val = $(this).val();
     if ($(this).attr('type') === 'number' || $(this).attr('type') === 'range') {
@@ -322,13 +302,13 @@
     const update = {};
     update[field] = val;
     Scenes.updateSceneField(sid, update);
-    if (field === 'fit' || field === 'graphic_title') {
+    if (field === 'graphic_title') {
       Scenes.renderSceneVisuals();
     }
   });
 
   $(document).on('change', '.scene-rights-checkbox', function() {
-    const sid = $(this).closest('.scene-visual-card').data('id');
+    const sid = $(this).closest('.scene-visual-card').attr('data-id');
     const checked = $(this).is(':checked');
     Scenes.updateSceneField(sid, { rights_reviewed: checked });
     Projects.updateHeaderBadges();
