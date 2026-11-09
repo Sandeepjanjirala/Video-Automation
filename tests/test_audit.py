@@ -1,5 +1,6 @@
 """Current architecture regression suite; run with scripts/run_audit_tests.py."""
 import copy
+import json
 import concurrent.futures
 import uuid
 import subprocess
@@ -325,10 +326,12 @@ def test_failed_render_cleans_work_directory(monkeypatch, tmp_path):
     assert not list((DATA / 'tmp').glob(j['id'] + '_*'))
 
 
-def test_upload_playback_thumbnail_and_multiscene_music_render(tmp_path):
+@pytest.mark.parametrize('duration_mode', ['natural', 'target'])
+def test_upload_playback_thumbnail_and_multiscene_music_render(tmp_path, duration_mode):
     audio = tmp_path / 'narration.wav'
     video = tmp_path / 'footage.mp4'
-    media.run([executable('ffmpeg'), '-v', 'error', '-y', '-f', 'lavfi', '-i', 'sine=frequency=550:duration=1.3', audio])
+    seconds = 4.8 if duration_mode == 'target' else 1.3
+    media.run([executable('ffmpeg'), '-v', 'error', '-y', '-f', 'lavfi', '-i', f'sine=frequency=550:duration={seconds}', audio])
     media.run([executable('ffmpeg'), '-v', 'error', '-y', '-f', 'lavfi', '-i', 'testsrc2=size=320x240:rate=30:duration=1',
                '-c:v', 'libx264', '-pix_fmt', 'yuv420p', video])
     c = client()
@@ -349,11 +352,23 @@ def test_upload_playback_thumbnail_and_multiscene_music_render(tmp_path):
     body = project()
     body['scenes'][0].update(audio_asset=a['id'], audio_text_hash=store.digest(body['scenes'][0]['narration']))
     body['scenes'].append({**body['scenes'][0], 'id': 'scene2', 'visual': 'upload', 'video_asset': v['id'], 'fit': 'contain'})
-    body.update(music_asset=a['id'], music_rights_reviewed=True)
+    body.update(music_asset=a['id'], music_rights_reviewed=True, duration_mode=duration_mode, target_seconds=10)
+    for scene in body['scenes']:
+        scene.update(hold_seconds=0.5, cues=[{'start': 0.1, 'end': 1.0, 'text': 'Manual caption'}])
     p = store.save_project(body)
     store.approve(p['id'], 1)
     j = store.enqueue(p['id'], 1, 'render', {'quality': 'draft'})
     assert task_render_pipeline.run(j['id'])['status'] == 'succeeded'
+    directory = DATA / 'exports' / j['id']
+    manifest = json.loads((directory / 'timing-manifest.json').read_text('utf-8'))
+    first, second = manifest['scenes']
+    assert second['start_offset'] == first['end_offset']
+    assert first['raw_voice_duration'] == pytest.approx(seconds)
+    assert first['cues'][0]['start'] == pytest.approx(0.1 / manifest['speed'])
+    assert manifest['all_cues'][1]['start'] == pytest.approx(second['start_offset'] + second['cues'][0]['start'])
+    from studio.timeline import to_srt
+    assert (directory / 'captions.srt').read_text('utf-8') == to_srt(manifest['all_cues'])
+    assert media.duration(directory / 'reel.mp4') == pytest.approx(manifest['total_duration'], abs=0.1)
     assert not list((DATA / 'tmp').glob(j['id'] + '_*'))
 
 
@@ -497,6 +512,27 @@ def test_voice_lab_obeys_offline_setting(monkeypatch):
         lab.generate_voice_take('fixture', 'scene1', 'ఇది పరీక్ష.')
 
 
+def test_edge_connection_rejection_is_actionable_and_cleans_partial_audio(monkeypatch, tmp_path):
+    from aiohttp import WSServerHandshakeError
+    from types import SimpleNamespace
+    from studio.voice.edge_adapter import EdgeTTSAdapter
+    adapter = EdgeTTSAdapter()
+
+    async def rejected(text, voice, rate, pitch, temp_audio):
+        temp_audio.write_bytes(b'partial')
+        raise WSServerHandshakeError(SimpleNamespace(real_url='wss://example.test/?token=private'),
+                                     (), status=403, message='Rejected')
+
+    monkeypatch.setattr(adapter, '_stream_synthesis', rejected)
+    # The transport exception can contain request URLs; do not expose them in the UI.
+    monkeypatch.setattr('studio.voice.edge_adapter.logger.warning', lambda *a: None)
+    with pytest.raises(ValueError, match='free Edge voice service rejected') as error:
+        adapter.synthesize('ఇది పరీక్ష.', voice='te-IN-MohanNeural',
+                           target_audio=tmp_path / 'speech.mp3', target_meta=tmp_path / 'speech.json')
+    assert 'SETUP_WINDOWS.bat' in str(error.value)
+    assert not list(tmp_path.iterdir())
+
+
 def test_stale_voice_take_rejected_atomically():
     p = store.save_project(project())
     take = VoiceTake.objects.using('voice_writer').create(
@@ -574,6 +610,19 @@ def test_real_offline_render_export_and_cache(quality, dimensions):
     video = next(s for s in media.probe(output)['streams'] if s['codec_type'] == 'video')
     assert (video['width'], video['height']) == dimensions
     assert video['codec_name'] == 'h264'
+    manifest_response = client().get(f"/api/exports/{j['id']}/timing-manifest.json")
+    assert manifest_response.status_code == 200
+    manifest = json.loads(b''.join(manifest_response.streaming_content))
+    manifest_response.close()
+    assert manifest['schema_version'] == 1
+    assert manifest['job_id'] == j['id']
+    assert manifest['project_id'] == p['id']
+    assert manifest['dimensions'] == list(dimensions)
+    assert manifest['scenes'][0]['raw_voice_duration'] == pytest.approx(media.duration(audio))
+    assert manifest['total_duration'] == manifest['total_frames'] / 30
+    assert abs(manifest['measured_export_duration'] - manifest['total_duration']) < 0.5
+    from studio.timeline import to_srt
+    assert (output.parent / 'captions.srt').read_text('utf-8') == to_srt(manifest['all_cues'])
     response = client().get(f"/api/exports/{j['id']}/reel.mp4")
     assert response.status_code == 200
     response.close()
@@ -581,3 +630,39 @@ def test_real_offline_render_export_and_cache(quality, dimensions):
     j2 = store.enqueue(p['id'], 1, 'render', {'quality': quality})
     assert task_render_pipeline.run(j2['id'])['status'] == 'succeeded'
     assert cached == {f.name: f.stat().st_mtime_ns for f in (DATA / 'cache').glob('*.scene.mp4')}
+
+
+@pytest.mark.parametrize('mode,target,speed', [('natural', 60, 1), ('target', 10, 1.25), ('target', 14.5, 0.8)])
+def test_shared_timeline_offsets_speed_holds_and_input_preservation(mode, target, speed):
+    from studio.timeline import compute_timeline
+    p = {'duration_mode': mode, 'target_seconds': target,
+         'scenes': [{'id': 'a', 'hold_seconds': 1}, {'id': 'b', 'hold_seconds': 1}]}
+    voices = [{'scene_id': sid, 'duration': duration, 'alignment': 'manual',
+               'cues': [{'start': 0.2, 'end': duration - 0.1, 'text': sid}]}
+              for sid, duration in [('b', 6), ('a', 4)]]
+    original = copy.deepcopy(voices)
+    tl = compute_timeline(p, voices)
+    assert tl.speed == pytest.approx(speed)
+    assert tl.scenes[0].raw_voice_duration == 4  # match by ID, not input position
+    assert tl.scenes[1].start_frame == tl.scenes[0].end_frame
+    assert tl.scenes[1].start_offset == tl.scenes[0].frame_count / 30
+    assert tl.scenes[0].cues[0]['start'] == pytest.approx(0.2 / speed)
+    assert tl.all_cues[1]['start'] == pytest.approx(tl.scenes[1].start_offset + 0.2 / speed)
+    assert tl.total_duration == sum(s.frame_count for s in tl.scenes) / 30
+    assert voices == original
+
+
+@pytest.mark.parametrize('fault', ['missing', 'duplicate', 'nan', 'zero', 'overlap', 'past_end', 'excessive_speed', 'holds'])
+def test_shared_timeline_rejects_invalid_inputs(fault):
+    from studio.timeline import compute_timeline
+    p = {'duration_mode': 'natural', 'target_seconds': 10, 'scenes': [{'id': 'a', 'hold_seconds': 0}]}
+    v = [{'scene_id': 'a', 'duration': 2, 'cues': [{'start': 0, 'end': 1, 'text': 'test'}]}]
+    if fault == 'missing': v = []
+    elif fault == 'duplicate': v *= 2
+    elif fault == 'nan': v[0]['duration'] = float('nan')
+    elif fault == 'zero': v[0]['duration'] = 0
+    elif fault == 'overlap': v[0]['cues'].append({'start': 0.5, 'end': 1.5, 'text': 'overlap'})
+    elif fault == 'past_end': v[0]['cues'][0]['end'] = 3
+    elif fault == 'excessive_speed': p['duration_mode'] = 'target'
+    elif fault == 'holds': p.update(duration_mode='target'); p['scenes'][0]['hold_seconds'] = 10
+    with pytest.raises(ValueError): compute_timeline(p, v)

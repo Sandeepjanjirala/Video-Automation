@@ -115,13 +115,8 @@ def captions(scene, audio_duration, boundaries):
     return cues, 'word-index mapping; review required' if mapped else 'estimated from text length; review required'
 
 
-def stamp(seconds, ass=False):
-    units = round(seconds * (100 if ass else 1000))
-    base = 100 if ass else 1000
-    hours, rem = divmod(units, 3600 * base)
-    mins, rem = divmod(rem, 60 * base)
-    secs, fraction = divmod(rem, base)
-    return f'{hours}:{mins:02}:{secs:02}.{fraction:02}' if ass else f'{hours:02}:{mins:02}:{secs:02},{fraction:03}'
+# Compatibility import for callers; ASS and SRT share timestamp formatting.
+from .timeline import stamp
 
 
 def ass_text(text, width=32):

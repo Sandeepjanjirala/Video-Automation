@@ -138,6 +138,21 @@ const path = require('node:path');
   p.scenes[0].graphic_title = '<img src=x onerror=alert(1)>';
   w.Scenes.renderSceneVisuals();
   assert.equal($('.visualplaceholder img').length, 0);
+  // Repeated job polls preserve playback, and draft headings use actual dimensions.
+  const exported = {id:'export1', kind:'render', state:'succeeded', revision:1,
+                    result:{dimensions:[540,960]}};
+  w.StudioJobs.renderJobs([exported]);
+  assert.match($('#export-cards-container h4').text(), /540x960 Draft Preview/);
+  const originalVideo = $('#export-cards-container video')[0];
+  w.StudioJobs.renderJobs([JSON.parse(JSON.stringify(exported))]);
+  assert.equal($('#export-cards-container video')[0], originalVideo);
+  w.StudioJobs.renderJobs([exported, {id:'running1', kind:'voice', state:'running'}]);
+  assert.equal($('#export-cards-container video')[0], originalVideo);
+  w.StudioJobs.renderJobs([]);
+  assert.equal($('#export-cards-container video').length, 0);
+  exported.result.files = ['reel.mp4', 'timing-manifest.json'];
+  w.StudioJobs.renderJobs([exported]);
+  assert.equal($('#export-cards-container a[download="timing-manifest.json"]').length, 1);
   w.StudioState.setNotice('Visible notice');
   assert.equal($('#alert-notice-text').text(), 'Visible notice');
   w.StudioState.markDirty(true);

@@ -124,4 +124,11 @@ class EdgeTTSAdapter:
             temp_audio.unlink(missing_ok=True)
             temp_meta.unlink(missing_ok=True)
             logger.warning(f"Edge TTS synthesis error: {exc}")
+            if getattr(exc, 'status', None) == 403:
+                raise ValueError(
+                    'The free Edge voice service rejected the connection (HTTP 403). '
+                    'Run SETUP_WINDOWS.bat to install the supported speech client, '
+                    'then restart the studio and retry. If it still fails, try later '
+                    'or upload your own narration. No paid voice was selected.'
+                ) from None
             raise

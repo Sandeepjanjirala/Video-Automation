@@ -803,7 +803,7 @@ class ExportArtifactView(APIView):
 
     def get(self, request, jid: str, name: str, *args, **kwargs):
         import re
-        if not re.fullmatch(r'[a-f0-9]{32}', jid) or name not in ('reel.mp4', 'captions.srt', 'source-report.json', 'project.json'):
+        if not re.fullmatch(r'[a-f0-9]{32}', jid) or name not in ('reel.mp4', 'captions.srt', 'source-report.json', 'project.json', 'timing-manifest.json'):
             return Response({'detail': 'Not found'}, status=status.HTTP_404_NOT_FOUND)
 
         try:

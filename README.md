@@ -23,7 +23,8 @@ removed FastAPI, React, SQLite, and Alembic components. They are not current set
 ## Start on Windows
 
 Python 3.12 and FFmpeg/FFprobe are required. FFmpeg needs `libx264`, `subtitles`,
-`loudnorm`, and `sidechaincompress`. Node.js is needed only for frontend tests.
+`loudnorm`, and `sidechaincompress`. Node.js 24.15+ (or 22.22.2+) is needed only
+for frontend tests; Node 20 is too old for the pinned jsdom dependency.
 
 1. Run `SETUP_WINDOWS.bat` to install Python dependencies into `.venv`.
 2. Start PostgreSQL. With Docker available, infrastructure can be started using
@@ -122,6 +123,14 @@ Keys are kept in local settings and masked by the API. Export reports can contai
 editorial notes. A completed render provides `reel.mp4`, `captions.srt`,
 `source-report.json`, and `project.json`.
 
+New renders also include `timing-manifest.json`, downloadable from the export card.
+Its versioned JSON records measured narration durations, playback speed, 30 fps
+scene boundaries, holds, scene-local caption cues, reel-global caption cues, and
+the measured MP4 duration. Rendering and SRT export use the same shared timeline.
+Small differences between planned and measured duration can result from audio
+encoding. Automatic caption alignment remains approximate and needs review.
+Older exports remain available but do not gain a manifest until re-rendered.
+
 Failed jobs can be retried. Retrying current inputs requires approval of the current
 revision; original-input retries retain their original snapshot. Cancelled and
 completed jobs cannot be restarted by duplicate queue delivery. Crashed execution
@@ -132,7 +141,9 @@ saved projects still reference them.
 
 ```powershell
 .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-npm install --prefix frontend
+Push-Location frontend
+npm install
+Pop-Location
 .venv\Scripts\python.exe manage.py check
 .venv\Scripts\python.exe scripts/run_audit_tests.py
 ```

@@ -1,6 +1,7 @@
 from studio.config import executable, public_settings
 from studio.media import run
 import sys
+import os
 
 print('Python:', sys.version.split()[0])
 for name in ('ffmpeg', 'ffprobe'):
@@ -28,13 +29,15 @@ try:
 except Exception as exc:
     print('postgresql: ERROR (' + str(exc).splitlines()[0] + ')')
 
-try:
-    from studio.celery_app import app as celery_app
-    import redis
-    broker_url = celery_app.conf.broker_url
-    r = redis.Redis.from_url(broker_url, socket_timeout=2)
-    info = r.info('memory')
-    print('redis: connected (' + broker_url + ', maxmemory=' + str(info.get('maxmemory_human', 'N/A')) + ')')
-    print('celery: configured (queues=' + ', '.join(celery_app.conf.task_queues.keys()) + ')')
-except Exception as exc:
-    print('redis/celery: ERROR (' + str(exc).splitlines()[0] + ')')
+if os.environ.get('STUDIO_DISTRIBUTED') == '1' or os.environ.get('STUDIO_WORKER_MODE') == 'celery':
+    try:
+        from studio.celery_app import app as celery_app
+        import redis
+        r = redis.Redis.from_url(celery_app.conf.broker_url, socket_timeout=2)
+        info = r.info('memory')
+        print('redis: connected (maxmemory=' + str(info.get('maxmemory_human', 'N/A')) + ')')
+        print('celery: configured (queues=' + ', '.join(celery_app.conf.task_queues.keys()) + ')')
+    except Exception as exc:
+        print('redis/celery: ERROR (' + str(exc).splitlines()[0] + ')')
+else:
+    print('worker: local mode (Redis/Celery services are not required)')

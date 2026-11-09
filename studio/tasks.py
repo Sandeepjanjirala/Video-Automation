@@ -5,7 +5,6 @@ Enforces execution leases, periodic heartbeats, fencing, and subprocess cancella
 """
 import copy
 import json
-import math
 import os
 import shutil
 import threading
@@ -273,7 +272,7 @@ def task_render_pipeline(self, job_id: str):
             for i, scene in enumerate(p['scenes']):
                 lease.check_ownership()
                 store.progress(job_id, f"Preparing narration {i + 1}/{len(p['scenes'])}", stage_name='narration')
-                from .media import voice_for, duration, captions, write_ass, probe, run, stamp
+                from .media import voice_for, duration, captions, write_ass, probe, run
                 vpath, boundaries = voice_for(scene, p, provider)
                 sec = duration(vpath)
 
@@ -287,18 +286,10 @@ def task_render_pipeline(self, job_id: str):
                     'alignment': alignment
                 })
 
-            voice_total = sum(v['duration'] for v in prepared)
-            holds = sum(s['hold_seconds'] for s in p['scenes'])
-            speed = 1.0
-            if p['duration_mode'] == 'target':
-                if p['target_seconds'] <= holds:
-                    raise ValueError('Target duration is shorter than the scene holds')
-                speed = voice_total / (p['target_seconds'] - holds)
-                if not 0.8 <= speed <= 1.25:
-                    raise ValueError(f"Narration plus holds is {voice_total + holds:.1f}s. Target needs excessive speed change. Edit the script, change the target, or use natural duration.")
-            natural = voice_total / speed + holds
-            if natural > 180.5:
-                raise ValueError('This release supports up to 180 seconds. Shorten the script or increase speech rate.')
+            from .timeline import compute_timeline, to_srt
+            timeline = compute_timeline(p, prepared)
+            speed = timeline.speed
+            offset = timeline.total_duration
 
             draft = job_data['snapshot']['options'].get('quality', 'final') == 'draft'
             width, height = (540, 960) if draft else (1080, 1920)
@@ -307,15 +298,14 @@ def task_render_pipeline(self, job_id: str):
             temp = DATA / 'tmp' / f"{job_id}_{uuid.uuid4().hex[:8]}"
             temp.mkdir(parents=True, exist_ok=True)
 
-            scene_files, all_cues, report_scenes = [], [], []
-            offset = 0.0
+            scene_files, report_scenes = [], []
 
             # 3. Scene rendering stage
-            for i, (scene, voice) in enumerate(zip(p['scenes'], prepared)):
+            for i, (scene, voice, timing) in enumerate(zip(p['scenes'], prepared, timeline.scenes)):
                 lease.check_ownership()
                 store.progress(job_id, f"Rendering scene {i + 1}/{len(p['scenes'])} ({'draft' if draft else '1080p'})", stage_name='scene_rendering')
-                length = math.ceil((voice['duration'] / speed + scene['hold_seconds']) * 30) / 30
-                cues = [{**c, 'start': c['start'] / speed, 'end': c['end'] / speed} for c in voice['cues']]
+                length = timing.scene_duration
+                cues = timing.cues
                 cache_key = store.digest({
                     'renderer': 4,
                     'scene': scene,
@@ -381,7 +371,6 @@ def task_render_pipeline(self, job_id: str):
                         temp_cache.unlink(missing_ok=True)
 
                 scene_files.append(cached)
-                all_cues.extend([{**c, 'start': c['start'] + offset, 'end': c['end'] + offset} for c in cues])
                 report_scenes.append({
                     'scene_id': scene['id'],
                     'duration': length,
@@ -389,7 +378,6 @@ def task_render_pipeline(self, job_id: str):
                     'visual': store.asset(scene['video_asset']) if scene['visual'] != 'graphic' else {'provider': 'explicit graphic'},
                     'source_audio_muted': True
                 })
-                offset += length
 
             # 4. Assembly stage
             lease.check_ownership()
@@ -426,7 +414,11 @@ def task_render_pipeline(self, job_id: str):
             run([executable('ffmpeg'), '-v', 'error', '-xerror', '-i', final, '-f', 'null', '-'], timeout=600, job_id=job_id)
 
             # 7. Atomic publication
-            (temp / 'captions.srt').write_text('\n\n'.join(f"{i+1}\n{stamp(c['start'])} --> {stamp(c['end'])}\n{c['text']}" for i, c in enumerate(all_cues)) + '\n', 'utf-8')
+            (temp / 'captions.srt').write_text(to_srt(timeline.all_cues), 'utf-8')
+            manifest = timeline.to_manifest(
+                project_id=job_data['project_id'], revision=job_data['revision'], job_id=job_id,
+                dimensions=(width, height), measured_duration=float(info['format']['duration']))
+            (temp / 'timing-manifest.json').write_text(json.dumps(manifest, indent=2, ensure_ascii=False), 'utf-8')
             report = {
                 'project_id': job_data['project_id'],
                 'revision': job_data['revision'],
@@ -447,7 +439,7 @@ def task_render_pipeline(self, job_id: str):
                 'export_id': job_id,
                 'duration': report['duration'],
                 'dimensions': report['dimensions'],
-                'files': ['reel.mp4', 'captions.srt', 'source-report.json', 'project.json']
+                'files': ['reel.mp4', 'captions.srt', 'source-report.json', 'project.json', 'timing-manifest.json']
             }
 
             # Fencing check before committing final succeeded state

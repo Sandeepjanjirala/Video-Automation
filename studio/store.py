@@ -581,6 +581,8 @@ def publish_export(jid: str, directory: Path, result: Dict[str, Any]) -> None:
         destination.mkdir(parents=True, exist_ok=True)
         for name in ('reel.mp4', 'captions.srt', 'source-report.json', 'project.json'):
             shutil.copyfile(directory / name, destination / name)
+        if 'timing-manifest.json' in result.get('files', []):
+            shutil.copyfile(directory / 'timing-manifest.json', destination / 'timing-manifest.json')
         progress(jid, 'Complete', 'succeeded', result, stage_name='validation')
 
 
