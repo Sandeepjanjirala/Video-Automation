@@ -133,6 +133,30 @@ TELUGU_FONT = 'Nirmala UI' if os.name == 'nt' else 'Noto Sans Telugu'
 TELUGU_SCRIPT = re.compile(r'[ఀ-౿]')
 
 
+# Caption style presets as ASS colours (&HAABBGGRR, alpha 00 = opaque) and border settings.
+# 'classic' is the original style and must stay byte-identical. Box styles pad by a quarter
+# of the font size: BorderStyle 3 draws an OutlineColour box per line, BorderStyle 4 (libass
+# 0.17+) one BackColour box per caption, so translucent lines never overlap and darken.
+CAPTION_STYLES = {
+    'classic': {'primary': '&H00FFFFFF', 'outline_colour': '&H00120E0B', 'back': '&H88000000',
+                'border': 1, 'outline': 3, 'shadow': 1},
+    'black_box': {'primary': '&H00FFFFFF', 'outline_colour': '&H00000000', 'back': '&H00000000',
+                  'border': 3, 'outline': 'pad', 'shadow': 0},
+    'yellow_accent': {'primary': '&H0000D7FF', 'outline_colour': '&H00000000', 'back': '&H88000000',
+                      'border': 1, 'outline': 4, 'shadow': 2},
+    'translucent': {'primary': '&H00FFFFFF', 'outline_colour': '&H00000000', 'back': '&H66000000',
+                    'border': 4, 'outline': 'pad', 'shadow': 0},
+}
+
+
+def caption_style_line(name, font, project):
+    size = project['caption_size']
+    preset = CAPTION_STYLES[project.get('caption_style') or 'classic']
+    outline = round(size / 4) if preset['outline'] == 'pad' else preset['outline']
+    return (f"Style: {name},{font},{size},{preset['primary']},&H00FFFFFF,{preset['outline_colour']},{preset['back']},"
+            f"-1,0,0,0,100,100,0,0,{preset['border']},{outline},{preset['shadow']},2,90,140,{project['caption_bottom']},1")
+
+
 def write_ass(path, cues, project, title=None, total=0):
     # Fixed 1080p design coordinates are scaled by libass for draft resolution.
     header = f'''[Script Info]
@@ -143,8 +167,8 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,{project['caption_size']},&H00FFFFFF,&H00FFFFFF,&H00120E0B,&H88000000,-1,0,0,0,100,100,0,0,1,3,1,2,90,140,{project['caption_bottom']},1
-Style: Telugu,{TELUGU_FONT},{project['caption_size']},&H00FFFFFF,&H00FFFFFF,&H00120E0B,&H88000000,-1,0,0,0,100,100,0,0,1,3,1,2,90,140,{project['caption_bottom']},1
+{caption_style_line('Default', 'Arial', project)}
+{caption_style_line('Telugu', TELUGU_FONT, project)}
 Style: Title,Arial,78,&H00B9F8CF,&H00FFFFFF,&H00120E0B,&H00000000,-1,0,0,0,100,100,0,0,1,1,0,5,100,100,0,1
 
 [Events]

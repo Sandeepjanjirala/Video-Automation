@@ -121,6 +121,19 @@ narration** first. Measuring never synthesizes speech.
   Telugu-script captions render with Nirmala UI on Windows; the Docker image installs
   `fonts-noto-core` for Noto Sans Telugu.
 
+### Caption styles
+
+The **Caption style** panel on the Captions tab offers four presets for the whole reel:
+**Classic outline** (the original style, and the default for every existing project),
+**Black box** (a solid box behind each line), **Yellow accent** (yellow text, heavy
+outline) and **Translucent background** (one see-through panel per caption). Styles
+never change caption text, timings, size or bottom margin; size and margin can be set
+here or on the Export tab. The panel previews the style live over a scene's real frame;
+**Render exact caption** draws it with FFmpeg/libass exactly as draft and final exports
+do, including title-card scenes. Scene framing previews use the selected style too.
+Telugu captions use complex (HarfBuzz) shaping in every style, so joined letters render
+correctly. Box styles need libass 0.17 or newer (the bundled FFmpeg build has it).
+
 ### Framing preview
 
 Each scene with an uploaded or stock video or image shows a 9:16 preview of exactly

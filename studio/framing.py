@@ -221,3 +221,17 @@ def preview_frame(scene, path, source, width, height, source_time, work, project
     output = Path(work) / 'frame.jpg'
     run(args + ['-frames:v', '1', '-vf', vf, '-q:v', '2', output], cwd=work, timeout=90)
     return output.read_bytes(), g
+
+
+def title_frame(scene, width, height, work, project, caption=''):
+    """A title-card scene's frame, as the renderer draws it, one second in (after the title fades in)."""
+    from .media import run, write_ass
+    cues = [{'start': 0, 'end': 60, 'text': caption.strip()}] if caption.strip() else []
+    write_ass(Path(work) / 'captions.ass', cues, project, scene.get('graphic_title') or None, 60)
+    vf = (f"drawbox=x=0:y={int(height * .24)}:w=iw:h=4:color=0xB9F8CF:t=fill,subtitles=captions.ass,"
+          'scale=in_color_matrix=bt709:in_range=tv:out_color_matrix=bt601:out_range=pc')
+    output = Path(work) / 'frame.jpg'
+    run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi',
+         '-i', f'color=c={BACKGROUND}:s={width}x{height}:r=30:d=2', '-vf', vf, '-ss', '1', '-frames:v', '1',
+         '-q:v', '2', output], cwd=work, timeout=90)
+    return output.read_bytes()

@@ -13,8 +13,6 @@
   const ASPECTS = {'full': null, '4:5': [4, 5], '1:1': [1, 1], '16:9': [16, 9]};
   const ASPECT_LABELS = [['full', 'Full vertical 9:16'], ['4:5', 'Portrait 4:5'], ['1:1', 'Square 1:1'], ['16:9', 'Widescreen 16:9']];
   const RESET = {fit: 'crop', frame_aspect: 'full', zoom: 1, crop_x: 0.5, crop_y: 0.5};
-  // libass sizes text so ascent + descent equals Fontsize; CSS sizes the em box.
-  const CAPTION_EM = 0.895;
   const esc = value => $('<div>').text(value == null ? '' : value).html().replace(/"/g, '&quot;');
 
   const infos = {};   // asset id -> Promise of /assets/<id>/framing
@@ -232,14 +230,9 @@
   }
 
   function renderCaption($card, s) {
-    const p = StudioState.current.project;
+    // Drawn in the project's caption style (captionstyle.js mirrors media.CAPTION_STYLES).
     const text = $card.find('.framing-captions').is(':checked') ? captionSample(s) : '';
-    const size = num(p.caption_size, 56), bottom = num(p.caption_bottom, 300);
-    $card.find('.framecaption')
-      .prop('hidden', !text)
-      .attr('lang', /[ఀ-౿]/.test(text) ? 'te' : 'en')
-      .css({bottom: pct(bottom, H), left: pct(90, W), right: pct(140, W), fontSize: (size * CAPTION_EM / W * 100) + 'cqw'})
-      .text(wrap(text, 32).join('\n'));
+    StudioCaptionStyle.overlay($card.find('.framecaption'), text, StudioState.current.project);
   }
 
   function describeTrim($card, s, source) {
@@ -342,6 +335,7 @@
     const p = StudioState.current.project, pid = StudioState.current.id;
     const video = $card.find('video.framemedia')[0];
     const body = {scene: s, quality: 'final', caption_size: p.caption_size, caption_bottom: p.caption_bottom,
+                  caption_style: StudioCaptionStyle.styleOf(p),
                   caption: $card.find('.framing-captions').is(':checked') ? captionSample(s) : ''};
     if (video) body.source_time = Math.round(video.currentTime * 1000) / 1000;
     const seq = exactSeq[sid] = (exactSeq[sid] || 0) + 1;

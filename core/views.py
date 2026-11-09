@@ -537,9 +537,17 @@ class ProjectCaptionTimingView(APIView):
         return Response({'scenes': captions.project_timing(speech, voice_jobs)})
 
 
+def caption_settings(data, saved):
+    """Caption size, margin and style from an unsaved editor body, falling back to the saved project."""
+    return PydanticProject.model_validate({
+        field: data.get(field, saved.get(field, default))
+        for field, default in (('caption_size', 56), ('caption_bottom', 300), ('caption_style', 'classic'))
+    }).model_dump()
+
+
 class ProjectFramingPreviewView(APIView):
     """POST /api/projects/{pid}/framing-preview - One JPEG frame rendered with the export's filters.
-    Body: {scene, source_time?, caption?, quality?: 'final'|'draft', caption_size?, caption_bottom?}.
+    Body: {scene, source_time?, caption?, quality?: 'final'|'draft', caption_size?, caption_bottom?, caption_style?}.
     Uses the editor's unsaved scene; never saves. Geometry is returned in X-Framing-Geometry.
     """
 
@@ -552,11 +560,7 @@ class ProjectFramingPreviewView(APIView):
             scene = PydanticScene.model_validate(data.get('scene')).model_dump()
             if scene['visual'] == 'graphic' or not scene['video_asset']:
                 raise ValueError('Choose a video or image for this scene first')
-            saved = proj.body or {}
-            settings_body = PydanticProject.model_validate({
-                'caption_size': data.get('caption_size', saved.get('caption_size', 56)),
-                'caption_bottom': data.get('caption_bottom', saved.get('caption_bottom', 300)),
-            }).model_dump()
+            settings_body = caption_settings(data, proj.body or {})
             caption = str(data.get('caption') or '')[:160]
             source_time = data.get('source_time')
             source_time = None if source_time in (None, '') else float(source_time)
@@ -576,6 +580,38 @@ class ProjectFramingPreviewView(APIView):
         response = HttpResponse(image, content_type='image/jpeg')
         response['Cache-Control'] = 'no-store'
         response['X-Framing-Geometry'] = json.dumps(geometry)
+        return response
+
+
+class ProjectCaptionPreviewView(APIView):
+    """POST /api/projects/{pid}/caption-preview - A scene frame with a caption in the chosen style.
+    Same body as framing-preview, but title-card scenes are allowed (drawn as the renderer does).
+    Captions use media.write_ass, so this is exactly what draft and final exports draw.
+    """
+
+    def post(self, request, pid: str, *args, **kwargs):
+        proj = Project.objects.filter(id=pid).first()
+        if not proj:
+            return Response({'detail': 'Project not found'}, status=status.HTTP_400_BAD_REQUEST)
+        data = request.data if isinstance(request.data, dict) else {}
+        try:
+            scene = PydanticScene.model_validate(data.get('scene')).model_dump()
+            if scene['visual'] != 'graphic':
+                return ProjectFramingPreviewView().post(request, pid)
+            settings_body = caption_settings(data, proj.body or {})
+            width, height = (540, 960) if data.get('quality') == 'draft' else (1080, 1920)
+            work = DATA / 'tmp' / f'framing_{uuid.uuid4().hex}'
+            work.mkdir(parents=True, exist_ok=True)
+            try:
+                image = framing.title_frame(scene, width, height, work, settings_body, str(data.get('caption') or '')[:160])
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
+        except pydantic.ValidationError as err:
+            return Response({'detail': err.errors(include_context=False)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        except (TypeError, ValueError) as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        response = HttpResponse(image, content_type='image/jpeg')
+        response['Cache-Control'] = 'no-store'
         return response
 
 

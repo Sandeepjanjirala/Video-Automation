@@ -52,6 +52,7 @@ const StudioApp = (() => {
       StudioProjects.updatePreflight();
     }
     StudioCaptions.onTabChange(tab);
+    StudioCaptionStyle.onTabChange(tab);
   }
 
   function updateBusyState(busy) {
@@ -136,6 +137,7 @@ $(document).ready(() => {
   StudioProjects.init();
   StudioCaptions.init();
   StudioFraming.init();
+  StudioCaptionStyle.init();
   StudioSettings.init();
   StudioApp.init();
 });

@@ -25,3 +25,24 @@
 .framingcontrols input[type=range]:disabled{opacity:.4}
 @media(max-width:1050px){.scenegrid{grid-template-columns:200px 1fr}}
 @media(max-width:740px){.scenegrid{grid-template-columns:1fr}.framing{margin:0 auto;width:100%}}
+/* Stage 4 caption styles: CSS mirrors of media.CAPTION_STYLES (sizes in cqw of the 1080-wide frame). */
+.framecaption{white-space:normal;line-height:1.12}
+.framecaption.capstyle-classic,.framecaption.capstyle-yellow_accent{-webkit-text-stroke:.56cqw #0b0e12;paint-order:stroke fill;text-shadow:.1cqw .1cqw 0 #00000078}
+.framecaption.capstyle-yellow_accent{color:#ffd700;-webkit-text-stroke:.74cqw #000;text-shadow:.19cqw .19cqw 0 #00000078}
+.framecaption.capstyle-black_box,.framecaption.capstyle-translucent{-webkit-text-stroke:0;text-shadow:none}
+.framecaption.capstyle-black_box .capline{background:#000;padding:var(--cap-pad);-webkit-box-decoration-break:clone;box-decoration-break:clone}
+.framecaption.capstyle-translucent .capblock{display:inline-block;background:rgba(0,0,0,.6);padding:var(--cap-pad)}
+.stylegrid{display:grid;grid-template-columns:1fr 270px;gap:28px;align-items:start}
+.styleoptions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin:8px 0 6px}
+.stylecard{position:relative;display:flex;flex-direction:column;gap:6px;border:1px solid var(--line);border-radius:10px;padding:10px;cursor:pointer;background:#fff}
+.stylecard.selected{border-color:var(--green);box-shadow:0 0 0 2px #d4eeba}
+.stylecard input{position:absolute;top:8px;left:8px;width:1px;height:1px;margin:0;opacity:0;pointer-events:none}
+.stylecard b{font-size:13px}
+.stylecard:focus-within{outline:2px solid #8bae7a;outline-offset:2px}
+.stylesample{position:relative;display:block;height:92px;border-radius:7px;overflow:hidden;container-type:inline-size;background:linear-gradient(135deg,#7fb8d8 0%,#f2d38a 55%,#e9eef0 100%)}
+.stylesample .framecaption{bottom:auto!important;top:50%;transform:translateY(-50%);left:4%!important;right:4%!important;font-size:8cqw!important;line-height:10cqw!important;--cap-pad:2cqw!important;white-space:nowrap}
+.stylepreview{display:flex;flex-direction:column;gap:8px}
+#caption-style-bg:not([src]){display:none}
+@media(max-width:1050px){.stylegrid{grid-template-columns:1fr 220px}}
+@media(max-width:740px){.stylegrid,.styleoptions{grid-template-columns:1fr}.stylepreview{max-width:320px;margin:0 auto;width:100%}}
+button[hidden]{display:none}

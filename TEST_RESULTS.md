@@ -1,3 +1,43 @@
+# Stage 4: caption style presets — 9 November 2026
+
+Implemented in Django + jQuery on `improve/free-preview-editor`, on top of the
+uncommitted Stage 1–3 work. No commits, pushes, merges or deletions. No database
+migrations (projects are JSON). Stage 5 was not started.
+
+- `Project.caption_style`: `classic` (default; projects saved before Stage 4 load as
+  classic), `black_box`, `yellow_accent`, `translucent`. Invalid values return 422.
+- `media.CAPTION_STYLES` / `caption_style_line`: ASS presets for both the Arial (Roman)
+  and Telugu-font styles. Classic output is byte-identical to the previous header.
+  Black box uses BorderStyle 3 (box per line), translucent BorderStyle 4 (one 60%-opaque
+  panel per caption); box padding is a quarter of the caption size. The scene render
+  cache key now includes the style.
+- `POST /api/projects/<pid>/caption-preview`: one exact JPEG frame with a caption in the
+  requested style, for media scenes (Stage 3 framing pipeline) and title cards (drawn as
+  the renderer does). `framing-preview` also honours `caption_style`; its Stage 3 rules
+  (title cards rejected) are unchanged.
+- UI: Caption style panel on the Captions tab (four swatches, size/margin synced with the
+  Export tab, scene and preview-text choice, live preview over the scene's FFmpeg frame,
+  Render exact caption). `captionstyle.js` mirrors the presets in CSS and is used by the
+  Stage 3 scene previews.
+- Fixed: `button[hidden]` was shown because the global button rule overrode `hidden`
+  (affected Stage 3's "Back to live preview" and the new panel).
+
+Verification: **72 tests passed in 64.12 seconds** (63 previous + 9 new): classic header
+unchanged and old projects stay classic; preset fields, size, margin and fonts; Telugu
+complex shaping in every style (default render identical to `shaping=complex`, different
+from `simple`); exact caption preview vs draft and final exports for all four styles on a
+video scene and a title card (caption band PSNR 40.0–45.2 dB; wrong style 14.9–16.4 dB;
+styles distinct in exports); style picker DOM behaviour.
+
+Real Chrome (`test-outputs/stage4/`, project `8130c2a4f1c1462c80a705171a4ce463`): Edge
+Mohan narration; scene 1 captions reset to Telugu script in the caption editor and saved;
+each style selected in the panel, saved, approved and exported as draft and final. Export
+vs exact caption (draft/final): classic 37.97/39.63 dB; black box 33.42/34.8 dB; yellow accent 36.64/36.86 dB; translucent 34.02/35.74 dB; title card 38.8–44.9 dB. Final-export caption
+bounding boxes equal the exact preview's in every style; live browser captions are within
+4–16 px of 1080. Cues, size and margin unchanged after every style change. No page
+errors; no horizontal overflow at 390 px. The Stage 3 Chrome workflow was re-run after
+these changes with identical results.
+
 # Stage 3: accurate video and image framing previews — 6 November 2026
 
 Implemented in Django + jQuery on `improve/free-preview-editor`, on top of the

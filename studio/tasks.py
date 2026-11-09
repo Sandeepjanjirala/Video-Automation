@@ -319,7 +319,8 @@ def task_render_pipeline(self, job_id: str):
                     'speed': speed,
                     'width': width,
                     'caption_size': p['caption_size'],
-                    'caption_bottom': p['caption_bottom']
+                    'caption_bottom': p['caption_bottom'],
+                    'caption_style': p.get('caption_style', 'classic')
                 })
                 cached = DATA / 'cache' / (cache_key + '.scene.mp4')
 

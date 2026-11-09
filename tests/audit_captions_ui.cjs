@@ -9,7 +9,7 @@ const path = require('node:path');
   const w = dom.window;
   const root = path.join(__dirname, '..', 'studio', 'static');
   w.eval(fs.readFileSync(path.join(root, 'vendor/jquery.min.js'), 'utf8'));
-  for (const name of ['state', 'workflow', 'framing', 'scenes', 'projects', 'voice', 'jobs', 'media', 'captions']) {
+  for (const name of ['state', 'workflow', 'captionstyle', 'framing', 'scenes', 'projects', 'voice', 'jobs', 'media', 'captions']) {
     w.eval(fs.readFileSync(path.join(root, 'js', name + '.js'), 'utf8'));
   }
   const $ = w.jQuery;

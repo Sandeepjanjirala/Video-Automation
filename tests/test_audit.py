@@ -1102,3 +1102,133 @@ def test_framing_fields_validate_and_old_scenes_keep_defaults(tmp_path):
     res = client().post('/api/projects', {**body, 'scenes': [{**body['scenes'][0], 'trim_start': 1, 'trim_end': 0.5}]},
                         content_type='application/json')
     assert res.status_code == 422
+
+
+# Stage 4: caption style presets ---------------------------------------------------------
+
+STYLES = ('classic', 'black_box', 'yellow_accent', 'translucent')
+# The ASS styles every render used before presets existed; 'classic' must reproduce them.
+ORIGINAL_STYLE_LINES = [
+    'Style: Default,Arial,56,&H00FFFFFF,&H00FFFFFF,&H00120E0B,&H88000000,-1,0,0,0,100,100,0,0,1,3,1,2,90,140,300,1',
+    f'Style: Telugu,{media.TELUGU_FONT},56,&H00FFFFFF,&H00FFFFFF,&H00120E0B,&H88000000,-1,0,0,0,100,100,0,0,1,3,1,2,90,140,300,1',
+]
+
+
+def style_lines(tmp_path, **settings):
+    path = tmp_path / 'styles.ass'
+    media.write_ass(path, [{'start': 0, 'end': 1, 'text': TELUGU_LINE}], {'caption_size': 56, 'caption_bottom': 300, **settings})
+    return [line for line in path.read_text('utf-8').splitlines() if line.startswith(('Style: Default', 'Style: Telugu'))]
+
+
+def test_existing_projects_keep_classic_captions_unchanged(tmp_path):
+    legacy = project()
+    legacy.pop('caption_style', None)
+    assert Project.model_validate(legacy).caption_style == 'classic'
+    assert style_lines(tmp_path) == ORIGINAL_STYLE_LINES                    # body without the field
+    assert style_lines(tmp_path, caption_style='classic') == ORIGINAL_STYLE_LINES
+    saved = store.save_project(legacy)
+    assert saved['project']['caption_style'] == 'classic'
+    c = client()
+    assert c.post('/api/projects', {**project(), 'caption_style': 'neon'}, content_type='application/json').status_code == 422
+    pid = c.post('/api/projects', {**project(), 'caption_style': 'black_box'}, content_type='application/json').json()['id']
+    body = c.get(f'/api/projects/{pid}').json()['project']
+    assert body['caption_style'] == 'black_box'
+    # Editing something else never resets the chosen style.
+    body['title'] = 'Renamed'
+    res = c.put(f'/api/projects/{pid}', {'revision': 1, 'project': body}, content_type='application/json')
+    assert res.status_code == 200 and res.json()['project']['caption_style'] == 'black_box'
+
+
+def test_caption_style_presets_keep_size_position_and_fonts(tmp_path):
+    seen = set()
+    for style in STYLES:
+        default, telugu = style_lines(tmp_path, caption_style=style, caption_size=64, caption_bottom=420)
+        d, t = default.split(','), telugu.split(',')
+        assert d[1] == 'Arial' and t[1] == media.TELUGU_FONT
+        assert d[2:] == t[2:], style                                       # same look for both scripts
+        assert (d[2], d[-2], d[-5]) == ('64', '420', '2')                   # size, bottom margin, bottom-centre
+        preset = media.CAPTION_STYLES[style]
+        assert (d[3], d[5], d[6], d[15]) == (preset['primary'], preset['outline_colour'], preset['back'], str(preset['border']))
+        if preset['outline'] == 'pad':
+            assert d[16] == '16'                                            # box padding: a quarter of the size
+        seen.add(tuple(d[3:18]))
+    assert len(seen) == 4
+
+
+@pytest.mark.parametrize('style', STYLES)
+def test_telugu_captions_use_complex_shaping_in_every_style(tmp_path, style):
+    """Joined letters (conjuncts, vowel signs) need HarfBuzz shaping; the export's default must apply it."""
+    ass = tmp_path / 'captions.ass'
+    media.write_ass(ass, [{'start': 0, 'end': 5, 'text': 'క్షమించండి శ్రీ స్త్రీ ద్వారం'}],
+                    {'caption_size': 64, 'caption_bottom': 300, 'caption_style': style})
+    frames = {}
+    for shaping in ('', ':shaping=complex', ':shaping=simple'):
+        out = tmp_path / f'shape{shaping.replace(":", "_").replace("=", "")}.png'
+        media.run([executable('ffmpeg'), '-v', 'error', '-y', '-f', 'lavfi', '-i', 'color=c=0x406080:s=1080x1920',
+                   '-vf', f'subtitles=captions.ass{shaping}', '-frames:v', '1', out], cwd=tmp_path)
+        frames[shaping] = out
+    assert psnr(frames[''], frames[':shaping=complex']) == float('inf')     # exports shape Telugu
+    assert psnr(frames[''], frames[':shaping=simple']) < 40                  # and shaping changes the glyphs
+
+
+def caption_band(path, out):
+    """The caption area (y 1250-1800 of 1080x1920), where every style draws."""
+    ffmpeg('-i', path, '-vf', 'scale=1080:1920:flags=area,crop=1080:550:0:1250', '-frames:v', '1', out)
+    return out
+
+
+@pytest.mark.parametrize('quality,dimensions', [('draft', (540, 960)), ('final', (1080, 1920))])
+def test_caption_style_preview_matches_draft_and_final_exports(tmp_path, quality, dimensions):
+    footage = tmp_path / 'footage.mp4'
+    ffmpeg('-f', 'lavfi', '-i', 'testsrc2=s=1280x720:r=30:d=3', '-c:v', 'libx264', '-crf', '10', '-pix_fmt', 'yuv420p', footage)
+    clip = upload_file(footage)
+    telugu = 'నమస్కారం, శ్రీ క్షేత్రం కథ'
+    pid, body = framing_project([
+        {'id': 'clip', 'visual': 'upload', 'video_asset': clip['id'], 'zoom': 1.2,
+         'cues': [{'start': 0, 'end': 1.9, 'text': telugu}]},
+        {'id': 'title', 'visual': 'graphic', 'graphic_title': 'Mana katha',
+         'cues': [{'start': 0, 'end': 1.9, 'text': 'Idi oka chinna pariksha mana Telugu katha ikkada'}]},
+    ], tmp_path)
+    c = client()
+    bands, scores = {}, {}
+    for style in STYLES:
+        current = c.get(f'/api/projects/{pid}').json()
+        current['project']['caption_style'] = style
+        saved = c.put(f'/api/projects/{pid}', {'revision': current['revision'], 'project': current['project']},
+                      content_type='application/json')
+        assert saved.status_code == 200, saved.content
+        directory, manifest = render_over_http(pid, quality)
+        assert [cue['text'] for cue in manifest['all_cues']] == [telugu, body['scenes'][1]['cues'][0]['text']]
+        reel = directory / 'reel.mp4'
+        for scene, at in (('clip', 0.5), ('title', 1.0)):
+            data = next(s for s in body['scenes'] if s['id'] == scene)
+            res = c.post(f'/api/projects/{pid}/caption-preview',
+                         {'scene': data, 'source_time': 0.5 if scene == 'clip' else None, 'caption': data['cues'][0]['text'],
+                          'quality': quality, 'caption_style': style}, content_type='application/json')
+            assert res.status_code == 200, res.content
+            preview = tmp_path / f'{style}-{scene}.jpg'
+            preview.write_bytes(res.content)
+            assert media.probe(preview, allow_still=True)['streams'][0]['width'] == dimensions[0]
+            offset = next(s['start_frame'] for s in manifest['scenes'] if s['scene_id'] == scene)
+            exported = tmp_path / f'{style}-{scene}-export.png'
+            ffmpeg('-i', reel, '-vf', f'select=eq(n\\,{offset + round(at * 30)})', '-frames:v', '1', exported)
+            a = caption_band(preview, tmp_path / f'{style}-{scene}-a.png')
+            b = caption_band(exported, tmp_path / f'{style}-{scene}-b.png')
+            bands[(style, scene)] = (a, b)
+            score = scores[f'{style}/{scene}'] = psnr(a, b)
+            assert score > 30, (style, scene, score)
+    # Each style looks different in the export, and a mismatched preview is detected.
+    for scene in ('clip', 'title'):
+        for one, two in zip(STYLES, STYLES[1:]):
+            assert psnr(bands[(one, scene)][1], bands[(two, scene)][1]) < 30, (one, two, scene)
+    scores['wrong_style'] = psnr(bands[('classic', 'clip')][0], bands[('black_box', 'clip')][1])
+    assert scores['wrong_style'] < 25
+    (DATA.parent / f'caption-style-psnr-{quality}.json').write_text(json.dumps(scores), 'utf-8')
+    graphic = c.post(f'/api/projects/{pid}/framing-preview', {'scene': body['scenes'][1]}, content_type='application/json')
+    assert graphic.status_code == 422                                          # Stage 3 behaviour unchanged
+
+
+def test_caption_style_picker_dom_behaviour():
+    page = DATA.parent / 'caption-style.html'
+    page.write_bytes(client().get('/').content)
+    subprocess.run(['node', 'tests/audit_caption_style_ui.cjs', str(page)], check=True, timeout=60)

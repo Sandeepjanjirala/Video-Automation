@@ -70,6 +70,7 @@
       music_rights_reviewed: false,
       caption_size: 56,
       caption_bottom: 300,
+      caption_style: 'classic',
       script_approved_hash: '',
       draft_script: ''
     };
