@@ -1,0 +1,23 @@
+# HTTPS on a server with a domain name (Caddy gets and renews the certificate):
+#   STUDIO_DOMAIN=studio.example.com STUDIO_PASSWORD='a long password' #     docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --build
+# Point the domain's DNS A record at the server first and open ports 80 and 443.
+services:
+  api:
+    environment:
+      - STUDIO_BEHIND_PROXY=1
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: studio-caddy
+    restart: unless-stopped
+    command: ["caddy", "reverse-proxy", "--from", "${STUDIO_DOMAIN:?Set STUDIO_DOMAIN to your domain name}", "--to", "api:8788"]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+    depends_on:
+      - api
+
+volumes:
+  caddy_data:

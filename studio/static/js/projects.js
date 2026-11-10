@@ -45,6 +45,20 @@
       $(document).on('click', '.project-item, .project', function() {
         const pid = $(this).data('id');
         if (pid) Projects.switchProject(pid);
+        Projects.toggleDrawer(false);
+      });
+
+      // Phones: the project list and Settings live in a drawer opened from the top bar.
+      $(document).on('click', '#btn-mobile-projects', function(e) {
+        e.stopPropagation();
+        Projects.toggleDrawer(!$('body').hasClass('drawer-open'));
+      });
+      $(document).on('click', function(e) {
+        if ($('body').hasClass('drawer-open') && !$(e.target).closest('#studio-sidebar').length) Projects.toggleDrawer(false);
+      });
+      $(document).on('click', '#btn-new-project, #btn-open-settings', function() { Projects.toggleDrawer(false); });
+      $(document).on('keydown', function(e) {
+        if (e.key === 'Escape') Projects.toggleDrawer(false);
       });
 
       $(document).on('click', '#btn-new-story, #btn-new-project, #btn-welcome-create', function() {
@@ -57,6 +71,15 @@
 
       $(document).on('click', '#btn-approve-project, #btn-approve-script, #btn-approve-voice, #btn-approve-captions, #btn-approve-export', function() {
         Projects.approveRevision();
+      });
+
+      $(document).on('click', '.project-delete', function(e) {
+        e.stopPropagation();
+        Projects.deleteProject($(this).data('id'));
+      });
+
+      $(document).on('click', '#btn-delete-project', function() {
+        if (StudioState.current) Projects.deleteProject(StudioState.current.id);
       });
 
       $(document).on('click', '#btn-history-modal, #btn-open-history', function() {
@@ -82,7 +105,7 @@
       });
 
       // Form input change handlers
-      $(document).on('input change', '#input-project-title, #select-project-category, #input-project-topic, #textarea-project-topic, #textarea-evidence-notes, #select-project-tone, #select-project-duration, #input-target-seconds, #select-duration-mode, .project-field-bind', function() {
+      $(document).on('input change', '#input-project-title, #select-project-category, #select-project-format, #input-project-topic, #textarea-project-topic, #textarea-evidence-notes, #select-project-tone, #select-project-duration, #input-target-seconds, #select-duration-mode, .project-field-bind', function() {
         if (!StudioState.current || !StudioState.current.project) return;
         const p = StudioState.current.project;
         const id = $(this).attr('id');
@@ -97,8 +120,11 @@
           p.evidence_notes = $(this).val();
         } else if (id === 'select-project-tone') {
           p.delivery_preset = $(this).val();
+        } else if (id === 'select-project-format') {
+          if (!Projects.changeFormat($(this).val())) return;
         } else if (id === 'select-project-duration') {
           p.target_seconds = parseInt($(this).val(), 10) || 60;
+          Projects.renderProjectList();
         } else {
           const field = $(this).data('field');
           if (field) {
@@ -111,6 +137,11 @@
         StudioState.markDirty(true);
         Projects.triggerAutosave();
         Projects.updateHeaderBadges();
+      });
+
+      // The captions switch appears on two tabs; keep both in step.
+      $(document).on('change', '.captions-enabled-toggle', function() {
+        $('.captions-enabled-toggle').prop('checked', $(this).is(':checked'));
       });
 
       $(document).on('studio:dirty-changed studio:busy-ended', function() {
@@ -137,17 +168,111 @@
       StudioState.projects.forEach(function(r) {
         const activeClass = (r.id === curId) ? ' active' : '';
         const title = r.project.title || 'Untitled story';
-        const cat = r.project.category || 'Storytelling';
-        const dur = r.project.target_seconds || 60;
+        const fmt = StudioState.formatOf(r.project);
+        const dur = Projects.durationLabel(r.project.target_seconds || 60);
 
-        const $btn = $(`
-          <button type="button" class="project project-item${activeClass}" data-id="${r.id}">
-            <b>${$('<div>').text(title).html()}</b>
-            <small>${cat} · ${dur}s target</small>
-          </button>
+        const $row = $(`
+          <div class="projectrow">
+            <button type="button" class="project project-item${activeClass}" data-id="${r.id}">
+              <b>${$('<div>').text(title).html()}</b>
+              <small>${fmt.short} · ${dur} target</small>
+            </button>
+            <button type="button" class="project-delete" data-id="${r.id}">&#128465;</button>
+          </div>
         `);
-        $nav.append($btn);
+        $row.find('.project-delete').attr({title: 'Delete this project', 'aria-label': 'Delete ' + title});
+        $nav.append($row);
       });
+    },
+
+    // Permanent: the server removes the project's revisions, jobs, voice takes and rendered videos.
+    // Clips in the media library stay because other projects can use them.
+    deleteProject: function(pid) {
+      const row = StudioState.projects.find(p => p.id === pid);
+      const title = (row && row.project && row.project.title) || 'Untitled story';
+      const isCurrent = !!(StudioState.current && StudioState.current.id === pid);
+      if (isCurrent && window.StudioAutopilot && StudioAutopilot.isRunning()) {
+        StudioState.setNotice('Wait for "Create draft video automatically" to finish before deleting this project.', true);
+        return Promise.resolve(false);
+      }
+      if (!confirm(`Delete "${title}" permanently?\n\nIts scenes, revision history, voice takes, production jobs and `
+          + 'rendered videos are removed. This cannot be undone. Clips in the media library are kept.')) {
+        return Promise.resolve(false);
+      }
+      StudioState.setBusy(true);
+      return StudioApi.request('/projects/' + pid, 'DELETE')
+        .then(function(res) {
+          StudioState.setProjects(StudioState.projects.filter(p => p.id !== pid));
+          StudioState.setNotice(`Deleted "${res.title}".`);
+          if (!isCurrent) {
+            Projects.renderProjectList();
+            return true;
+          }
+          clearTimeout(autosaveTimer);
+          StudioState.current = null;
+          StudioState.markDirty(false);
+          StudioState.draftRecoverable = null;
+          Projects.renderProjectList();
+          const next = StudioState.projects[0];
+          if (next) return Projects.loadProject(next.id).then(() => true);
+          Projects.populateEditor();
+          return true;
+        })
+        .catch(function(err) {
+          StudioState.setNotice(err.message, true);
+          return false;
+        })
+        .finally(function() {
+          StudioState.setBusy(false);
+        });
+    },
+
+    toggleDrawer: function(open) {
+      $('body').toggleClass('drawer-open', !!open);
+      $('#btn-mobile-projects').attr('aria-expanded', open ? 'true' : 'false');
+    },
+
+    durationLabel: function(seconds) {
+      return seconds >= 120 ? Math.round(seconds / 60) + ' min' : seconds + 's';
+    },
+
+    /** Format choice, duration options and every format-dependent label for project `p`. */
+    renderFormat: function(p) {
+      const fmt = StudioState.formatOf(p), [dw, dh] = fmt.draft;
+      $('#select-project-format').val(p.format || 'reel');
+      const options = fmt.durations.slice();
+      if (!options.some(([v]) => v === p.target_seconds)) options.push([p.target_seconds, Projects.durationLabel(p.target_seconds) + ' (custom)']);
+      $('#select-project-duration').html(options.sort((a, b) => a[0] - b[0])
+        .map(([v, l]) => `<option value="${v}">${l}</option>`).join('')).val(String(p.target_seconds));
+      $('#format-hint').text(p.format === 'youtube'
+        ? `1920×1080 landscape, up to ${fmt.maxScenes} scenes; the picture changes about every 6 seconds. Paste a long script below and use "Create draft video automatically".`
+        : `1080×1920 vertical, up to ${fmt.maxScenes} scenes; the picture changes about every 4 seconds.`);
+      $('#badge-format').text(`${fmt.short} ${fmt.aspect}`);
+      $('.format-size').text(`${fmt.width}×${fmt.height}`);
+      $('.format-draft-size').text(`${dw}×${dh}`);
+      $('.format-name').text(fmt.label);
+      $('body').toggleClass('format-youtube', p.format === 'youtube');
+    },
+
+    /** Switch the open project between a reel and a YouTube video; false when not allowed. */
+    changeFormat: function(format) {
+      const p = StudioState.current.project, fmt = StudioState.FORMATS[format];
+      if (!fmt) return false;
+      if ((p.scenes || []).length > fmt.maxScenes) {
+        StudioState.setNotice(`${fmt.label} supports up to ${fmt.maxScenes} scenes; this project has ${p.scenes.length}.`, true);
+        $('#select-project-format').val(p.format || 'reel');
+        return false;
+      }
+      p.format = format;
+      // Keep the target inside the format's range: a reel lasts up to 3 minutes, a YouTube video is long-form.
+      if (p.target_seconds > fmt.maxSeconds || (format === 'youtube' && p.target_seconds < 300)) {
+        p.target_seconds = format === 'youtube' ? 600 : 60;
+      }
+      Projects.renderFormat(p);
+      Projects.renderProjectList();
+      if (window.Scenes && Scenes.renderSceneVisuals) Scenes.renderSceneVisuals();
+      $(document).trigger('studio:format-changed');
+      return true;
     },
 
     switchProject: function(pid) {
@@ -367,15 +492,16 @@
       $('#select-duration-mode').val(p.duration_mode || 'natural');
       $('#textarea-draft-script, #input-import-script').val(p.draft_script || '');
       $('#select-project-tone').val(p.delivery_preset || 'conversational');
-      $('#select-project-duration').val(String(p.target_seconds));
+      Projects.renderFormat(p);
       $('#textarea-evidence-notes').val(p.evidence_notes || '');
 
       // Export settings
+      $('.captions-enabled-toggle').prop('checked', p.captions_enabled !== false);
       $('#range-caption-size').val(p.caption_size || 56);
       $('#caption-size-val').text(p.caption_size || 56);
       $('#range-caption-bottom').val(p.caption_bottom || 300);
       $('#caption-bottom-val').text(p.caption_bottom || 300);
-      $('#export-target-seconds').text((p.target_seconds || 60) + 's');
+      $('#export-target-seconds').text(Projects.durationLabel(p.target_seconds || 60));
       $('#export-duration-mode-desc').text(p.duration_mode === 'natural' ? 'Target guide · natural pace' : 'Target fit · bounded speed');
 
       Projects.updateHeaderBadges();

@@ -9,7 +9,7 @@
 (function($) {
   'use strict';
 
-  const W = 1080, H = 1920;
+  const dims = () => [StudioState.format().width, StudioState.format().height];
   const STYLES = {
     classic: {label: 'Classic outline', note: 'White text with a dark outline (the original style).'},
     black_box: {label: 'Black box', note: 'White text on a solid black box behind each line.'},
@@ -47,18 +47,20 @@
   }
 
   function cq(px) {
-    return (px / W * 100) + 'cqw';
+    return (px / dims()[0] * 100) + 'cqw';
   }
 
   /** Draw `text` into a .framecaption element the way the export will place and style it. */
   function overlay($cap, text, p) {
     text = String(text || '').trim();
     const style = styleOf(p), lang = TELUGU.test(text) ? 'te' : 'en';
-    const size = num(p && p.caption_size, 56), bottom = num(p && p.caption_bottom, 300);
-    const lines = StudioFraming.wrap(text, 32).map(line => `<span class="capline">${esc(line)}</span>`);
+    // Same placement as media.write_ass for the project's format (studio/formats.py).
+    const fmt = StudioState.formatOf(p), [W, H] = [fmt.width, fmt.height];
+    const size = num(p && p.caption_size, 56), bottom = StudioState.captionMargin(p);
+    const lines = StudioFraming.wrap(text, fmt.captionChars).map(line => `<span class="capline">${esc(line)}</span>`);
     const html = style === 'translucent' ? `<span class="capblock">${lines.join('<br>')}</span>` : lines.join('<br>');
     $cap.attr('class', 'framecaption capstyle-' + style).attr('lang', lang).prop('hidden', !text)
-      .css({bottom: (bottom / H * 100) + '%', left: (90 / W * 100) + '%', right: (140 / W * 100) + '%',
+      .css({bottom: (bottom / H * 100) + '%', left: (fmt.sides[0] / W * 100) + '%', right: (fmt.sides[1] / W * 100) + '%',
             fontSize: cq(size * emFactor(lang)), lineHeight: cq(size), '--cap-pad': cq(Math.round(size / 4))})
       .html(html);
   }
@@ -98,7 +100,7 @@
   function request(s, caption) {
     const p = StudioState.current.project;
     return StudioApi.blob('/projects/' + StudioState.current.id + '/caption-preview', {
-      scene: s, source_time: sourceTime(s), caption: caption, quality: 'final',
+      scene: s, source_time: sourceTime(s), caption: caption, quality: 'final', format: p.format || 'reel',
       caption_size: p.caption_size, caption_bottom: p.caption_bottom, caption_style: styleOf(p)});
   }
 

@@ -7,7 +7,7 @@ import subprocess
 import textwrap
 from pathlib import Path
 from .config import DATA, executable, settings
-from . import store
+from . import formats, store
 
 
 def run(args, cwd=None, timeout=1800, job_id=None):
@@ -158,16 +158,20 @@ def caption_style_line(name, font, project):
     size = project['caption_size']
     preset = CAPTION_STYLES[project.get('caption_style') or 'classic']
     outline = round(size / 4) if preset['outline'] == 'pad' else preset['outline']
+    # Reels keep their original margins; a landscape frame centres captions with wider side margins.
+    left, right = (200, 200) if formats.landscape(project) else (90, 140)
     return (f"Style: {name},{font},{size},{preset['primary']},&H00FFFFFF,{preset['outline_colour']},{preset['back']},"
-            f"-1,0,0,0,100,100,0,0,{preset['border']},{outline},{preset['shadow']},2,90,140,{project['caption_bottom']},1")
+            f"-1,0,0,0,100,100,0,0,{preset['border']},{outline},{preset['shadow']},2,{left},{right},{formats.caption_margin(project)},1")
 
 
 def write_ass(path, cues, project, title=None, total=0):
     # Fixed 1080p design coordinates are scaled by libass for draft resolution.
+    width, height = formats.size(project)
+    wrap = formats.of(project)['caption_chars']
     header = f'''[Script Info]
 ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
+PlayResX: {width}
+PlayResY: {height}
 WrapStyle: 0
 
 [V4+ Styles]
@@ -180,10 +184,10 @@ Style: Title,Arial,78,&H00B9F8CF,&H00FFFFFF,&H00120E0B,&H00000000,-1,0,0,0,100,1
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
     rows = [f"Dialogue: 0,{stamp(c['start'], True)},{stamp(c['end'], True)},"
-            f"{'Telugu' if TELUGU_SCRIPT.search(c['text']) else 'Default'},,0,0,0,,{ass_text(c['text'])}"
+            f"{'Telugu' if TELUGU_SCRIPT.search(c['text']) else 'Default'},,0,0,0,,{ass_text(c['text'], wrap)}"
             for c in cues]
     if title:
-        rows.insert(0, f'Dialogue: 0,0:00:00.00,{stamp(total, True)},Title,,0,0,0,,{{\\fad(250,200)}}{ass_text(title, 20)}')
+        rows.insert(0, f'Dialogue: 0,0:00:00.00,{stamp(total, True)},Title,,0,0,0,,{{\\fad(250,200)}}{ass_text(title, 20 if wrap == 32 else 34)}')
     path.write_text(header + '\n'.join(rows), 'utf-8')
 
 

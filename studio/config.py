@@ -8,9 +8,13 @@ ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.environ.get('REEL_DATA_DIR', str(ROOT / 'data'))).resolve()
 DEFAULTS = {
     'gemini_key': '', 'gemini_model': '', 'pixabay_key': '', 'pexels_key': '',
+    # Tried in order when the main model is out of quota, busy or retired (each has its own free quota).
+    'gemini_fallback_models': 'gemini-3-flash-preview, gemini-3.1-flash-lite, gemini-flash-lite-latest, gemini-3.5-flash',
     'azure_key': '', 'azure_region': '', 'sarvam_key': '', 'online_enabled': False,
     'tts_provider': 'edge', 'voice': 'te-IN-MohanNeural',
     'daily_ai_calls': 20, 'ffmpeg': '', 'ffprobe': '',
+    # PBKDF2 hash of the password other devices sign in with (studio/access.py); never sent to the browser.
+    'access_password_hash': '',
 }
 SECRETS = {'gemini_key', 'pixabay_key', 'pexels_key', 'azure_key', 'sarvam_key'}
 
@@ -60,8 +64,10 @@ def save_settings(values):
 
 def public_settings():
     cfg = settings()
-    return {**{k: v for k, v in cfg.items() if k not in SECRETS},
-            **{k + '_configured': bool(cfg[k]) for k in SECRETS}}
+    return {**{k: v for k, v in cfg.items() if k not in SECRETS and k != 'access_password_hash'},
+            **{k + '_configured': bool(cfg[k]) for k in SECRETS},
+            'access_password_set': bool(cfg.get('access_password_hash')),
+            'access_password_from_server': bool(os.environ.get('STUDIO_PASSWORD'))}
 
 
 def executable(name):

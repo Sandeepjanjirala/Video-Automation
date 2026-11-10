@@ -29,6 +29,11 @@
         });
       });
 
+      $(document).on('click', '.btn-clear-extra-shots', function() {
+        Scenes.updateSceneField($(this).data('scene-id'), {extra_shots: []});
+        Scenes.renderSceneVisuals();
+      });
+
       $(document).on('input change', '.scene-keywords-input, .input-scene-visual-prompt', function() {
         const sid = $(this).closest('.scriptrow').data('id');
         Scenes.updateSceneField(sid, {
@@ -43,16 +48,15 @@
 
       $(document).on('click', '#btn-import-split', function() {
         if (!StudioState.current) return;
-        const text = ($('#input-import-script').val() || '').trim();
-        const parts = text.split(/\n+|(?<=[.!?।])\s+/u).map(s => s.trim()).filter(Boolean);
-        if (!parts.length) return StudioState.setNotice('Paste a script first.', true);
-        if (parts.length > 30 || parts.some(s => s.length > 3000)) {
-          return StudioState.setNotice('Use at most 30 scenes and 3,000 characters per scene.', true);
+        let scenes;
+        try {
+          scenes = Scenes.splitScript($('#input-import-script').val(), $('#script-input-format').val() !== 'telugu');
+        } catch (e) {
+          return StudioState.setNotice(e.message, true);
         }
         const p = StudioState.current.project;
         if (p.scenes.some(s => s.narration.trim()) && !confirm('Replace the current storyboard with this script?')) return;
-        const isRoman = $('#script-input-format').val() !== 'telugu';
-        p.scenes = parts.map(text => ({...StudioState.createEmptyScene(), narration: isRoman ? '' : text, roman: isRoman ? text : ''}));
+        p.scenes = scenes;
         StudioState.markDirty(true);
         Projects.populateEditor();
         Projects.triggerAutosave();
@@ -78,6 +82,25 @@
       });
     },
 
+    // One scene per line or sentence, keeping the writer's own words (minus chat formatting).
+    splitScript: function(text, isRoman) {
+      const parts = String(text || '').trim().split(/\n+|(?<=[.!?।])\s+/u).map(Scenes.cleanCaption).filter(Boolean);
+      if (!parts.length) throw new Error('Paste a script first.');
+      const fmt = StudioState.format();
+      if (parts.length > fmt.maxScenes || parts.some(s => s.length > 3000)) {
+        throw new Error(`${fmt.label} supports at most ${fmt.maxScenes} scenes (this script has ${parts.length}) and 3,000 characters per scene.`
+          + (fmt.maxScenes < 400 ? ' For a longer script choose "YouTube video" as the video format.' : ''));
+      }
+      return parts.map(text => ({...StudioState.createEmptyScene(), narration: isRoman ? '' : text, roman: isRoman ? text : ''}));
+    },
+
+    // Mirrors providers.clean_caption: markdown emphasis, heading marks and 'Title:'-style labels.
+    cleanCaption: function(text) {
+      return String(text || '').replace(/\*+|`+|_{2,}/g, '').replace(/^\s*#+\s*/, '')
+        .replace(/^\s*(?:title|scene\s*\d+|hook|cta|caption|narration)\s*[:\-\u2013]\s*/i, '')
+        .replace(/\s+/g, ' ').trim();
+    },
+
     updateSceneField: function(sid, updates) {
       if (!StudioState.current || !StudioState.current.project) return;
       const scenes = StudioState.current.project.scenes;
@@ -98,7 +121,8 @@
 
     addScene: function() {
       if (!StudioState.current || !StudioState.current.project) return;
-      if (StudioState.current.project.scenes.length >= 30) return StudioState.setNotice('A reel supports up to 30 scenes.', true);
+      const fmt = StudioState.format();
+      if (StudioState.current.project.scenes.length >= fmt.maxScenes) return StudioState.setNotice(`${fmt.label} supports up to ${fmt.maxScenes} scenes.`, true);
       const newScene = StudioState.createEmptyScene();
       StudioState.current.project.scenes.push(newScene);
       StudioState.markDirty(true);
@@ -235,6 +259,10 @@
           </select></label>
           <div id="stock-results-${s.id}"></div>
           ${s.video_asset ? StudioFraming.controlsHtml(s) : '<small class="muted">Choose footage or an image to adjust its framing and trim.</small>'}
+          ${(s.extra_shots || []).length && ['stock', 'upload'].includes(s.visual) ? `
+          <p class="extrashots"><b>+${s.extra_shots.length} more shot(s)</b> of the same subject: a long scene cuts to the
+            next clip about every ${StudioState.format().width > StudioState.format().height ? 6 : 4} seconds (from its start, cropped to fill the frame).
+            <button type="button" class="ghost btn-clear-extra-shots" data-scene-id="${s.id}">Use only the main clip</button></p>` : ''}
           <small class="muted">Clip audio is muted. Scene length follows the selected narration.</small>
         `;
 

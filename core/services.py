@@ -19,8 +19,10 @@ from .models import (
     Revision,
     Draft,
     Job,
+    JobStage,
     ApplicationReceipt,
     Asset,
+    OutboxEvent,
     VoiceTake,
 )
 from .serializers import serialize_project_dict, serialize_voice_take_dict
@@ -129,6 +131,42 @@ def save_draft_data(pid: str, draft_data: Dict[str, Any]) -> Dict[str, Any]:
     return {'project_id': pid, 'updated': now_dt.isoformat()}
 
 
+def delete_project(pid: str) -> Dict[str, Any]:
+    """Permanently delete a project with its revisions, jobs, voice takes, autosave and rendered videos.
+
+    Media library assets stay: other projects can use the same clips. Refused while one of the
+    project's jobs is queued or running, so no worker writes to a deleted project.
+    """
+    import shutil
+    from studio.config import DATA
+    db = 'project_writer'
+    with transaction.atomic(using=db):
+        p = Project.objects.using(db).select_for_update().filter(id=pid).first()
+        if not p:
+            raise ValueError('Project not found')
+        jobs = Job.objects.using(db).select_for_update().filter(project_id=pid)
+        if jobs.filter(state__in=['queued', 'running']).exists():
+            raise ValueError('This project has a job in progress. Wait for it to finish or cancel it under '
+                             'Production jobs, then delete the project.')
+        job_ids = list(jobs.values_list('id', flat=True))
+        ApplicationReceipt.objects.using(db).filter(project_id=pid).delete()
+        ApplicationReceipt.objects.using(db).filter(job_id__in=job_ids).delete()
+        JobStage.objects.using(db).filter(job_id__in=job_ids).delete()
+        OutboxEvent.objects.using(db).filter(payload__project_id=pid).delete()
+        VoiceTake.objects.using(db).filter(project_id=pid).delete()
+        Draft.objects.using(db).filter(project_id=pid).delete()
+        jobs.delete()
+        Revision.objects.using(db).filter(project_id=pid).delete()
+        title = (p.body or {}).get('title') or 'Untitled story'
+        p.delete()
+
+        def remove_exports():
+            for jid in job_ids:
+                shutil.rmtree(DATA / 'exports' / jid, ignore_errors=True)
+        transaction.on_commit(remove_exports, using=db)
+    return {'deleted': pid, 'title': title, 'jobs': len(job_ids)}
+
+
 def delete_draft_data(pid: str) -> None:
     """Discard client autosave draft."""
     with transaction.atomic(using='project_writer'):
@@ -192,6 +230,7 @@ def apply_job_result(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
                     curr_s['rights_reviewed'] = False
                     curr_s['trim_start'] = 0
                     curr_s['trim_end'] = 0
+                    curr_s['extra_shots'] = []
                     modified = True
 
         elif kind == 'stock_all':
@@ -219,6 +258,7 @@ def apply_job_result(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
                     curr_s['rights_reviewed'] = False
                     curr_s['trim_start'] = 0
                     curr_s['trim_end'] = 0
+                    curr_s['extra_shots'] = [a['id'] for a in sel.get('extra_assets') or []][:4]
                     modified = True
 
         elif kind == 'research':
@@ -310,6 +350,7 @@ def assign_media_to_scenes(pid: str, asset_id: str, scene_ids: List[str]) -> Pro
                 if asset_obj.kind in ('video', 'image'):
                     s['video_asset'] = asset_id
                     s['visual'] = 'image' if asset_obj.kind == 'image' else 'upload'
+                    s['extra_shots'] = []
                     s['trim_start'] = 0
                     s['trim_end'] = 0
                     s['rights_reviewed'] = True

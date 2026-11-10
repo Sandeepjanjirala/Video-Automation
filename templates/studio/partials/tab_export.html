@@ -2,9 +2,16 @@
   <!-- Export Settings & Subtitle Styling -->
   <section class="panel">
     <div class="sectionhead">
-      <h2>Reel layout &amp; subtitle margins</h2>
-      <span class="muted">Keep Roman Telugu captions inside the vertical video frame</span>
+      <h2>Video layout &amp; subtitle margins</h2>
+      <span class="muted">Keep Roman Telugu captions inside the video frame</span>
     </div>
+    <label class="switchrow">
+      <input type="checkbox" class="captions-enabled-toggle project-field-bind" data-field="captions_enabled" checked>
+      <span class="switch" aria-hidden="true"></span>
+      <span><b>Show captions on the video</b>
+        <small class="muted">On for every new project. Turn off for a reel without burned-in captions; title cards keep
+          their heading and <code>captions.srt</code> is still included with the export.</small></span>
+    </label>
 
     <div class="grid two">
       <div class="field">
@@ -12,7 +19,7 @@
         <input type="number" id="range-caption-size" class="project-field-bind" data-field="caption_size" min="30" max="90" value="56">
       </div>
       <div class="field">
-        <span>Bottom safe margin (px)</span>
+        <span>Bottom safe margin (px, in the 1920-tall reel; a YouTube video uses 28% of it)</span>
         <input type="number" id="range-caption-bottom" class="project-field-bind" data-field="caption_bottom" min="180" max="600" value="300">
       </div>
     </div>
@@ -35,10 +42,10 @@
     <p class="muted">Both resolutions use the voice you selected. Download the MP4 and upload it manually to Instagram or YouTube.</p>
     <div class="actions" style="margin-top:20px;">
       <button type="button" class="ghost" id="btn-render-preview" data-action="queue-job" data-kind="render" data-extra='{"quality":"draft"}'>
-        &#9889; Quick draft preview (540&times;960)
+        &#9889; Quick draft preview (<span class="format-draft-size">540&times;960</span>)
       </button>
       <button type="button" class="primary" id="btn-render-production" data-action="queue-job" data-kind="render" data-extra='{"quality":"final"}'>
-        &#127916; Render 1080&times;1920 Reel
+        &#127916; Render <span class="format-size">1080&times;1920</span> <span class="format-name">Instagram Reel</span>
       </button>
     </div>
   </section>
@@ -47,7 +54,7 @@
   <section class="panel">
     <div class="sectionhead">
       <h2>Exported videos</h2>
-      <span class="muted">Completed vertical MP4 reels ready for download and publishing</span>
+      <span class="muted">Completed MP4 videos ready for download and publishing</span>
     </div>
 
     <div id="export-cards-container">

@@ -28,10 +28,14 @@ def even(value):
 
 
 def window(width, height, aspect):
-    """Visible media window (x, y, w, h), centred vertically in the reel frame."""
+    """Visible media window (x, y, w, h): the largest box of that shape, centred in the frame
+    (full width in a vertical reel, full height in a landscape video)."""
     ratio = ASPECTS.get(aspect)
     if not ratio:
         return 0, 0, width, height
+    if width * ratio[1] > height * ratio[0]:
+        w = min(width, even(height * ratio[0] / ratio[1]))
+        return even((width - w) / 2), 0, w, height
     h = min(height, even(width * ratio[1] / ratio[0]))
     return 0, even((height - h) / 2), width, h
 
@@ -170,6 +174,25 @@ def segment(scene, source_duration):
     if end - start < 0.1:
         raise ValueError('The trimmed clip must be at least 0.1 seconds long')
     return start, end
+
+
+SHOT_SECONDS = 4.0  # a reel scene cuts to its next extra shot at least this often (formats.py)
+
+
+def scene_shots(scene, length, shot_seconds=SHOT_SECONDS):
+    """The clips a video scene shows in turn: its own, then its extra shots, one per ~4 seconds
+    in a reel (`shot_seconds`; ~6 in a YouTube video).
+
+    Extra shots play from their start, cropped to fill the frame; the scene's own framing and trim
+    apply to its own clip only.
+    """
+    extras = scene.get('extra_shots') or []
+    if scene.get('visual') not in ('upload', 'stock') or not extras:
+        return [scene]
+    count = min(1 + len(extras), max(1, math.ceil(length / shot_seconds - 0.05)))
+    return [scene] + [{**scene, 'video_asset': aid, 'visual': 'stock', 'trim_start': 0, 'trim_end': 0, 'fit': 'crop',
+                       'frame_aspect': 'full', 'zoom': 1.0, 'crop_x': 0.5, 'crop_y': 0.5, 'short_clip_mode': 'loop'}
+                      for aid in extras[:count - 1]]
 
 
 def visual_inputs(scene, path, source, length, width, height, work, run, job_id=None):

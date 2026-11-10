@@ -16,6 +16,13 @@
       <button type="button" class="ghost" id="btn-reload-caption-timing">Reload audio measurements</button>
     </div>
     <div id="captions-summary" role="status"></div>
+    <label class="switchrow">
+      <input type="checkbox" class="captions-enabled-toggle project-field-bind" data-field="captions_enabled" checked>
+      <span class="switch" aria-hidden="true"></span>
+      <span><b>Show captions on the video</b>
+        <small class="muted">On for every new project. Turn off for a reel without burned-in captions; title cards keep
+          their heading and <code>captions.srt</code> is still included with the export.</small></span>
+    </label>
   </section>
   <section class="panel" id="caption-style-panel">
     <div class="sectionhead">
@@ -31,7 +38,7 @@
           <label class="field"><span>Caption size (1080p pixels)</span>
             <input type="number" id="style-caption-size" class="project-field-bind caption-size-input" data-field="caption_size" min="30" max="90" value="56">
           </label>
-          <label class="field"><span>Bottom safe margin (px)</span>
+          <label class="field"><span>Bottom safe margin (px, in the 1920-tall reel; a YouTube video uses 28% of it)</span>
             <input type="number" id="style-caption-bottom" class="project-field-bind caption-bottom-input" data-field="caption_bottom" min="180" max="600" value="300">
           </label>
         </div>

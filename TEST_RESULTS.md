@@ -1,3 +1,164 @@
+# Phone, PC and deployment — 10 November 2026
+
+Same branch, `feature/one-click-draft`. No database migrations.
+
+- **Phone layout** (≤740 px): compact top bar with **☰** opening the project list, Sign out and
+  Settings as a drawer (closes on choosing, tapping outside or Esc); the four steps as a fixed bottom
+  bar; stacked section heads, 16 px inputs (no iPhone zoom), touch-sized buttons, full-screen dialogs
+  with a sticky title and close button, a 270 px 9:16 preview, long messages wrapped. Desktop unchanged
+  except the open tab is now underlined (`.active` had no style). Web app manifest and icons for
+  **Add to Home screen**.
+- **Fixed:** the Captions tab of a YouTube project could not measure narration (caption-timing validated
+  a partial project without `format`, so more than 30 scenes failed) and the error widened the page.
+- **Access from other devices** (`studio/access.py`, `AccessMiddleware`): the studio PC (loopback, not
+  proxied) needs nothing; other devices sign in at `/login` with the password from Settings (PBKDF2
+  hash, never sent to the browser) or `STUDIO_PASSWORD`; signed 30-day HttpOnly SameSite=Lax cookie
+  bound to the password; 10 wrong passwords per address pause sign-in 15 minutes; refused entirely
+  while no password is set. The secret key is no longer the fixed default: `DJANGO_SECRET_KEY` or a
+  generated `data/secret_key` (git-ignored). `/login` uses `Referrer-Policy: same-origin` so browsers
+  send its real origin to the cross-origin check (no-referrer made Chrome send `Origin: null`).
+- **Deployment:** `START_PHONE_ACCESS.bat` (`STUDIO_LAN=1`) listens on the network and prints the
+  address(es) to open; `STUDIO_ALLOWED_HOSTS`, `STUDIO_BEHIND_PROXY`; Compose passes `STUDIO_PASSWORD`;
+  `docker-compose.https.yml` adds Caddy with automatic HTTPS (`docker compose config` validated).
+
+Verification: **109 passed** (105 previous + 4 new: refused without a password and the proxied-loopback
+case; sign-in, wrong password, open-redirect guard, cookie flags, forged cookie, password change signs out,
+sign-out, guess limit, removal, referrer policy and foreign origin; server password from the environment;
+secret key; plus the drawer in the projects DOM test). Real Chrome at 390×844 and 1440×900 on every tab
+of a reel and a YouTube project: no horizontal overflow, no page errors (`test-outputs/mobile/after`).
+Real phone access over the network address (`http://10.1.79.50:8788`, `START_PHONE_ACCESS` mode):
+refused without a password → password set in Settings on the PC → sign-in page, wrong password
+message, signed in with 31 projects, Sign out shown only on the phone, signed out → 401; test password
+removed afterwards (`test-outputs/mobile/access`).
+
+# YouTube video format (16:9, long-form) — 10 November 2026
+
+Same branch, `feature/one-click-draft`. No database migrations (`format` is a field in the project JSON).
+
+- **Video format** (`Project.format`: `reel` default, `youtube`; `studio/formats.py`, mirrored in `state.js`):
+  YouTube renders 1920×1080 (draft 960×540), up to 400 scenes and 60 minutes (reel: 30 scenes, 3 minutes;
+  model and timeline enforce both), a new shot about every 6 s, captions on a 1920×1080 ASS canvas with
+  48-character lines, 200 px side margins and 28% of the reel's bottom margin. Framing windows (4:5, 1:1)
+  centre horizontally in a landscape frame; Python and the browser mirror the rule.
+- **Story tab**: Video format select, format-specific durations (reel 30 s–3 min, YouTube 5–30 min),
+  header badge, sidebar label, export buttons, previews (16:9 stage, wider column, metadata-only video
+  preload for long projects); switching to a reel is refused when the project has more than 30 scenes.
+- **Long scripts**: script split up to the format's scene limit; scene preparation in batches of 30
+  with the whole script as context; shot planning 40 scenes per request; clip check 16 scenes per request
+  with six candidates each; Pixabay/Pexels requests paced (0.7 s / 0.4 s) and HTTP 429 waited out;
+  landscape clips ranked first and 1080p files downloaded; one-click time limits grow per scene; project
+  saves up to 8 MB; final decode check scales with length; AI storyboard draft writes a long-form script
+  (up to 60,000 output tokens, one scene per ~5 s of target).
+
+Verification: **105 passed** (94 previous + 11 new: format limits; 20-minute timeline; landscape captions;
+real FFmpeg YouTube draft and final at 960×540 / 1920×1080 with format-aware exact-frame preview; landscape
+framing windows and 6 s pacing; landscape ranking, 1080p file choice, batched planning and picking;
+batched scene preparation; request pacing and 429 wait; long-form AI draft; a >1 MB project save; DOM
+behaviour of the format switch). Real Chrome: a 42-line Roman Telugu YouTube script ("ocean secrets")
+with **Create draft video automatically** → 39 scenes, 35 AI-checked landscape clips + 4 title cards,
+2.9-minute 960×540 draft in 9.2 minutes, no scene longer than 6.3 s on one clip, no page errors; then
+**Render 1920×1080 YouTube video** → 1920×1080, 173 s, 118 MB, in about a minute
+(`test-outputs/autopilot/youtube-*.png`, `youtube_e2e.py`, `youtube_final.py`).
+
+# Captions on/off and a new shot every ~4 seconds — 10 November 2026
+
+Same branch, `feature/one-click-draft`. No database migrations (both are fields in the project JSON).
+
+- **Captions switch** (`Project.captions_enabled`, default on): on the Captions and Preview & export tabs,
+  kept in step. Off: the renderer writes no caption cues (title cards keep their heading), `captions.srt`
+  is still exported, and the readiness check no longer requires Roman caption text.
+- **Shot pacing** (`Scene.extra_shots`, up to 4 library clip IDs; `framing.scene_shots`): a video scene
+  longer than ~4 s cuts between its own clip and its extra shots in equal parts (ceil(length / 4) clips);
+  extra shots play from their start, cropped to fill the frame. `footage.find` estimates each scene's
+  length (0.6 s + Roman words / 2), tells Gemini how many clips a scene needs, and downloads that many
+  accepted, unused clips. Footage search sets the extra shots; an upload, library choice or single stock
+  result clears them; the scene card shows **+N more shot(s)** with **Use only the main clip**. Preflight
+  reports a missing extra shot. The source report lists the extra shots used.
+
+Verification: **94 passed** (88 previous + 6 new: a real FFmpeg render cutting red/green/blue clips at
+3 s each for 9 s of narration and keeping one clip for 2 s; `scene_shots` framing and image scenes; extra
+shots applied by footage search, cleared by assign-media, missing-clip preflight; captions off in preflight
+and rendering with the SRT kept; footage downloads extra shots for a long scene; DOM behaviour of the switch
+and the extra-shots line). Real Chrome on the 10-line facts script: 14 clips in a 41.8 s draft, every clip
+on screen 1.9–3.9 s (before: up to 6.9 s), detected cuts within 0.02 s of the plan, all clips on topic
+(`test-outputs/autopilot/C-pacing-clips.png`). Captions turned off with the switch, approved and rendered:
+same frames without captions, SRT still exported (`captions-on-vs-off.png`).
+
+# Gemini backup models and project delete — 10 November 2026
+
+Same branch, `feature/one-click-draft`. No database migrations.
+
+- **Backup Gemini models** (`providers.gemini`, setting `gemini_fallback_models`, Settings field):
+  on HTTP 429, 503 or 404 the next model is tried; other errors stop at once; only the last
+  model waits out a 503 or short per-minute limit; every HTTP attempt counts toward the daily limit.
+  Default order chosen from the models this key can use on the free tier (probed 10 November):
+  gemini-3-flash-preview, gemini-3.1-flash-lite, gemini-flash-lite-latest, gemini-3.5-flash
+  (gemini-2.5-flash-lite and gemini-2.5-pro: retired for new users; gemini-3.5-flash-lite: wrong Telugu word).
+- **Delete project** (`DELETE /api/projects/<id>`, `services.delete_project`, allowed in the mutation
+  middleware): removes the project, revisions, autosave, voice takes, jobs, job stages, receipts,
+  outbox events and export folders; library assets stay; refused (409) while a job is queued or running.
+  UI: a bin per sidebar project (hover/focus) and **Delete** in the header, one confirmation; deleting
+  the open project opens the next one, or the welcome screen after the last.
+
+Verification: **88 passed** (84 previous + 4 new: backup models on 429/404, no backup on 400 and the
+all-busy message; delete with history/jobs/exports/assets/other projects and the 409 refusal; DOM
+behaviour of both delete buttons). Real API: main model set to retired gemini-2.5-pro → answered by
+gemini-3-flash-preview ("తేనె"). Real Chrome: two throwaway projects deleted from the sidebar bin and
+the header, both confirmations shown, API returns not-found for both, all other projects unchanged,
+no page errors (`test-outputs/autopilot/delete_e2e.py`).
+
+# Footage matched to the script — 10 November 2026
+
+Same branch, `feature/one-click-draft`. No database migrations.
+
+- `studio/footage.py`, used by "Find footage for all scenes" (`stock_all`) and the one-click draft:
+  Gemini plans the shot for every scene from the whole script with three search phrases; every
+  phrase plus the scene's subject word is searched (20 results each); phrases take turns in a
+  candidate list ranked by the provider's order, subject-weighted tag match, film over animation,
+  resolution, vertical shape and popularity (green screen and "subscribe" overlays last); Gemini
+  then scores preview frames of ten candidates per scene and each scene gets its best clip not
+  already used (none scoring 5 or more: title card). Without Gemini: keywords and ranking only.
+- Stock search returns preview frames (provider image hosts only), film/animation and quality flags,
+  and the sharpest file whose download stays under 60 MB (4K for landscape footage cropped to 9:16).
+- Scene preparation asks for concrete, filmable search words instead of abstract ones.
+- `providers.gemini` sends images and waits out a per-minute rate limit ("retry in 12s"), not a daily one.
+
+Verification: **84 passed** (79 previous + 5 new: stock search fields and file choice, planning and
+AI picking with unique clips per scene, ranking without Gemini, the `stock_all` job, Gemini image
+parts and rate-limit retry). The 233-test full suite fails the same 30 legacy milestone tests on
+`main` and on this branch (legacy SQLite parity, Alembic revision, database roles, old Sarvam voice
+names, fakes without the `provider` argument); none are new.
+
+Real Chrome with Gemini and Pixabay on a 10-line facts script: before, 4 clips were unrelated
+(heartbeat line for the octopus, spider, animated "Shocking" text, a likes graphic). After: all 10
+scenes AI-checked at 6–10/10 (two vertical octopus clips, honey dripping into a jar, Venus,
+reaction shots for hooks, a phone for "Comment cheyyandi"); 41.8 s draft, no page errors.
+Contact sheet: `test-outputs/autopilot/C-final-clips.png`.
+
+# One-click draft video — 10 November 2026
+
+Branch `feature/one-click-draft` (from `main`). No database migrations.
+
+- **Create draft video automatically** (Story tab, `studio/static/js/autopilot.js`): chains the
+  existing jobs: scene preparation → `stock_all` → rights, save, approve → voice → draft render.
+  Asks once for a review note when the project has none; stops at the first failed step.
+- AI fill mode for existing scenes (`providers.fill_scenes`, draft job option `fill`): one Gemini
+  request completes only what is missing (Telugu narration, Roman captions, stock search phrase,
+  heading); text the user wrote is kept; a scene still without Telugu is retried with the
+  per-scene converter. Chat formatting (`**`, `#`, `Title:` labels) is removed by
+  `providers.clean_caption`, mirrored in "Split into scenes" (`Scenes.cleanCaption`). Pasted scripts
+  are split by their own lines, so no line is dropped or merged.
+
+Verification: **79 passed** (72 previous + 7 new): caption cleaning; fill keeps user text,
+regenerates stale narration, makes no model call when nothing is missing, rejects unusable output,
+retries a scene with the converter; fill job applies without touching visuals or framing; DOM
+behaviour of the button (step order, single confirmation, review-note prompt, title-card fallback,
+rights, approval, failure stop, cancel). Real Chrome with Gemini, Pixabay and Edge Mohan:
+a ChatGPT-style facts script (7 lines with `Title:` and `**`) → 7 scenes with Telugu narration and
+search phrases such as "octopus three hearts" → 28.2 s 540×960 draft in one click; a script split
+locally first → 3 scenes → 8.3 s draft. Both MP4s decode; no page errors. Artifacts:
+`test-outputs/autopilot/`.
+
 # Stage 5: final verification and PR preparation — 9 November 2026
 
 Verification of the complete Django + jQuery application, plus the fixes it led to.

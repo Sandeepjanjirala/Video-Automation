@@ -55,6 +55,8 @@ services:
     environment:
       - STUDIO_DISTRIBUTED=1
       - STUDIO_DOCKER=1
+      # Every browser reaches the container through Docker's network, so all of them sign in with this password.
+      - STUDIO_PASSWORD=${STUDIO_PASSWORD:-}
       - STUDIO_DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-studio}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1

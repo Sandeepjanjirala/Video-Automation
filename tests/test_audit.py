@@ -913,7 +913,7 @@ def centre_colour(path, at):
 def test_framing_geometry_matches_browser_and_editor_dom(tmp_path):
     cases = []
     for src in ((1920, 1080), (1080, 1920), (1200, 1600), (181, 333), (4000, 3000), (640, 640)):
-        for size in ((1080, 1920), (540, 960)):
+        for size in ((1080, 1920), (540, 960), (1920, 1080), (960, 540)):
             for fit in ('crop', 'contain'):
                 for aspect in framing.ASPECTS:
                     for zoom, x, y in ((1, .5, .5), (1.37, 0, 1), (2.5, .123, .877), (3, 1, 0)):
@@ -1235,3 +1235,755 @@ def test_caption_style_picker_dom_behaviour():
     page = DATA.parent / 'caption-style.html'
     page.write_bytes(client().get('/').content)
     subprocess.run(['node', 'tests/audit_caption_style_ui.cjs', str(page)], check=True, timeout=60)
+
+
+# One-click draft video -------------------------------------------------------------------
+
+def fake_gemini(monkeypatch, rows=None, calls=None):
+    """Answer like Gemini: Telugu narration, Roman captions, keywords and a heading per scene."""
+    calls = [] if calls is None else calls
+
+    def gemini(prompt, grounded=False):
+        calls.append(prompt)
+        scenes = json.loads(prompt[prompt.index('Scenes: ') + len('Scenes: '):])
+        out = rows if rows is not None else [
+            {'index': s['index'], 'narration': f'దృశ్యం {s["index"] + 1}',
+             'roman': s['roman'] or f'Drushyam {s["index"] + 1}', 'keywords': f'**octopus** underwater {s["index"]}',
+             'graphic_title': f'Title: Heading {s["index"]}'} for s in scenes]
+        return json.dumps({'scenes': out}, ensure_ascii=False), {}
+    monkeypatch.setattr(providers, 'gemini', gemini)
+    return calls
+
+
+def test_caption_cleaning_matches_chat_formatting():
+    clean = providers.clean_caption
+    assert clean('Title: 3 Mind-Blowing Random Facts!') == '3 Mind-Blowing Random Facts!'
+    assert clean('**Fact Number 1:** Octopus ki moodu hearts untayi!') == 'Fact Number 1: Octopus ki moodu hearts untayi!'
+    assert clean('## Scene 2: Meeku teliyani') == 'Meeku teliyani'
+    assert clean('Comment cheyyandi! #facts') == 'Comment cheyyandi! #facts'
+    assert clean('Hook – Meeku telusa?') == 'Meeku telusa?'
+    assert clean('Titles are fun') == 'Titles are fun'
+
+
+def test_fill_scenes_completes_missing_parts_and_keeps_user_text(monkeypatch):
+    calls = fake_gemini(monkeypatch)
+    body = project()
+    base = body['scenes'][0]
+    body['scenes'] = [
+        {**base, 'id': 'title', 'roman': 'Title: 3 Mind-Blowing Random Facts!', 'narration': '', 'graphic_title': ''},
+        {**base, 'id': 'stale', 'roman': '**Fact 1:** Octopus', 'narration': 'పాత కథనం',
+         'narration_source_roman': '**Fact 1:** Octopus', 'keywords': 'my own words',
+         'cues': [{'start': 0, 'end': 1, 'text': 'Old'}]},
+        {**base, 'id': 'telugu', 'roman': '', 'narration': 'తెలుగు మాత్రమే', 'graphic_title': 'Mine'},
+        {**base, 'id': 'kept', 'roman': 'Idi oka pariksha.', 'narration': TELUGU_LINE,
+         'narration_source_roman': 'Idi oka pariksha.', 'keywords': 'test', 'graphic_title': 'Kept'},
+        {**base, 'id': 'empty', 'roman': '', 'narration': '', 'keywords': '', 'graphic_title': ''},
+    ]
+    scenes = {s['id']: s for s in providers.fill_scenes(Project.model_validate(body).model_dump())}
+    assert len(calls) == 1
+    assert '"Title:' not in calls[0] and '**' not in calls[0]           # the model sees cleaned text
+    t = scenes['title']
+    assert (t['roman'], t['narration'], t['narration_source_roman']) == ('3 Mind-Blowing Random Facts!', 'దృశ్యం 1', '3 Mind-Blowing Random Facts!')
+    assert (t['keywords'], t['graphic_title']) == ('octopus underwater 0', 'Heading 0')
+    s = scenes['stale']                                                  # cleaned Roman -> narration regenerated
+    assert (s['roman'], s['narration'], s['cues'], s['keywords']) == ('Fact 1: Octopus', 'దృశ్యం 2', [], 'my own words')
+    assert s['narration_source_roman'] == 'Fact 1: Octopus'
+    assert (scenes['telugu']['roman'], scenes['telugu']['narration'], scenes['telugu']['graphic_title']) == ('Drushyam 3', 'తెలుగు మాత్రమే', 'Mine')
+    k = scenes['kept']
+    assert (k['roman'], k['narration'], k['keywords'], k['graphic_title']) == ('Idi oka pariksha.', TELUGU_LINE, 'test', 'Kept')
+    assert scenes['empty']['roman'] == '' and scenes['empty']['keywords'] == ''
+    # Nothing missing: no model call at all.
+    again = Project.model_validate({**body, 'scenes': list(scenes.values())[:4]}).model_dump()
+    assert providers.fill_scenes(again) and len(calls) == 1
+
+
+@pytest.mark.parametrize('rows,message', [
+    ([{'index': 0, 'narration': 'Not Telugu', 'roman': 'x', 'keywords': 'k', 'graphic_title': 'g'}], 'did not return Telugu'),
+    ([], 'skipped scene 1'),
+])
+def test_fill_scenes_rejects_unusable_model_output(monkeypatch, rows, message):
+    fake_gemini(monkeypatch, rows=rows)
+    body = project()
+    body['scenes'][0].update(roman='Octopus ki moodu hearts', narration='')
+    with pytest.raises(ValueError, match=message):
+        providers.fill_scenes(body)
+
+
+def test_fill_scenes_retries_a_scene_without_telugu_with_the_scene_converter(monkeypatch):
+    fake_gemini(monkeypatch, rows=[{'index': 0, 'narration': '3 Mind-Blowing Facts!', 'roman': 'x',
+                                    'keywords': 'surprised face', 'graphic_title': 'Facts'}])
+    from studio import transliteration
+    monkeypatch.setattr(transliteration, 'convert', lambda text, provider: {'telugu': '3 మైండ్-బ్లోయింగ్ ఫాక్ట్స్!'})
+    body = project()
+    body['scenes'][0].update(roman='3 Mind-Blowing Facts!', narration='')
+    scene = providers.fill_scenes(body)[0]
+    assert (scene['narration'], scene['keywords']) == ('3 మైండ్-బ్లోయింగ్ ఫాక్ట్స్!', 'surprised face')
+
+
+def test_fill_draft_job_applies_without_touching_visuals(monkeypatch, tmp_path):
+    fake_gemini(monkeypatch)
+    picture = tmp_path / 'scene.png'
+    ffmpeg('-f', 'lavfi', '-i', 'color=c=teal:s=640x960', '-frames:v', '1', picture)
+    image = upload_file(picture)
+    body = project()
+    body['scenes'][0].update(roman='**Octopus** ki moodu hearts', narration='', visual='image', video_asset=image['id'],
+                             zoom=1.5, crop_y=0.2, rights_reviewed=True)
+    c = client()
+    pid = c.post('/api/projects', body, content_type='application/json').json()['id']
+    queued = c.post(f'/api/projects/{pid}/jobs', {'revision': 1, 'kind': 'draft', 'fill': True}, content_type='application/json')
+    assert queued.status_code == 200, queued.content
+    assert queued.json()['snapshot']['options']['fill'] is True
+    from studio.tasks import task_draft
+    assert task_draft.run(queued.json()['id'])['status'] == 'succeeded'
+    applied = c.post(f"/api/projects/{pid}/apply-job/{queued.json()['id']}", {}, content_type='application/json')
+    assert applied.status_code == 200, applied.content
+    scene = applied.json()['project']['project']['scenes'][0]
+    assert (scene['id'], scene['visual'], scene['video_asset'], scene['zoom'], scene['crop_y']) == ('scene1', 'image', image['id'], 1.5, 0.2)
+    assert (scene['roman'], scene['narration'], scene['keywords']) == ('Octopus ki moodu hearts', 'దృశ్యం 1', 'octopus underwater 0')
+    assert store.preflight(applied.json()['project']['project'])['ready']
+
+
+def test_one_click_draft_dom_behaviour():
+    page = DATA.parent / 'autopilot.html'
+    page.write_bytes(client().get('/').content)
+    subprocess.run(['node', 'tests/audit_autopilot_ui.cjs', str(page)], check=True, timeout=60)
+
+
+# Footage matched to the script ---------------------------------------------------------------
+
+def pixabay_hit(id, tags, width=1920, height=1080, kind='film', downloads=1000, low=False, preview='https://cdn.pixabay.com/p.jpg'):
+    return {'id': id, 'provider': 'pixabay', 'tags': tags, 'duration': 12, 'animation': kind == 'animation',
+            'low_quality': low, 'downloads': downloads, 'preview': preview, 'creator': 'Author',
+            'source_url': f'https://pixabay.com/videos/id-{id}/', 'license_url': 'https://pixabay.com/service/license-summary/',
+            'video': {'url': f'https://cdn.pixabay.com/{id}.mp4', 'width': width, 'height': height, 'size': 1024}}
+
+
+def test_stock_search_reports_previews_quality_and_a_sharp_file(monkeypatch):
+    from studio import stock
+    monkeypatch.setattr(providers, 'settings', lambda: {'online_enabled': True, 'pixabay_key': 'fixture'})
+    big = stock.SHARP_DOWNLOAD_LIMIT + 1
+
+    class Response:
+        def __init__(self, hits): self.hits = hits
+        def json(self): return {'hits': self.hits}
+
+    def file(size, w, h, name):
+        return {'url': f'https://cdn.pixabay.com/{name}.mp4', 'width': w, 'height': h, 'size': size,
+                'thumbnail': f'https://cdn.pixabay.com/{name}.jpg'}
+    hits = [{'id': 1, 'type': 'film', 'tags': 'octopus, ocean', 'downloads': 50, 'isLowQuality': False, 'pageURL': 'https://pixabay.com/videos/id-1/',
+             'videos': {'large': file(40_000_000, 3840, 2160, 'l'), 'medium': file(9_000_000, 1920, 1080, 'm'), 'tiny': file(1000, 640, 360, 't')}},
+            {'id': 2, 'type': 'animation', 'tags': 'planet', 'isLowQuality': True, 'pageURL': 'https://pixabay.com/videos/id-2/',
+             'videos': {'large': file(big, 3840, 2160, 'l2'), 'medium': file(9_000_000, 1920, 1080, 'm2'),
+                        'tiny': {**file(1000, 640, 360, 't2'), 'thumbnail': 'https://evil.test/t.jpg'}}}]
+    params = {}
+    monkeypatch.setattr(providers, 'request', lambda method, url, **kw: params.update(kw['params']) or Response(hits))
+    first, second = providers.stock_search('octopus ' + uuid.uuid4().hex)
+    assert params['per_page'] == 20
+    assert (first['video']['height'], first['preview'], first['animation'], first['low_quality']) == (2160, 'https://cdn.pixabay.com/t.jpg', False, False)
+    # 4K is skipped when the download would be too big; previews only from the provider's image host.
+    assert (second['video']['height'], second['preview'], second['animation'], second['low_quality']) == (1080, 'https://cdn.pixabay.com/m2.jpg', True, True)
+    assert not stock.safe_preview_url('https://cdn.pixabay.com.evil.test/a.jpg', 'pixabay')
+    assert stock.safe_preview_url('https://images.pexels.com/a.jpg', 'pexels') and not stock.safe_preview_url('https://images.pexels.com/a.jpg', 'pixabay')
+
+
+def footage_fixture(monkeypatch, gemini):
+    """Three scenes, a fake stock library, preview frames and downloads."""
+    from studio import footage
+    library = {
+        'octopus tentacles': [pixabay_hit(1, 'heart, heartbeat'), pixabay_hit(2, 'octopus, tentacles, ocean')],
+        'octopus': [pixabay_hit(2, 'octopus, tentacles, ocean'), pixabay_hit(3, 'octopus, aquarium', 1080, 1920)],
+        'honey jar': [pixabay_hit(4, 'honey, jar, kitchen'), pixabay_hit(5, 'honey, green screen, subscribe')],
+        'random facts': [pixabay_hit(6, 'particles, abstract', kind='animation', low=True), pixabay_hit(7, 'question mark, facts')],
+    }
+    searched, downloaded = [], []
+
+    def search(query, provider='auto'):
+        searched.append(query)
+        return copy.deepcopy(library.get(query, []))
+    monkeypatch.setattr(providers, 'stock_search', search)
+    monkeypatch.setattr(providers, 'download_stock', lambda id, provider, landscape=False:
+                        downloaded.append(id if not landscape else ('landscape', id)) or {'id': f'{id:032x}', 'provider': provider})
+    monkeypatch.setattr(footage, 'preview', lambda hit: ('image/jpeg', f'frame {hit["id"]}'.encode()))
+    monkeypatch.setattr(providers, 'gemini', gemini)
+    body = project()
+    base = body['scenes'][0]
+    body['scenes'] = [{**base, 'id': 'title', 'roman': '3 Random Facts', 'keywords': 'random facts'},
+                      {**base, 'id': 'octo', 'roman': 'Octopus ki moodu hearts untayi!', 'keywords': ''},
+                      {**base, 'id': 'honey', 'roman': 'Honey eppatiki paadavadu', 'keywords': 'honey jar'}]
+    return footage, Project.model_validate(body).model_dump(), searched, downloaded
+
+
+def test_footage_plans_from_the_script_and_lets_ai_pick_from_previews(monkeypatch):
+    prompts = []
+
+    def gemini(prompt, grounded=False, images=()):
+        prompts.append((prompt, list(images)))
+        if not images:  # planning
+            assert 'Octopus ki moodu hearts untayi!' in prompt and 'NEED: [0, 1, 2, 3]' in prompt
+            return json.dumps({'scenes': [{'index': 1, 'shot': 'An octopus moving its tentacles on the sea floor',
+                                           'queries': ['**octopus tentacles**', 'octopus']},
+                                          {'index': 2, 'shot': 'Golden honey dripping into a jar', 'queries': ['honey jar']}]}), {}
+        return json.dumps({'scenes': [{'index': 0, 'picks': [{'candidate': 1, 'score': 3}]},   # nothing fits: title card later
+                                      {'index': 1, 'picks': [{'candidate': 2, 'score': 9}]},
+                                      {'index': 2, 'picks': [{'candidate': 1, 'score': 8}]},
+                                      {'index': 3, 'picks': [{'candidate': 1, 'score': 9}, {'candidate': 2, 'score': 6}]}]}), {}
+    footage, body, searched, downloaded = footage_fixture(monkeypatch, gemini)
+    body['scenes'].append({**body['scenes'][2], 'id': 'honey2'})       # wants the same clip: gets its next pick
+    steps = []
+    selected = {s['scene_id']: s for s in footage.find(body, body['scenes'], steps.append)}
+    assert len(prompts) == 2
+    assert searched[:3] == ['random facts', 'octopus tentacles', 'octopus']
+    # Gemini saw each scene's line and intended shot, then the phrases' best frames in turn: the octopus
+    # (first phrase), the octopus aquarium clip (second phrase), then the heart.
+    labels = [label for label, _, _ in prompts[1][1]]
+    assert 'Scene 1: line "Octopus ki moodu hearts untayi!"; intended shot: An octopus moving its tentacles' in labels[2]
+    assert labels[2].endswith('Scene 1 candidate 1 (clip pixabay-2):')
+    assert [data for _, _, data in prompts[1][1][2:5]] == [b'frame 2', b'frame 3', b'frame 1']
+    assert selected['octo']['asset']['id'] == f'{3:032x}' and 'AI-checked match (9/10): An octopus' in selected['octo']['match']
+    assert selected['honey']['asset']['id'] == f'{4:032x}'           # green screen ranked last
+    assert 'No stock clip matched this scene well' in selected['title']['error']
+    assert selected['honey2']['asset']['id'] == f'{5:032x}' and selected['honey2']['match'].startswith('AI-checked match (6/10)')
+    assert downloaded == [3, 4, 5]
+    assert steps[0] == 'Reading the script and planning shots' and 'Checking candidate clips with AI' in steps
+
+
+def test_footage_without_gemini_uses_keywords_and_ranking(monkeypatch):
+    def gemini(prompt, grounded=False, images=()):
+        raise ValueError('Gemini rate limit reached. Try again shortly.')
+    footage, body, searched, downloaded = footage_fixture(monkeypatch, gemini)
+    body['scenes'].append({**body['scenes'][2], 'id': 'honey2'})       # the same words: never the same clip twice
+    selected = {s['scene_id']: s for s in footage.find(body, body['scenes'])}
+    assert selected['octo']['error'] == 'Add English search keywords'
+    assert selected['title']['asset']['id'] == f'{7:032x}'           # real film over a low-quality animation
+    assert (selected['honey']['asset']['id'], selected['honey2']['asset']['id']) == (f'{4:032x}', f'{5:032x}')
+    assert selected['honey']['match'] == 'Best keyword match'
+
+
+def test_stock_all_job_uses_the_footage_matcher(monkeypatch):
+    from studio import footage
+    seen = {}
+
+    def find(project, scenes, progress):
+        progress('Searching footage 1/1')
+        seen['ids'] = [s['id'] for s in scenes]
+        return [{'scene_id': 'scene1', 'asset': {'id': 'c' * 32}, 'match': 'AI-checked match (9/10)'}]
+    monkeypatch.setattr(footage, 'find', find)
+    body = project()
+    body['scenes'][0].update(visual='upload', video_asset='')
+    row = store.save_project(body)
+    job = store.enqueue(row['id'], 1, 'stock_all')
+    from studio.tasks import task_stock_all
+    assert task_stock_all.run(job['id'])['status'] == 'succeeded'
+    assert seen['ids'] == ['scene1']
+    assert store.job(job['id'])['result']['selections'][0]['match'] == 'AI-checked match (9/10)'
+
+
+def test_gemini_waits_out_a_per_minute_limit_but_not_a_daily_one(monkeypatch):
+    monkeypatch.setattr(providers, 'online', lambda: {'gemini_key': 'fixture', 'gemini_model': 'gemini-test', 'daily_ai_calls': 100})
+    slept, answers = [], []
+    monkeypatch.setattr(providers.time, 'sleep', slept.append)
+
+    class Response:
+        def json(self):
+            return {'candidates': [{'finishReason': 'STOP', 'content': {'parts': [{'text': '{"ok": 1}'}]}}]}
+
+    def request(method, url, **kw):
+        answer = answers.pop(0)
+        if isinstance(answer, str):
+            raise ValueError(answer)
+        assert kw['json']['contents'][0]['parts'][1:] == [{'text': 'Scene 0 candidate 1:'}, {'inline_data': {'mime_type': 'image/jpeg', 'data': 'ZnJhbWU='}}]
+        return Response()
+    monkeypatch.setattr(providers, 'request', request)
+    answers[:] = ['Provider returned HTTP 429: Quota exceeded for requests per minute. Please retry in 12.5s.', Response()]
+    assert providers.gemini('Pick', images=[('Scene 0 candidate 1:', 'image/jpeg', b'frame')])[0] == '{"ok": 1}'
+    assert slept == [13.5]
+    answers[:] = ['Provider returned HTTP 429: Generate content requests per day limit exceeded. Please retry in 48m23.5s.']
+    with pytest.raises(ValueError, match='per day'):
+        providers.gemini('Pick', images=[('Scene 0 candidate 1:', 'image/jpeg', b'frame')])
+    assert slept == [13.5]
+
+
+# Gemini backup models ------------------------------------------------------------------------
+
+def fake_gemini_http(monkeypatch, answers, fallbacks='backup-a, backup-b'):
+    """Each model answers with its entry in answers: an error message or a JSON text."""
+    monkeypatch.setattr(providers, 'online', lambda: {'gemini_key': 'fixture', 'gemini_model': 'main-model',
+                                                      'gemini_fallback_models': fallbacks, 'daily_ai_calls': 100})
+    monkeypatch.setattr(providers.time, 'sleep', lambda s: None)
+    called = []
+
+    class Response:
+        def __init__(self, text): self.text = text
+        def json(self):
+            return {'candidates': [{'finishReason': 'STOP', 'content': {'parts': [{'text': self.text}]}}]}
+
+    def request(method, url, **kw):
+        model = url.split('/models/')[1].split(':')[0]
+        called.append(model)
+        answer = answers[model]
+        if answer.startswith('Provider returned'):
+            raise ValueError(answer)
+        return Response(answer)
+    monkeypatch.setattr(providers, 'request', request)
+    return called
+
+
+def test_gemini_moves_to_backup_models_when_a_model_is_out_of_quota_busy_or_retired(monkeypatch):
+    called = fake_gemini_http(monkeypatch, {
+        'main-model': 'Provider returned HTTP 429: Quota exceeded for requests per day. Please retry in 48m2s.',
+        'backup-a': 'Provider returned HTTP 404: This model is no longer available to new users.',
+        'backup-b': '{"ok": "backup"}'})
+    assert providers.gemini('Hello')[0] == '{"ok": "backup"}'
+    assert called == ['main-model', 'backup-a', 'backup-b']
+    assert providers.gemini_models({'gemini_model': 'main-model', 'gemini_fallback_models': ' a , main-model,,bad model!, b'}) == ['main-model', 'a', 'b']
+
+
+def test_gemini_backup_models_are_not_used_for_request_errors_and_report_when_all_fail(monkeypatch):
+    called = fake_gemini_http(monkeypatch, {'main-model': 'Provider returned HTTP 400: Invalid JSON payload.',
+                                            'backup-a': '{"ok": 1}', 'backup-b': '{"ok": 2}'})
+    with pytest.raises(ValueError, match='HTTP 400'):
+        providers.gemini('Hello')
+    assert called == ['main-model']                       # a bad request would fail on every model
+    busy = 'Provider returned HTTP 503: This model is currently experiencing high demand.'
+    called = fake_gemini_http(monkeypatch, {'main-model': busy, 'backup-a': busy, 'backup-b': busy})
+    with pytest.raises(ValueError, match=r'Every Gemini model is busy or out of quota \(main-model, backup-a, backup-b\)'):
+        providers.gemini('Hello')
+    assert called == ['main-model', 'backup-a', 'backup-b', 'backup-b', 'backup-b']   # only the last one waits
+    from studio.config import DEFAULTS
+    assert DEFAULTS['gemini_fallback_models'].startswith('gemini-3-flash-preview, ')
+
+
+# Deleting a project --------------------------------------------------------------------------
+
+def test_delete_project_removes_its_data_and_keeps_library_media(tmp_path):
+    picture = tmp_path / 'scene.png'
+    ffmpeg('-f', 'lavfi', '-i', 'color=c=teal:s=640x960', '-frames:v', '1', picture)
+    image = upload_file(picture)
+    c = client()
+    body = project()
+    body['scenes'][0].update(visual='image', video_asset=image['id'])
+    pid = c.post('/api/projects', body, content_type='application/json').json()['id']
+    keep = c.post('/api/projects', project(), content_type='application/json').json()['id']
+    saved = c.put(f'/api/projects/{pid}', {'revision': 1, 'project': {**body, 'title': 'Second revision'}}, content_type='application/json')
+    assert saved.status_code == 200, saved.content
+    assert c.put(f'/api/projects/{pid}/draft', {'title': 'autosave'}, content_type='application/json').status_code in (200, 201)
+    job = store.enqueue(pid, 2, 'research')
+    store.progress(job['id'], 'Complete', 'succeeded', {'duration': 1})
+    export = DATA / 'exports' / job['id']
+    export.mkdir(parents=True)
+    (export / 'reel.mp4').write_bytes(b'video')
+    other = store.enqueue(keep, 1, 'research')
+
+    # A job in progress blocks deletion; nothing is removed.
+    running = store.enqueue(pid, 2, 'research')
+    refused = c.delete(f'/api/projects/{pid}')
+    assert refused.status_code == 409 and 'job in progress' in refused.json()['detail']
+    assert c.get(f'/api/projects/{pid}').status_code == 200
+    store.progress(running['id'], 'Interrupted', 'failed')
+
+    deleted = c.delete(f'/api/projects/{pid}')
+    assert deleted.status_code == 200, deleted.content
+    assert deleted.json() == {'deleted': pid, 'title': 'Second revision', 'jobs': 2}
+    assert c.get(f'/api/projects/{pid}').status_code == 400
+    assert c.get(f'/api/projects/{pid}/history').json() == []
+    assert c.get(f'/api/projects/{pid}/jobs').json() == []
+    assert not Job.objects.filter(project_id=pid).exists() and not export.exists()
+    assert [p['id'] for p in c.get('/api/projects').json()] == [keep]
+    assert c.get(f"/api/assets/{image['id']}").status_code == 200             # library media stays
+    assert store.job(other['id'])['state'] == 'queued'                          # other projects untouched
+    assert c.delete(f'/api/projects/{pid}').status_code == 404
+
+
+def test_delete_project_buttons_dom_behaviour():
+    page = DATA.parent / 'projects.html'
+    page.write_bytes(client().get('/').content)
+    subprocess.run(['node', 'tests/audit_projects_ui.cjs', str(page)], check=True, timeout=60)
+
+
+# Shot pacing and captions on/off -------------------------------------------------------------
+
+def colour_clip(tmp_path, colour, seconds=3):
+    path = tmp_path / f'{colour}.mp4'
+    ffmpeg('-f', 'lavfi', '-i', f'color=c={colour}:s=640x360:r=30:d={seconds}', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', path)
+    return upload_file(path)['id']
+
+
+def test_long_scene_cuts_between_its_extra_shots_about_every_four_seconds(tmp_path):
+    red, green, blue, white = (colour_clip(tmp_path, c) for c in ('red', 'green', 'blue', 'white'))
+    shots = {'visual': 'stock', 'video_asset': red, 'rights_reviewed': True, 'extra_shots': [green, blue, white]}
+    # 9 s of narration: three clips of 3 s each (the fourth is not needed).
+    pid, _ = framing_project([{'id': 'long', **shots}], tmp_path, tone_seconds=9.0)
+    directory, _ = render_over_http(pid, 'draft')
+    reel = directory / 'reel.mp4'
+    assert [centre_colour(reel, at) for at in (1.5, 4.5, 7.5)] == ['r', 'g', 'b']
+    report = json.loads((directory / 'source-report.json').read_text('utf-8'))
+    assert [a['id'] for a in report['scenes'][0]['extra_shots']] == [green, blue]
+    # 2 s of narration: the scene's own clip only.
+    pid, _ = framing_project([{'id': 'short', **shots}], tmp_path, tone_seconds=2.0)
+    directory, _ = render_over_http(pid, 'draft')
+    assert [centre_colour(directory / 'reel.mp4', at) for at in (0.5, 1.5)] == ['r', 'r']
+
+
+def test_scene_shots_use_only_video_scenes_and_default_framing():
+    from studio.framing import scene_shots
+    scene = {'visual': 'upload', 'video_asset': 'a' * 32, 'extra_shots': ['b' * 32, 'c' * 32], 'zoom': 2.0, 'trim_start': 1.5}
+    assert [s['video_asset'] for s in scene_shots(scene, 4.0)] == ['a' * 32]
+    shots = scene_shots(scene, 8.5)
+    assert [s['video_asset'] for s in shots] == ['a' * 32, 'b' * 32, 'c' * 32]
+    assert (shots[0]['zoom'], shots[0]['trim_start'], shots[1]['zoom'], shots[1]['trim_start']) == (2.0, 1.5, 1.0, 0)
+    assert scene_shots({**scene, 'visual': 'image'}, 12) == [{**scene, 'visual': 'image'}]
+
+
+def test_extra_shots_are_applied_from_footage_search_and_cleared_by_a_manual_choice(tmp_path):
+    red, green, blue = (colour_clip(tmp_path, c) for c in ('red', 'green', 'blue'))
+    body = project()
+    body['scenes'][0].update(visual='upload', video_asset='', rights_reviewed=False)
+    row = store.save_project(body)
+    job = store.enqueue(row['id'], 1, 'stock_all')
+    store.progress(job['id'], 'Complete', 'succeeded', {'selections': [
+        {'scene_id': 'scene1', 'asset': store.asset(red), 'extra_assets': [store.asset(green), store.asset(blue)]}]})
+    c = client()
+    applied = c.post(f"/api/projects/{row['id']}/apply-job/{job['id']}", {}, content_type='application/json')
+    assert applied.status_code == 200, applied.content
+    scene = applied.json()['project']['project']['scenes'][0]
+    assert (scene['video_asset'], scene['extra_shots'], scene['visual']) == (red, [green, blue], 'stock')
+    assert store.preflight({**applied.json()['project']['project'], 'scenes': [{**scene, 'rights_reviewed': True}]})['ready']
+    assigned = c.post(f"/api/projects/{row['id']}/assign-media", {'asset_id': blue, 'scene_ids': ['scene1']}, content_type='application/json')
+    assert assigned.status_code == 200, assigned.content
+    scene = assigned.json()['project']['scenes'][0]
+    assert (scene['video_asset'], scene['extra_shots'], scene['visual']) == (blue, [], 'upload')
+    # A missing extra shot blocks rendering with a clear message.
+    broken = {**assigned.json()['project'], 'scenes': [{**scene, 'extra_shots': ['f' * 32]}]}
+    assert any('extra shot is unavailable' in e['message'] for e in store.preflight(broken)['errors'])
+
+
+def test_captions_can_be_turned_off_per_project(tmp_path, monkeypatch):
+    body = project()
+    assert body['captions_enabled'] is True                                   # on by default
+    body['scenes'][0].update(roman='', narration_source_roman='')
+    assert any(e['field'] == 'roman' for e in store.preflight(body)['errors'])
+    assert store.preflight({**body, 'captions_enabled': False})['ready']       # no Roman captions needed when off
+    written = []
+    original = media.write_ass
+    monkeypatch.setattr(media, 'write_ass', lambda path, cues, project, title=None, total=0:
+                        written.append((list(cues), title)) or original(path, cues, project, title, total))
+    pid, _ = framing_project([{'id': 'title', 'visual': 'graphic', 'graphic_title': 'Heading'}], tmp_path)
+    c = client()
+    for enabled in (True, False):
+        row = c.get(f'/api/projects/{pid}').json()
+        saved = c.put(f'/api/projects/{pid}', {'revision': row['revision'], 'project': {**row['project'], 'captions_enabled': enabled}},
+                      content_type='application/json')
+        assert saved.status_code == 200, saved.content
+        directory, _ = render_over_http(pid, 'draft')
+        assert (directory / 'captions.srt').read_text('utf-8').strip()          # the SRT is exported either way
+    assert written[0][0] and written[0][1] == 'Heading'
+    assert written[-1] == ([], 'Heading')                                       # off: no caption cues, title kept
+
+
+def test_footage_downloads_extra_shots_for_a_long_scene(monkeypatch):
+    def gemini(prompt, grounded=False, images=()):
+        if not images:
+            return json.dumps({'scenes': []}), {}
+        labels = ' '.join(label for label, _, _ in images)
+        assert 'Scene 2 (needs 3 clips): line' in labels
+        return json.dumps({'scenes': [{'index': 2, 'picks': [{'candidate': 1, 'score': 9}, {'candidate': 2, 'score': 6}]}]}), {}
+    footage, body, searched, downloaded = footage_fixture(monkeypatch, gemini)
+    body['scenes'][2]['roman'] = ('Honey ni sarigga store chesthe vela samvatsaralu aina paadavakunda undagaladhu ani '
+                                  'scientists cheptunnaru, Egypt pyramids lo kuda dorikindhi ani antunnaru')   # 18 words, ~9.6 s
+    assert footage.shots_needed(body['scenes'][2]) == 3
+    selected = {s['scene_id']: s for s in footage.find(body, [body['scenes'][2]])}
+    honey = selected['honey']
+    assert honey['asset']['id'] == f'{4:032x}' and [a['id'] for a in honey['extra_assets']] == [f'{5:032x}']
+    assert honey['match'].startswith('AI-checked match (9/10) + 1 more shot(s)')
+    assert downloaded == [4, 5]
+
+
+def test_captions_switch_and_extra_shots_dom_behaviour():
+    page = DATA.parent / 'captions-switch.html'
+    page.write_bytes(client().get('/').content)
+    subprocess.run(['node', 'tests/audit_shots_ui.cjs', str(page)], check=True, timeout=60)
+
+
+# YouTube video format (16:9, long-form) ------------------------------------------------------
+
+def test_video_format_limits_scenes_and_target_per_format():
+    body = project()
+    assert body['format'] == 'reel'                                              # the default
+    many = [{**body['scenes'][0], 'id': f's{i}'} for i in range(31)]
+    with pytest.raises(ValueError, match='Instagram Reel supports up to 30 scenes; choose YouTube video'):
+        Project.model_validate({**body, 'scenes': many})
+    with pytest.raises(ValueError, match='Instagram Reel supports a target of up to 3 minutes'):
+        Project.model_validate({**body, 'target_seconds': 1200})
+    long = Project.model_validate({**body, 'format': 'youtube', 'target_seconds': 1200,
+                                   'scenes': [{**body['scenes'][0], 'id': f's{i}'} for i in range(400)]})
+    assert len(long.scenes) == 400
+    with pytest.raises(ValueError, match='at most 400 items'):
+        Project.model_validate({**body, 'format': 'youtube', 'scenes': [{**body['scenes'][0], 'id': f's{i}'} for i in range(401)]})
+
+
+def test_youtube_timeline_allows_long_videos_and_reels_stay_three_minutes():
+    from studio.timeline import compute_timeline
+    body = project()
+    body['scenes'] = [{**body['scenes'][0], 'id': f's{i}'} for i in range(300)]
+    voices = [{'scene_id': f's{i}', 'duration': 4.0, 'cues': []} for i in range(300)]
+    timeline = compute_timeline({**body, 'format': 'youtube'}, voices)
+    assert round(timeline.total_duration) == 1200                                    # 20 minutes
+    with pytest.raises(ValueError, match='Instagram Reel supports up to 3 minutes.*or choose YouTube video'):
+        compute_timeline(body, voices)
+
+
+def test_youtube_captions_are_laid_out_for_a_landscape_frame(tmp_path):
+    from studio.formats import caption_margin, size
+    body = project()
+    reel, youtube = tmp_path / 'reel.ass', tmp_path / 'youtube.ass'
+    long_text = 'Mana Bhoomi meedha unna samudralu chala lothuga unnayi mariyu vatilo enno rahasyalu unnayi'
+    media.write_ass(reel, [{'start': 0, 'end': 2, 'text': long_text}], body)
+    media.write_ass(youtube, [{'start': 0, 'end': 2, 'text': long_text}], {**body, 'format': 'youtube'})
+    r, y = reel.read_text('utf-8'), youtube.read_text('utf-8')
+    assert 'PlayResX: 1080\nPlayResY: 1920' in r and ',2,90,140,300,1' in r              # reels unchanged
+    assert 'PlayResX: 1920\nPlayResY: 1080' in y and ',2,200,200,84,1' in y
+    assert r.split('Dialogue:')[1].count(r'\N') > y.split('Dialogue:')[1].count(r'\N')  # wider lines
+    assert (size({'format': 'youtube'}, 'draft'), size({}, 'draft'), caption_margin({'format': 'youtube', 'caption_bottom': 600})) == \
+           ((960, 540), (540, 960), 168)
+
+
+def test_youtube_video_renders_landscape_draft_and_final(tmp_path):
+    clip = tmp_path / 'wide.mp4'
+    ffmpeg('-f', 'lavfi', '-i', 'color=c=blue:s=1920x1080:r=30:d=3', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', clip)
+    video = upload_file(clip)['id']
+    pid, body = framing_project([{'id': 'clip', 'visual': 'stock', 'video_asset': video, 'rights_reviewed': True},
+                                 {'id': 'title', 'visual': 'graphic', 'graphic_title': 'Chapter one'}], tmp_path)
+    c = client()
+    row = c.get(f'/api/projects/{pid}').json()
+    saved = c.put(f'/api/projects/{pid}', {'revision': row['revision'], 'project': {**row['project'], 'format': 'youtube', 'target_seconds': 600}},
+                  content_type='application/json')
+    assert saved.status_code == 200, saved.content
+    for quality, dimensions in (('draft', [960, 540]), ('final', [1920, 1080])):
+        directory, manifest = render_over_http(pid, quality)
+        reel = directory / 'reel.mp4'
+        stream = next(s for s in media.probe(reel)['streams'] if s['codec_type'] == 'video')
+        assert [stream['width'], stream['height']] == dimensions
+        assert centre_colour(reel, 1.0) == 'b'                                       # the landscape clip fills the frame
+        assert json.loads((directory / 'source-report.json').read_text('utf-8'))['dimensions'] == dimensions
+    # The exact-frame preview uses the project's (or the editor's unsaved) format.
+    preview = c.post(f'/api/projects/{pid}/framing-preview', {'scene': body['scenes'][0] | {'video_asset': video, 'visual': 'stock'},
+                                                            'quality': 'draft'}, content_type='application/json')
+    assert preview.status_code == 200, preview.content
+    assert json.loads(preview['X-Framing-Geometry'])['width'] == 960
+    reel_preview = c.post(f'/api/projects/{pid}/framing-preview', {'scene': body['scenes'][0] | {'video_asset': video, 'visual': 'stock'},
+                                                                 'quality': 'draft', 'format': 'reel'}, content_type='application/json')
+    assert json.loads(reel_preview['X-Framing-Geometry'])['width'] == 540
+
+
+def test_framing_windows_fit_a_landscape_frame():
+    from studio.framing import scene_shots, window
+    assert window(1080, 1920, '4:5') == (0, 286, 1080, 1350)                         # reels unchanged
+    assert window(1920, 1080, '4:5') == (528, 0, 864, 1080)
+    assert window(1920, 1080, '1:1') == (420, 0, 1080, 1080)
+    assert window(1920, 1080, '16:9') == (0, 0, 1920, 1080)
+    scene = {'visual': 'stock', 'video_asset': 'a' * 32, 'extra_shots': ['b' * 32, 'c' * 32]}
+    assert len(scene_shots(scene, 11.0, 6.0)) == 2 and len(scene_shots(scene, 11.0)) == 3   # YouTube: every ~6 s
+
+
+def test_youtube_footage_prefers_landscape_clips_and_works_in_batches(monkeypatch):
+    from studio import footage
+    from studio.stock import best_file
+    tall, wide = pixabay_hit(1, 'ocean, wave', 1080, 1920), pixabay_hit(2, 'ocean, wave', 1920, 1080)
+    weight = footage.weights(['ocean wave'])
+    assert footage.rank(tall, weight, 0) > footage.rank(wide, weight, 0)              # reel: vertical first
+    assert footage.rank(wide, weight, 0, landscape=True) > footage.rank(tall, weight, 0, landscape=True)
+    files = [{'url': 'u4k', 'width': 3840, 'height': 2160, 'size': 30_000_000}, {'url': 'u1080', 'width': 1920, 'height': 1080, 'size': 9_000_000}]
+    assert (best_file(files)['url'], best_file(files, landscape=True)['url']) == ('u4k', 'u1080')
+
+    calls = []
+
+    def gemini(prompt, grounded=False, images=()):
+        calls.append(len(images))
+        if not images:
+            need = json.loads(prompt[prompt.index('NEED: ') + 6:])
+            assert 'landscape 16:9 long-form YouTube video' in prompt and len(need) <= footage.PLAN_BATCH
+            return json.dumps({'scenes': [{'index': i, 'shot': 'Ocean waves', 'queries': ['ocean wave']} for i in need]}), {}
+        assert 'a landscape clip that fills a 16:9 frame' in prompt
+        rows = {}
+        for label, _, _ in images:
+            scene = int(label.split('candidate')[0].split('Scene')[-1])
+            rows.setdefault(scene, []).append({'candidate': len(rows.get(scene, [])) + 1, 'score': 8})
+        return json.dumps({'scenes': [{'index': i, 'picks': p} for i, p in rows.items()]}), {}
+    searches = iter(range(1000))          # every scene's search finds its own 20 clips
+    monkeypatch.setattr(providers, 'stock_search', lambda query, provider='auto':
+                        [pixabay_hit(1000 + 20 * n + k, 'ocean, wave', 1920, 1080) for n in [next(searches)] for k in range(20)])
+    downloaded = []
+    monkeypatch.setattr(providers, 'download_stock', lambda id, provider, landscape=False: downloaded.append(landscape) or {'id': f'{id:032x}'})
+    monkeypatch.setattr(footage, 'preview', lambda hit: ('image/jpeg', b'frame'))
+    monkeypatch.setattr(providers, 'gemini', gemini)
+    body = project()
+    body['format'] = 'youtube'
+    body['scenes'] = [{**body['scenes'][0], 'id': f's{i}', 'visual': 'stock', 'roman': 'Samudram lo alalu', 'keywords': ''} for i in range(45)]
+    steps = []
+    selected = footage.find(body, body['scenes'][:18], steps.append)
+    assert calls == [0, 6 * 16, 6 * 2]                     # one plan request; pick: 16 scenes, then 2, six frames each
+    assert len(selected) == 18 and all('asset' in s for s in selected) and set(downloaded) == {True}
+    assert 'Checking candidate clips with AI (1/2)' in steps
+    calls.clear()
+    footage.plan(body, list(range(45)))
+    assert calls == [0, 0]                                 # 45 scenes: planned in two requests
+
+
+def test_fill_scenes_completes_a_long_script_in_batches_with_the_whole_script(monkeypatch):
+    calls = fake_gemini(monkeypatch)
+    body = project()
+    body['format'] = 'youtube'
+    body['scenes'] = [{**body['scenes'][0], 'id': f's{i}', 'roman': f'Vakyam {i}', 'narration': '', 'keywords': '', 'graphic_title': ''}
+                      for i in range(70)]
+    scenes = providers.fill_scenes(Project.model_validate(body).model_dump())
+    assert len(calls) == 3 and all('The whole script, for context only' in c and '"Vakyam 69"' in c for c in calls)
+    assert [len(json.loads(c[c.index('Scenes: ') + 8:])) for c in calls] == [30, 30, 10]
+    assert all(s['narration'] and s['keywords'] for s in scenes)
+
+
+def test_stock_requests_are_paced_and_wait_out_a_rate_limit(monkeypatch):
+    from studio import stock
+    slept, clock = [], [100.0]
+    monkeypatch.setattr(stock.time, 'monotonic', lambda: clock[0])
+    monkeypatch.setattr(stock.time, 'sleep', lambda s: (slept.append(round(s, 2)), clock.__setitem__(0, clock[0] + s)))
+    stock._last_request.clear()
+    answers = iter([ValueError('Provider returned HTTP 429: Too many requests'), 'ok'])
+
+    def call():
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    assert stock.paced('pixabay', lambda: 'first') == 'first'
+    assert stock.paced('pixabay', call) == 'ok'
+    assert slept == [0.7, 20]
+    with pytest.raises(ValueError, match='HTTP 401'):
+        stock.paced('pixabay', lambda: (_ for _ in ()).throw(ValueError('Provider returned HTTP 401')))
+
+
+def test_youtube_ai_draft_writes_a_long_form_script(monkeypatch):
+    seen = {}
+
+    def gemini(prompt, grounded=False, images=(), max_tokens=12000):
+        seen.update(prompt=prompt, max_tokens=max_tokens)
+        rows = [{'narration': 'దృశ్యం', 'roman': f'Drushyam {i}', 'keywords': 'ocean', 'graphic_title': 'Ocean'}
+                for i in range(120 if max_tokens > 12000 else 5)]
+        return json.dumps({'scenes': rows}), {}
+    monkeypatch.setattr(providers, 'gemini', gemini)
+    body = Project.model_validate({**project(), 'format': 'youtube', 'target_seconds': 1200, 'topic': 'Ocean secrets'}).model_dump()
+    assert len(providers.draft(body)['scenes']) == 120
+    assert seen['max_tokens'] == 60000 and 'Maximum 240 scenes' in seen['prompt'] and 'long-form YouTube video script' in seen['prompt']
+    providers.draft(project())
+    assert seen['max_tokens'] == 12000 and 'Maximum 20 scenes' in seen['prompt']
+
+
+def test_large_youtube_project_saves_over_http():
+    body = project()
+    body['format'] = 'youtube'
+    body['scenes'] = [{**body['scenes'][0], 'id': f's{i}', 'roman': 'Idi oka pedda vakyam ' * 60, 'narration': 'ఇది ' * 200}
+                      for i in range(300)]
+    payload = json.dumps(body, ensure_ascii=False)
+    assert len(payload.encode()) > 1024 * 1024
+    res = client().post('/api/projects', payload, content_type='application/json')
+    assert res.status_code == 200, res.content[:200]
+    assert len(res.json()['project']['scenes']) == 300
+
+
+def test_video_format_switch_dom_behaviour():
+    page = DATA.parent / 'format.html'
+    page.write_bytes(client().get('/').content)
+    subprocess.run(['node', 'tests/audit_format_ui.cjs', str(page)], check=True, timeout=60)
+
+
+# Phones and other devices: password access ---------------------------------------------------
+
+@pytest.fixture
+def no_access_password(monkeypatch):
+    monkeypatch.delenv('STUDIO_PASSWORD', raising=False)
+    save_settings({'access_password_hash': ''})
+    from studio import access
+    access._failures.clear()
+    yield
+    save_settings({'access_password_hash': ''})
+
+
+def phone(address='192.168.1.20', **extra):
+    return Client(REMOTE_ADDR=address, **extra)
+
+
+def test_other_devices_are_refused_until_a_password_is_set(no_access_password):
+    page = phone().get('/')
+    assert page.status_code == 403 and b'Access from other devices is off' in page.content
+    assert phone().get('/api/bootstrap').status_code == 403
+    assert phone().get('/static/js/app.js').status_code == 403
+    assert phone().get('/static/app.css').status_code == 200                    # the sign-in page's style
+    assert phone().get('/login').status_code == 403
+    assert client().get('/').status_code == 200                                  # the studio PC needs no password
+    assert client().get('/api/bootstrap').json()['access'] == {'local': True}
+    # A loopback connection through a proxy is not the studio PC.
+    assert Client(REMOTE_ADDR='127.0.0.1', HTTP_X_FORWARDED_FOR='203.0.113.9').get('/api/bootstrap').status_code == 403
+
+
+def test_other_devices_sign_in_with_the_studio_password(no_access_password):
+    c = client()
+    assert c.post('/api/settings', {'access_password': 'short'}, content_type='application/json').status_code == 400
+    # The sign-in form must send its real origin (no-referrer would make browsers send "Origin: null").
+    assert c.get('/login')['Referrer-Policy'] == 'same-origin' and c.get('/')['Referrer-Policy'] == 'no-referrer'
+    assert phone().post('/login', {'password': 'x'}, HTTP_ORIGIN='https://evil.example').status_code == 403
+    assert c.post('/api/settings', {'access_password_hash': 'x'}, content_type='application/json').status_code == 400
+    saved = c.post('/api/settings', {'access_password': 'telugu-reels-2026'}, content_type='application/json')
+    assert saved.status_code == 200, saved.content
+    assert saved.json()['access_password_set'] is True and b'pbkdf2' not in saved.content
+    assert 'access_password_hash' not in c.get('/api/bootstrap').json()['settings']
+
+    device = phone()
+    first = device.get('/?tab=export')
+    assert first.status_code == 302 and first['Location'] == '/login?next=/?tab=export'
+    assert device.get('/api/bootstrap').status_code == 401
+    assert b'Sign in' in device.get('/login').content
+    wrong = device.post('/login', {'password': 'telugu-reels-2025', 'next': '/'})
+    assert wrong.status_code == 401 and b'not right' in wrong.content
+    ok = device.post('/login', {'password': 'telugu-reels-2026', 'next': '//evil.example/'})
+    assert ok.status_code == 302 and ok['Location'] == '/'                     # never redirects off the studio
+    cookie = ok.cookies['studio_access']
+    assert cookie['httponly'] and cookie['samesite'] == 'Lax' and int(cookie['max-age']) == 30 * 86400
+    boot = device.get('/api/bootstrap')
+    assert boot.status_code == 200 and boot.json()['access'] == {'local': False}
+    token = boot.json()['token']
+    created = device.post('/api/projects', project(), content_type='application/json', HTTP_X_STUDIO_TOKEN=token)
+    assert created.status_code == 200, created.content                          # a signed-in phone can work
+
+    forged = phone()
+    forged.cookies['studio_access'] = cookie.value[:-3] + 'abc'
+    assert forged.get('/api/bootstrap').status_code == 401
+    # Changing the password signs every device out.
+    assert c.post('/api/settings', {'access_password': 'another-password-1'}, content_type='application/json').status_code == 200
+    assert device.get('/api/bootstrap').status_code == 401
+    assert device.post('/login', {'password': 'another-password-1'}).status_code == 302
+    out = device.get('/logout')
+    assert out.status_code == 302 and out['Location'] == '/login' and device.get('/api/bootstrap').status_code == 401
+
+    # Guessing is paused after ten wrong passwords from one address.
+    guesser = phone('192.168.1.99')
+    for _ in range(10):
+        assert guesser.post('/login', {'password': 'guess-guess'}).status_code == 401
+    assert guesser.post('/login', {'password': 'another-password-1'}).status_code == 429
+    assert phone('192.168.1.50').post('/login', {'password': 'another-password-1'}).status_code == 302
+
+    # Removing the password turns access from other devices off again.
+    cleared = c.post('/api/settings', {'access_password_clear': True}, content_type='application/json')
+    assert cleared.json()['access_password_set'] is False
+    assert device.get('/').status_code == 403
+
+
+def test_server_password_from_the_environment(no_access_password, monkeypatch):
+    monkeypatch.setenv('STUDIO_PASSWORD', 'server-secret-99')
+    device = phone('10.0.0.5')
+    assert device.post('/login', {'password': 'server-secret-9'}).status_code == 401
+    assert device.post('/login', {'password': 'server-secret-99'}).status_code == 302
+    assert device.get('/api/bootstrap').status_code == 200
+    assert client().get('/api/bootstrap').json()['settings']['access_password_from_server'] is True
+
+
+def test_secret_key_is_not_the_old_public_default():
+    assert settings.SECRET_KEY != 'django-insecure-studio-dev-key-7f2d37c50ff9429f0970aacf8f4aa068' and len(settings.SECRET_KEY) >= 40

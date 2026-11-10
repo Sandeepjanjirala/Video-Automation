@@ -26,6 +26,23 @@
     </div>
 
     <div class="field">
+      <span>Backup Gemini models</span>
+      <input type="text" id="setting-gemini-fallback-models" placeholder="gemini-3-flash-preview, gemini-3.1-flash-lite">
+      <small>Comma-separated, tried in order when the model above is out of quota, busy or retired. Each model has its own free daily quota.</small>
+    </div>
+
+    <div class="field">
+      <span>Password for phone and other devices</span>
+      <input type="password" id="setting-access-password" autocomplete="new-password" minlength="8"
+             placeholder="At least 8 characters">
+      <small id="hint-access-password">This computer never needs it. Phones and other computers sign in with it
+        (start the studio with START_PHONE_ACCESS.bat). Leave blank to keep the current password.</small>
+      <label class="check" id="row-access-password-clear" hidden>
+        <input type="checkbox" id="setting-access-password-clear"> Turn off access from other devices (remove the password)
+      </label>
+    </div>
+
+    <div class="field">
       <span>Maximum Gemini API requests per UTC day</span>
       <input type="number" id="setting-daily-ai-calls" min="1" max="100" value="20">
       <small>A request-count limit, not a financial spending cap.</small>

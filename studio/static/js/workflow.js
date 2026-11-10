@@ -12,7 +12,8 @@
     return {pid: StudioState.current?.id, sid: $(button).data('scene-id')};
   }
   function buildPrompt(scene, seconds) {
-    return `Create a ${seconds}-second cinematic vertical video, 9:16, for a Telugu educational or storytelling reel.
+    const landscape = StudioState.format().width > StudioState.format().height;
+    return `Create a ${seconds}-second cinematic ${landscape ? 'landscape video, 16:9, for a Telugu long-form YouTube video' : 'vertical video, 9:16, for a Telugu educational or storytelling reel'}.
 Scene subject / action: ${scene.keywords || scene.graphic_title || '[Describe the subject and one clear action in English]'}.
 Narration context (do not render as text): ${scene.narration || scene.roman || '[Add narration context]'}
 Use one coherent shot, natural motion, realistic lighting, clear composition and a gentle camera movement. Keep the subject inside the central safe area; leave the bottom third clear for captions added later.

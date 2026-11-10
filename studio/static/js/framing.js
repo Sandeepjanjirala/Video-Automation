@@ -1,7 +1,8 @@
 /**
  * Telugu Reel Studio - Framing preview (Stage 3)
  *
- * Shows how each scene's video or image sits in the 1080x1920 reel. `geometry`
+ * Shows how each scene's video or image sits in the frame: 1080x1920 for a reel, 1920x1080 for a
+ * YouTube video (StudioState.FORMATS). `geometry`
  * mirrors studio/framing.py operation for operation, so the live preview crops
  * and pads at the renderer's exact pixel offsets. "Render exact frame" asks
  * FFmpeg for the real frame using the export's filters and caption style.
@@ -9,9 +10,12 @@
 (function($) {
   'use strict';
 
-  const W = 1080, H = 1920, FRAME = 1 / 30;
+  const FRAME = 1 / 30;
   const ASPECTS = {'full': null, '4:5': [4, 5], '1:1': [1, 1], '16:9': [16, 9]};
-  const ASPECT_LABELS = [['full', 'Full vertical 9:16'], ['4:5', 'Portrait 4:5'], ['1:1', 'Square 1:1'], ['16:9', 'Widescreen 16:9']];
+  // Output frame of the open project's format.
+  const dims = () => [StudioState.format().width, StudioState.format().height];
+  const aspectLabels = () => [['full', StudioState.format().width > StudioState.format().height ? 'Full frame 16:9' : 'Full vertical 9:16'],
+                              ['4:5', 'Portrait 4:5'], ['1:1', 'Square 1:1'], ['16:9', 'Widescreen 16:9']];
   const RESET = {fit: 'crop', frame_aspect: 'full', zoom: 1, crop_x: 0.5, crop_y: 0.5};
   const esc = value => $('<div>').text(value == null ? '' : value).html().replace(/"/g, '&quot;');
 
@@ -28,6 +32,10 @@
   function frameWindow(width, height, aspect) {
     const ratio = ASPECTS[aspect];
     if (!ratio) return [0, 0, width, height];
+    if (width * ratio[1] > height * ratio[0]) {
+      const w = Math.min(width, even(height * ratio[0] / ratio[1]));
+      return [even((width - w) / 2), 0, w, height];
+    }
     const h = Math.min(height, even(width * ratio[1] / ratio[0]));
     return [0, even((height - h) / 2), width, h];
   }
@@ -65,6 +73,7 @@
 
   function sceneGeometry(s, source, width, height) {
     const f = framingOf(s);
+    const [W, H] = dims();
     return geometry(source.width, source.height, width || W, height || H, f.fit, f.frame_aspect, f.zoom, f.crop_x, f.crop_y);
   }
 
@@ -141,7 +150,7 @@
     const src = `/api/assets/${esc(s.video_asset)}/media`;
     const media = isImage
       ? `<img class="framemedia" alt="Scene image" draggable="false" src="${src}">`
-      : `<video class="framemedia" muted playsinline preload="auto" src="${src}"></video>`;
+      : `<video class="framemedia" muted playsinline preload="${StudioState.format().maxScenes > 30 ? 'metadata' : 'auto'}" src="${src}"></video>`;
     return `
       <div class="framing" data-id="${esc(s.id)}" data-asset="${esc(s.video_asset)}">
         <div class="framestage" title="Drag to reposition when the picture is larger than its frame">
@@ -176,7 +185,7 @@
       <div class="framingcontrols">
         <div class="grid two">
           <label class="field"><span>Frame shape</span>
-            <select class="framing-bind" data-field="frame_aspect">${ASPECT_LABELS.map(([v, l]) => opt(v, l, f.frame_aspect)).join('')}</select>
+            <select class="framing-bind" data-field="frame_aspect">${aspectLabels().map(([v, l]) => opt(v, l, f.frame_aspect)).join('')}</select>
           </label>
           <label class="field"><span>Framing</span>
             <select class="framing-bind" data-field="fit">
@@ -268,7 +277,7 @@
     $card.find('.framing-out[data-for="crop_x"]').text(Math.round(f.crop_x * 100) + '%');
     $card.find('.framing-out[data-for="crop_y"]').text(Math.round(f.crop_y * 100) + '%');
     if (!source) return;
-    const g = sceneGeometry(s, source);
+    const g = sceneGeometry(s, source), [W, H] = dims();
     $card.find('.framecrop').css({left: pct(g.pad_x, W), top: pct(g.pad_y, H), width: pct(g.crop_w, W), height: pct(g.crop_h, H)});
     $card.find('.framemedia').css({left: pct(-g.crop_x, g.crop_w), top: pct(-g.crop_y, g.crop_h),
                                    width: pct(g.scale_w, g.crop_w), height: pct(g.scale_h, g.crop_h)});
@@ -279,7 +288,7 @@
     $card.find('.framing-geometry').text(
       `Source ${source.width}×${source.height}${source.rotation ? ' (turned upright from camera metadata)' : ''}` +
       ` → scaled to ${g.scale_w}×${g.scale_h}; showing ${g.crop_w}×${g.crop_h} from (${g.crop_x}, ${g.crop_y})` +
-      ` at (${g.pad_x}, ${g.pad_y}) in the 1080×1920 frame.` +
+      ` at (${g.pad_x}, ${g.pad_y}) in the ${W}×${H} frame.` +
       (panX || panY ? ' Drag the preview to reposition.' : ''));
     describeTrim($card, s, source);
     $card.find('.framing-scrub').attr('max', source.duration.toFixed(2));
@@ -334,7 +343,7 @@
     stop(sid);
     const p = StudioState.current.project, pid = StudioState.current.id;
     const video = $card.find('video.framemedia')[0];
-    const body = {scene: s, quality: 'final', caption_size: p.caption_size, caption_bottom: p.caption_bottom,
+    const body = {scene: s, quality: 'final', format: p.format || 'reel', caption_size: p.caption_size, caption_bottom: p.caption_bottom,
                   caption_style: StudioCaptionStyle.styleOf(p),
                   caption: $card.find('.framing-captions').is(':checked') ? captionSample(s) : ''};
     if (video) body.source_time = Math.round(video.currentTime * 1000) / 1000;
@@ -485,7 +494,7 @@
       if (!source || $(this).closest('.framing').hasClass('exact')) return;
       const f = framingOf(s);
       drag.active = {sid, x: e.clientX, y: e.clientY, crop_x: f.crop_x, crop_y: f.crop_y,
-                     g: sceneGeometry(s, source), scale: W / (this.getBoundingClientRect().width || W)};
+                     g: sceneGeometry(s, source), scale: dims()[0] / (this.getBoundingClientRect().width || dims()[0])};
       if (this.setPointerCapture && e.pointerId !== undefined) this.setPointerCapture(e.pointerId);
       e.preventDefault();
     });
@@ -510,7 +519,7 @@
   }
 
   const Framing = {
-    W, H, even, frameWindow, geometry, sceneGeometry, segment, wrap, captionSample,
+    dims, even, frameWindow, geometry, sceneGeometry, segment, wrap, captionSample,
     stageHtml, controlsHtml, mount, apply, play, stop, renderExact,
 
     init: function() {

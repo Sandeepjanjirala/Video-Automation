@@ -41,8 +41,31 @@
       narration_block_id: '',
       take_id: '',
       delivery_preset: 'conversational',
-      cues: []
+      cues: [],
+      extra_shots: []
     };
+  }
+
+  // Mirrors studio/formats.py: an Instagram Reel (vertical, the default) or a long-form YouTube video.
+  const FORMATS = {
+    reel: {label: 'Instagram Reel', short: 'Reel', width: 1080, height: 1920, draft: [540, 960], maxScenes: 30,
+           maxSeconds: 180, captionChars: 32, sides: [90, 140], aspect: '9:16',
+           durations: [[30, '30 seconds (~60 words)'], [45, '45 seconds (~90 words)'], [60, '60 seconds (~120 words)'],
+                       [90, '90 seconds (~180 words)'], [180, '3 minutes (~360 words)']]},
+    youtube: {label: 'YouTube video', short: 'YouTube', width: 1920, height: 1080, draft: [960, 540], maxScenes: 400,
+              maxSeconds: 3600, captionChars: 48, sides: [200, 200], aspect: '16:9',
+              durations: [[300, '5 minutes (~600 words)'], [600, '10 minutes (~1,200 words)'], [900, '15 minutes (~1,800 words)'],
+                          [1200, '20 minutes (~2,400 words)'], [1800, '30 minutes (~3,600 words)']]},
+  };
+
+  function formatOf(p) {
+    return FORMATS[(p && p.format) || 'reel'] || FORMATS.reel;
+  }
+
+  // Bottom caption margin in output pixels (studio/formats.py caption_margin).
+  function captionMargin(p) {
+    const bottom = Number(p && p.caption_bottom) || 300;
+    return formatOf(p).width > formatOf(p).height ? Math.round(bottom * 0.28) : bottom;
   }
 
   function createEmptyProject() {
@@ -50,6 +73,7 @@
       title: 'My next story',
       topic: '',
       category: 'Storytelling',
+      format: 'reel',
       target_seconds: 60,
       duration_mode: 'natural',
       tts_provider: 'edge',
@@ -71,6 +95,7 @@
       caption_size: 56,
       caption_bottom: 300,
       caption_style: 'classic',
+      captions_enabled: true,
       script_approved_hash: '',
       draft_script: ''
     };
@@ -106,6 +131,13 @@
     uid: generateUid,
     createEmptyScene: createEmptyScene,
     createEmptyProject: createEmptyProject,
+    FORMATS: FORMATS,
+    formatOf: formatOf,
+    captionMargin: captionMargin,
+    /** The open project's format (a reel when nothing is open). */
+    format: function() {
+      return formatOf(StudioState.current && StudioState.current.project);
+    },
 
     subscribe: function(cb) {
       if (typeof cb === 'function') subscribers.push(cb);

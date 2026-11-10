@@ -1,10 +1,11 @@
 # Telugu Reel Studio
 
-A local workspace for turning your researched script into a vertical video:
-script and Roman Telugu captions → footage → narration → draft review → MP4 export.
+A local workspace for turning your researched script into a vertical Instagram Reel or a
+long-form 16:9 YouTube video: script and Roman Telugu captions → footage → narration →
+draft review → MP4 export.
 
-**Instagram publishing is not implemented yet.** Download the final reel and upload
-it manually. YouTube long videos are outside the current scope.
+**Publishing is not implemented.** Download the final MP4 and upload it to Instagram or
+YouTube yourself.
 
 ## Current architecture
 
@@ -45,8 +46,49 @@ for frontend tests; Node 20 is too old for the pinned jsdom dependency.
 6. Configure FFmpeg paths and optional provider credentials in Settings.
 
 The launcher checks database migrations before starting. Keep its terminal open
-while jobs run. This is a single-user local app using Django's development server,
-not an authenticated public hosting service.
+while jobs run. This is a single-user app using Django's development server.
+
+## Use it on your phone
+
+The studio runs on your computer (or a server); a phone, tablet or another computer uses it in
+the browser. The screens adapt to the phone: a top bar with **☰** for your projects and
+Settings, the four steps as a bottom bar, full-screen dialogs and touch-sized controls. The
+computer does the AI, downloads and rendering, so it must stay on and awake while a video is made.
+
+**Same Wi-Fi (home or office):**
+
+1. On the computer, open **Settings & providers** and set **Password for phone and other
+   devices** (at least 8 characters). The computer itself never asks for it.
+2. Start the studio with `START_PHONE_ACCESS.bat` instead of `START_WINDOWS.bat`. Its window
+   prints the address to open, such as `http://192.168.1.20:8788`. Allow Python through Windows
+   Firewall for private networks when Windows asks.
+3. On the phone (same Wi-Fi), open that address and sign in. The phone stays signed in for
+   30 days; **☰ → Sign out of this device** signs out. Use the browser's **Add to Home screen**
+   to open it like an app.
+
+Without a password, other devices see "Access from other devices is off" and can do nothing.
+Changing the password signs every device out; ten wrong passwords from one device pause
+sign-in for 15 minutes. **Turn off access from other devices** in Settings removes the
+password. This is plain HTTP inside your own network; do not forward the port on your router.
+
+**Away from home:** install [Tailscale](https://tailscale.com) (free) on the computer and the
+phone, start with `START_PHONE_ACCESS.bat`, and open the computer's Tailscale address
+(`http://100.x.y.z:8788`). Traffic stays encrypted inside your private Tailscale network.
+
+**On a server** (cloud VM with Docker, 4+ CPU cores recommended for rendering): point a domain
+at the server, open ports 80 and 443, then run
+
+```bash
+STUDIO_DOMAIN=studio.example.com STUDIO_PASSWORD='a long password' \
+  docker compose -f docker-compose.yml -f docker-compose.https.yml up -d --build
+```
+
+Caddy obtains the HTTPS certificate and forwards to the studio; every browser signs in with
+`STUDIO_PASSWORD` (Settings then shows the password as set by the server). Without the HTTPS
+file, `docker compose up` keeps the studio on the server's own `127.0.0.1:8788`, also behind
+the password. Each installation generates its own secret key in `data/secret_key` (or set
+`DJANGO_SECRET_KEY`); `STUDIO_ALLOWED_HOSTS` adds host names, and `STUDIO_BEHIND_PROXY=1`
+trusts an HTTPS proxy's headers.
 
 To start the entire distributed stack, use `docker compose up --build`.
 Compose runs migrations before the API, dispatcher, and workers. The image includes
@@ -67,6 +109,54 @@ named database. Plain `docker build .` still produces the application image used
 
 ## Make a reel from your script
 
+### Video format: Instagram Reel or YouTube video
+
+Every new project is an **Instagram Reel**. Choose **Video format** on the Story tab to make a
+**YouTube video** instead; the choice is saved with the project and can be changed until the
+project has more scenes than a reel allows.
+
+| | Instagram Reel (default) | YouTube video |
+|---|---|---|
+| Frame | vertical 9:16, final 1080×1920, draft 540×960 | landscape 16:9, final 1920×1080, draft 960×540 |
+| Length | up to 3 minutes, 30 scenes | up to 60 minutes, 400 scenes (target 5–30 minutes) |
+| New shot | about every 4 seconds | about every 6 seconds |
+| Stock footage | vertical clips ranked first; 4K files for sharp 9:16 crops | landscape clips ranked first; 1080p files |
+| Captions | 32 characters a line, bottom margin as set | 48 characters a line, lower (28% of the reel margin), wider side margins |
+
+Everything else works the same way, including **Create draft video automatically**, footage
+matching, the captions switch, framing previews (shown in 16:9) and approval. For a long
+script the AI steps run in batches: scene preparation 30 scenes per Gemini request, shot
+planning 40 scenes per request and the clip check 16 scenes per request (six candidates each),
+so a 20-minute script of about 240 scenes needs roughly 30 Gemini requests; the backup models
+in Settings spread these over several free quotas. Pixabay searches are paced to its
+100-requests-a-minute limit, and the one-click run allows more time per scene. A 20-minute
+video downloads a few hundred clips (several gigabytes in `data/assets`) and takes about an
+hour on a typical laptop; keep the page open. **Generate AI storyboard draft** writes a
+long-form script for a YouTube project (about one scene per 5 seconds of the target).
+
+### One click to a draft
+
+Create a project, paste your script into **Quick script importer** (or keep scenes you
+already split or wrote), and click **🚀 Create draft video automatically**. It asks once
+for a review note (prefilled "Original script by me."), then:
+
+1. splits a pasted script by its own lines and sentences, removing chat formatting such as
+   `**bold**`, `# headings` and `Title:` labels;
+2. completes every scene with one Gemini request: Telugu narration (English words written
+   in Telugu script as pronounced), Roman captions for Telugu-only scenes, an English stock
+   search phrase chosen from the scene's meaning, and a heading. Text you wrote is kept;
+3. matches stock footage to the script (see **How footage is matched** below; a title card
+   if no clip fits);
+4. ticks the rights check on every scene, saves and approves;
+5. prepares the free Edge Mohan narration and renders a **540×960 draft**.
+
+Progress appears under the button and in **Production jobs**; a failed step stops the run
+with its message, and running it again reuses finished work. Watch the draft, adjust any
+scene, caption or style if needed, then click **Render 1080×1920 Reel** on **Preview &
+export**. The steps below describe the same workflow done by hand.
+
+### Step by step
+
 1. Create a story and paste your script into **Quick script importer**.
 2. Select **Telugu written in English letters** (default) or native Telugu.
    **Split into scenes** works locally. Each scene preserves your Roman Telugu
@@ -81,6 +171,31 @@ named database. Plain `docker build .` still produces the application image used
    when no results are found (or only Pexels is configured). Each scene also has
    a source selector. Provider errors are shown; choose the other source explicitly
    if credentials or quota fail. Review relevance and usage rights.
+
+   **How footage is matched** (**Find footage for all scenes** and the one-click draft):
+   Gemini first reads the whole script and plans what the viewer should see in each
+   scene (the octopus itself for "Octopus ki moodu hearts untayi", the reel's subject or
+   a human reaction for hooks and "comment cheyyandi"), with three search phrases from
+   specific to broad. Every phrase is searched; candidates are ranked by tag match (the
+   subject counts most), the provider's own order, real film over animation, resolution,
+   vertical shape and popularity, and green-screen or "subscribe" overlays are pushed down.
+   Gemini then looks at a preview frame of six candidates for every scene (including the
+   best clip of each phrase) and scores the ones that show the planned shot out of 10; each
+   scene gets its best clip not already used by another scene, and a scene with nothing
+   scoring 5 gets no clip (a title card in the one-click draft). The score and planned shot
+   appear under **Footage search results** in Production jobs.
+   Downloads use 4K files when they stay under 60 MB, so a 9:16 crop of landscape footage
+   stays sharp. This costs two Gemini requests per run; without Gemini, the scene keywords
+   and the ranking are used.
+
+   **A new shot about every 4 seconds:** a scene whose narration is longer than about
+   4 seconds gets extra AI-checked clips of the same subject (up to three, estimated from its
+   length at about two Roman Telugu words a second). The render cuts between them in equal
+   parts, so a 7-second line shows two clips and a 10-second line three, while the narration
+   stays one continuous take. Extra shots play from their start, cropped to fill the frame;
+   the scene's framing and trim apply to its main clip. The scene card shows
+   **+N more shot(s)** with **Use only the main clip**; choosing a clip yourself (upload,
+   library or a single stock result) also replaces them.
 5. Each scene has a **Prompt** button. Edit, save and copy its 5–10 second prompt
    into a video generator of your choice, then upload the result. Prompt creation
    is local and free; this app does not call a video generation API. External free
@@ -133,6 +248,14 @@ narration** first. Measuring never synthesizes speech.
   Telugu-script captions render with Nirmala UI on Windows; the Docker image installs
   `fonts-noto-core` for Noto Sans Telugu.
 
+### Captions on or off
+
+Captions are on for every project. To make a reel without burned-in captions, turn off
+**Show captions on the video** on the Captions tab or on **Preview & export** (the same
+switch, saved with the project), then approve and render. Title cards keep their heading,
+`captions.srt` is still included with the export, and Roman caption text is no longer
+required by the readiness check.
+
 ### Caption styles
 
 The **Caption style** panel on the Captions tab offers four presets for the whole reel:
@@ -173,8 +296,14 @@ their previous framing via defaults (zoom 1, centred, full frame, no trim end).
 ## Providers, files, and recovery
 
 Online services are disabled in new installations. Select a Gemini model available
-in your own API account; the app does not silently choose one. The Gemini daily
-limit counts HTTP attempts, including retries. It is a request limit, not a spending cap.
+in your own API account. **Backup Gemini models** in Settings (comma-separated; default
+`gemini-3-flash-preview, gemini-3.1-flash-lite, gemini-flash-lite-latest, gemini-3.5-flash`)
+are tried in order when a model is out of quota (HTTP 429), busy (503) or retired (404);
+each model has its own free daily quota, so a free key gets more requests per day. Other
+errors (such as a bad request) are reported without trying the backups. The last model
+waits out high demand or a short per-minute limit before giving up. The Gemini daily
+limit counts HTTP attempts, including retries and backup models. It is a request limit,
+not a spending cap.
 Edge TTS is a community integration with an online service, not an offline voice model.
 It requires no API key but has no availability guarantee. Text conversion is separate
 from free voice: Gemini uses your account quota; Sarvam conversion is metered. Manual
@@ -204,6 +333,12 @@ the measured MP4 duration. Rendering and SRT export use the same shared timeline
 Small differences between planned and measured duration can result from audio
 encoding. Automatic caption alignment remains approximate and needs review.
 Older exports remain available but do not gain a manifest until re-rendered.
+
+**Delete a project** with the bin next to it in the sidebar (shown on hover) or **Delete**
+in the project header. After one confirmation it permanently removes the project, its
+revision history, autosave, voice takes, production jobs and rendered videos. Clips and
+images in the media library stay, because other projects can use them. A project with a
+job in progress cannot be deleted until the job finishes or is cancelled.
 
 Failed jobs can be retried. Retrying current inputs requires approval of the current
 revision; original-input retries retain their original snapshot. Cancelled and
