@@ -7,16 +7,42 @@ from urllib.parse import urlparse, unquote
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Security Settings
-SECRET_KEY = os.environ.get(
-    'DJANGO_SECRET_KEY',
-    'django-insecure-studio-dev-key-7f2d37c50ff9429f0970aacf8f4aa068'
-)
+# Signs the phone sign-in cookie, so it must be secret: from the environment, or generated once and
+# kept in the data folder (never a fixed value in the source).
+def _secret_key():
+    if os.environ.get('DJANGO_SECRET_KEY'):
+        return os.environ['DJANGO_SECRET_KEY']
+    import secrets
+    path = Path(os.environ.get('REEL_DATA_DIR', str(BASE_DIR / 'data'))) / 'secret_key'
+    try:
+        return path.read_text('utf-8').strip()
+    except OSError:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        key = secrets.token_urlsafe(50)
+        path.write_text(key, 'utf-8')
+        try:
+            path.chmod(0o600)
+        except OSError:
+            pass
+        return key
+
+
+SECRET_KEY = _secret_key()
 
 # Debug disabled by default; enable only with explicit DJANGO_DEBUG=1
 DEBUG = os.environ.get('DJANGO_DEBUG', 'False').lower() in ('true', '1')
 
-# Local development loopback restriction only
+# This computer only, unless phone/LAN access (STUDIO_LAN=1), Docker, or STUDIO_ALLOWED_HOSTS opens it.
+# Other devices must then sign in with the studio password (core.middleware.AccessMiddleware).
 ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'testserver']
+if os.environ.get('STUDIO_LAN') == '1' or os.environ.get('STUDIO_DOCKER') == '1':
+    ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS += [h.strip() for h in os.environ.get('STUDIO_ALLOWED_HOSTS', '').split(',') if h.strip()]
+
+# Behind an HTTPS reverse proxy (Caddy, nginx): trust its scheme and host headers.
+if os.environ.get('STUDIO_BEHIND_PROXY') == '1':
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    USE_X_FORWARDED_HOST = True
 
 # Minimal application definition for M1 (No migration-backed auth/session apps)
 INSTALLED_APPS = [
@@ -27,6 +53,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'core.middleware.AccessMiddleware',
     'core.middleware.LocalSecurityMiddleware',
     'django.middleware.common.CommonMiddleware',
 ]

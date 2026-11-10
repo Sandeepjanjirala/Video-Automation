@@ -32,6 +32,15 @@
       <textarea id="input-project-topic" rows="3" placeholder="Enter your topic, key facts, or instructions for the AI storyboard..."></textarea>
     </div>
 
+    <div class="field">
+      <span>Video format</span>
+      <select id="select-project-format">
+        <option value="reel">Instagram Reel: vertical 9:16, up to 3 minutes (default)</option>
+        <option value="youtube">YouTube video: landscape 16:9, long-form up to 60 minutes</option>
+      </select>
+      <small class="muted" id="format-hint"></small>
+    </div>
+
     <div class="grid two">
       <div class="field">
         <span>Tone &amp; style</span>
@@ -44,11 +53,7 @@
       </div>
       <div class="field">
         <span>Target duration</span>
-        <select id="select-project-duration">
-          <option value="30">30 seconds (~60 words, 3 scenes)</option>
-          <option value="45">45 seconds (~90 words, 4 scenes)</option>
-          <option value="60">60 seconds (~120 words, 5 scenes)</option>
-        </select>
+        <select id="select-project-duration"></select>
       </div>
     </div>
 
@@ -78,6 +83,16 @@
         &#9986; Split into scenes
       </button>
       <button type="button" class="primary" data-action="queue-job" data-kind="draft" data-script-input="#input-import-script">Prepare my script with AI</button>
+    </div>
+    <div class="autopilotbox">
+      <button type="button" id="btn-autopilot" class="primary">&#128640; Create draft video automatically</button>
+      <p class="muted">One click: AI prepares every scene (Telugu narration, captions, stock search words), stock clips are
+        found, rights are ticked, the project is approved, Mohan narrates and a <span class="format-draft-size">540&times;960</span> draft is rendered. Works on a
+        pasted script or on scenes you already have; your own text is kept. Uses your Gemini quota.</p>
+      <div id="autopilot-panel" hidden>
+        <ol id="autopilot-steps" class="autopilotsteps"></ol>
+        <p id="autopilot-status" class="muted" aria-live="polite"></p>
+      </div>
     </div>
     <p class="muted">Split into scenes is free and offline. Convert each scene to Telugu and review it below. The optional AI preparation uses your configured Gemini API quota.</p>
   </section>

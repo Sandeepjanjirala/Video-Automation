@@ -124,7 +124,7 @@ def task_draft(self, job_id: str):
             store.progress(job_id, 'Drafting storyboard scenes', stage_name='draft')
 
             from .providers import draft
-            result = draft(project, script)
+            result = draft(project, script, fill=bool(job_data['snapshot']['options'].get('fill')))
 
             lease.check_ownership()
             store.progress(job_id, 'Complete', 'succeeded', result, stage_name='draft')
@@ -170,29 +170,15 @@ def task_stock_all(self, job_id: str):
         with lease:
             job_data = store.job(job_id)
             p = job_data['snapshot']['project']
-            from .providers import download_stock, stock_search
+            from .footage import find
 
-            selected, used = [], set()
-            scenes = [s for s in p['scenes'] if s['visual'] != 'graphic' and not s['video_asset']]
-
-            for i, scene in enumerate(scenes):
+            def progress(text):
                 lease.check_ownership()
-                store.progress(job_id, f"Finding footage {i + 1}/{len(scenes)}", stage_name='footage')
-                if not scene['keywords'].strip():
-                    selected.append({'scene_id': scene['id'], 'error': 'Add English search keywords'})
-                    continue
-                try:
-                    candidates = stock_search(scene['keywords'], provider=scene.get('stock_provider', 'auto'))
-                    candidates.sort(key=lambda h: ((h.get('provider', 'pixabay'), h['id']) in used, h['video']['height'] < h['video']['width']))
-                    if not candidates:
-                        raise ValueError('No suitable stock result. Upload footage or choose a graphic.')
-                    hit = candidates[0]
-                    selected.append({'scene_id': scene['id'], 'asset': download_stock(hit['id'], hit.get('provider', 'pixabay'))})
-                    used.add((hit.get('provider', 'pixabay'), hit['id']))
-                except ValueError as exc:
-                    selected.append({'scene_id': scene['id'], 'error': str(exc)})
+                store.progress(job_id, text, stage_name='footage')
 
-            result = {'selections': selected, 'note': 'Keyword-selected candidates. Review relevance, framing, and rights before rendering.'}
+            scenes = [s for s in p['scenes'] if s['visual'] != 'graphic' and not s['video_asset']]
+            selected = find(p, scenes, progress)
+            result = {'selections': selected, 'note': 'Clips chosen from the script by AI where available. Review relevance, framing, and rights before rendering.'}
 
             lease.check_ownership()
             store.progress(job_id, 'Complete', 'succeeded', result, stage_name='footage')
@@ -275,7 +261,7 @@ def task_render_pipeline(self, job_id: str):
                 lease.check_ownership()
                 store.progress(job_id, f"Preparing narration {i + 1}/{len(p['scenes'])}", stage_name='narration')
                 from .media import CAPTION_FILTER, voice_for, duration, captions, write_ass, probe, run
-                from .framing import COLOUR_TAGS, source_info, visual_inputs
+                from .framing import COLOUR_TAGS, scene_shots, source_info, visual_inputs
                 vpath, boundaries = voice_for(scene, p, provider)
                 sec = duration(vpath)
 
@@ -295,7 +281,8 @@ def task_render_pipeline(self, job_id: str):
             offset = timeline.total_duration
 
             draft = job_data['snapshot']['options'].get('quality', 'final') == 'draft'
-            width, height = (540, 960) if draft else (1080, 1920)
+            from .formats import of as format_of, size as format_size
+            width, height = format_size(p, 'draft' if draft else 'final')
 
             # Unique temporary working directory per render slot
             temp = DATA / 'tmp' / f"{job_id}_{uuid.uuid4().hex[:8]}"
@@ -306,9 +293,10 @@ def task_render_pipeline(self, job_id: str):
             # 3. Scene rendering stage
             for i, (scene, voice, timing) in enumerate(zip(p['scenes'], prepared, timeline.scenes)):
                 lease.check_ownership()
-                store.progress(job_id, f"Rendering scene {i + 1}/{len(p['scenes'])} ({'draft' if draft else '1080p'})", stage_name='scene_rendering')
+                store.progress(job_id, f"Rendering scene {i + 1}/{len(p['scenes'])} ({'draft' if draft else f'{width}x{height}'})", stage_name='scene_rendering')
                 length = timing.scene_duration
-                cues = timing.cues
+                cues = timing.cues if p.get('captions_enabled', True) else []
+                shots = scene_shots(scene, length, format_of(p)['shot_seconds'])
                 cache_key = store.digest({
                     'renderer': 6,
                     'scene': scene,
@@ -341,12 +329,29 @@ def task_render_pipeline(self, job_id: str):
                     if scene['visual'] == 'graphic':
                         args += ['-f', 'lavfi', '-i', f'color=c=0x12251F:s={width}x{height}:r=30:d={length}']
                         vf = f"drawbox=x=0:y={int(height * .24)}:w=iw:h=4:color=0xB9F8CF:t=fill"
-                    else:
+                    elif len(shots) == 1:
                         # Same geometry as the editor's framing preview (studio/framing.py).
                         source_path = store.asset_path(scene['video_asset'], 'image' if scene['visual'] == 'image' else 'video')
                         inputs, vf = visual_inputs(scene, source_path, source_info(source_path), length,
                                                    width, height, work, run, job_id)
                         args += inputs
+                    else:
+                        # Several clips share the scene: each is framed and cut to its part, then joined.
+                        part = length / len(shots)
+                        for k, shot in enumerate(shots):
+                            shot_work = work / f'shot{k}'
+                            shot_work.mkdir(exist_ok=True)
+                            shot_path = store.asset_path(shot['video_asset'], 'video')
+                            seconds = part + (0.1 if k == len(shots) - 1 else 0)
+                            shot_inputs, shot_vf = visual_inputs(shot, shot_path, source_info(shot_path), seconds,
+                                                                 width, height, shot_work, run, job_id)
+                            run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-filter_threads', '1',
+                                 *shot_inputs, '-map', '0:v:0', '-an', '-vf', shot_vf + ',setsar=1,fps=30',
+                                 '-t', f'{seconds:.3f}', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '16',
+                                 '-pix_fmt', 'yuv420p', '-threads', '4', shot_work / 'shot.mp4'], cwd=shot_work, job_id=job_id)
+                        (work / 'shots.txt').write_text('\n'.join(f"file 'shot{k}/shot.mp4'" for k in range(len(shots))), 'utf-8')
+                        args += ['-f', 'concat', '-safe', '0', '-i', 'shots.txt']
+                        vf = 'null'
                     output = work / 'scene.mp4'
                     args += ['-i', voice['audio_path'], '-map', '0:v:0', '-map', '1:a:0',
                              '-vf', vf + f",setsar=1,fps=30,{CAPTION_FILTER},{COLOUR_TAGS}",
@@ -373,6 +378,7 @@ def task_render_pipeline(self, job_id: str):
                     'duration': length,
                     'alignment': voice['alignment'],
                     'visual': store.asset(scene['video_asset']) if scene['visual'] != 'graphic' else {'provider': 'explicit graphic'},
+                    'extra_shots': [store.asset(shot['video_asset']) for shot in shots[1:]],
                     'source_audio_muted': True
                 })
 
@@ -408,7 +414,9 @@ def task_render_pipeline(self, job_id: str):
             audio = next((s for s in info['streams'] if s['codec_type'] == 'audio'), {})
             if (video.get('width'), video.get('height')) != (width, height) or not audio or abs(float(info['format']['duration']) - offset) > 0.5:
                 raise ValueError('Export validation failed: dimensions, audio, or duration did not match')
-            run([executable('ffmpeg'), '-v', 'error', '-xerror', '-i', final, '-f', 'null', '-'], timeout=600, job_id=job_id)
+            # A full decode; long YouTube videos need more than the reel's ten minutes.
+            run([executable('ffmpeg'), '-v', 'error', '-xerror', '-i', final, '-f', 'null', '-'],
+                timeout=max(600, int(offset * 3)), job_id=job_id)
 
             # 7. Atomic publication
             (temp / 'captions.srt').write_text(to_srt(timeline.all_cues), 'utf-8')

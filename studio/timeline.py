@@ -78,8 +78,12 @@ def compute_timeline(project, prepared_voices):
         speed = sum(durations) / (target - sum(holds))
         if not 0.8 <= speed <= 1.25:
             raise ValueError('Target needs excessive speed change. Edit the script, change the target, or use natural duration.')
-    if sum(durations) / speed + sum(holds) > 180.5:
-        raise ValueError('This release supports up to 180 seconds. Shorten the script or increase speech rate.')
+    from .formats import of
+    limits = of(project)
+    if sum(durations) / speed + sum(holds) > limits['max_seconds'] + 0.5:
+        raise ValueError(f"{limits['label']} supports up to {limits['max_seconds'] // 60} minutes. "
+                         'Shorten the script or increase speech rate'
+                         + (', or choose YouTube video.' if limits is not of({'format': 'youtube'}) else '.'))
 
     result, global_cues, cursor = [], [], 0
     for scene, duration, hold in zip(scenes, durations, holds):

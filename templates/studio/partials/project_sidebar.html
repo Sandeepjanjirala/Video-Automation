@@ -1,4 +1,6 @@
-<aside class="sidebar">
+<aside class="sidebar" id="studio-sidebar">
+  <button type="button" class="ghost mobileonly" id="btn-mobile-projects" aria-controls="studio-sidebar" aria-expanded="false"
+          aria-label="Projects and settings">&#9776;</button>
   <div class="brand">
     <div class="brandicon">&#127916;</div>
     <div>
@@ -7,7 +9,7 @@
     </div>
   </div>
 
-  <button type="button" class="new" id="btn-new-project" style="width:100%;">+ New project</button>
+  <button type="button" class="new" id="btn-new-project">+ New project</button>
 
   <div class="sidebarlabel">PROJECTS</div>
   <nav id="projects-nav" style="flex:1;">
@@ -16,6 +18,7 @@
 
   <div class="sidebarfoot">
     <p>Local video studio</p>
+    <a href="/logout" id="link-sign-out" class="muted" hidden>Sign out of this device</a>
     <button type="button" id="btn-open-settings" class="ghost" style="font-size:11px;padding:4px 8px;margin-top:6px;width:100%;justify-content:flex-start;">
       &#9881; Settings &amp; providers
     </button>

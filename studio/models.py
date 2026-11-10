@@ -51,11 +51,15 @@ class Scene(StrictModel):
     take_id: str = Field(default='', max_length=64)
     delivery_preset: str = Field(default='conversational', max_length=32)
     cues: list[Cue] = Field(default_factory=list, max_length=200)
+    # More stock clips of the same subject; a long scene cuts to the next one about every 4 seconds.
+    extra_shots: list[str] = Field(default_factory=list, max_length=4)
 
     @model_validator(mode='after')
     def check(self):
         if re.search(r'[\u0c00-\u0c7f]', self.roman):
             raise ValueError('Roman caption field must use English letters, not Telugu script')
+        if any(not re.fullmatch(r'[a-f0-9]{32}', a) for a in self.extra_shots):
+            raise ValueError('Extra shots must be media library clip IDs')
         if self.trim_end and self.trim_end <= self.trim_start:
             raise ValueError('Trim end must be after trim start')
         last = 0.0
@@ -70,7 +74,9 @@ class Project(StrictModel):
     title: str = Field(default='Untitled reel', min_length=1, max_length=160)
     topic: str = Field(default='', max_length=3000)
     category: str = Field(default='Storytelling', max_length=60)
-    target_seconds: int = Field(default=60, ge=10, le=180)
+    # 'reel': vertical Instagram Reel (default); 'youtube': long-form 16:9 video (studio/formats.py).
+    format: Literal['reel', 'youtube'] = 'reel'
+    target_seconds: int = Field(default=60, ge=10, le=3600)
     duration_mode: Literal['natural', 'target'] = 'natural'
     tts_provider: str = Field(default='edge', max_length=32)
     voice: str = Field(default='te-IN-MohanNeural', max_length=64)
@@ -80,7 +86,7 @@ class Project(StrictModel):
     voice_locked: bool = False
     voice_profile: dict = Field(default_factory=dict)
     narration_blocks: list[dict] = Field(default_factory=list)
-    scenes: list[Scene] = Field(default_factory=list, max_length=30)
+    scenes: list[Scene] = Field(default_factory=list, max_length=400)
     evidence_notes: str = Field(default='', max_length=30000)
     research_report: str = Field(default='', max_length=60000)
     research_sources: list[dict] = Field(default_factory=list, max_length=100)
@@ -92,6 +98,8 @@ class Project(StrictModel):
     caption_bottom: int = Field(default=300, ge=180, le=600)
     # Projects saved before caption styles keep the original outlined captions.
     caption_style: Literal['classic', 'black_box', 'yellow_accent', 'translucent'] = 'classic'
+    # Off: no captions are burned into the video (title cards keep their title; the SRT is still exported).
+    captions_enabled: bool = True
     script_approved_hash: str = Field(default='', max_length=64)
     draft_script: str = Field(default='', max_length=50000)
 
@@ -100,4 +108,11 @@ class Project(StrictModel):
         ids = [s.id for s in self.scenes]
         if len(ids) != len(set(ids)):
             raise ValueError('Scene IDs must be unique')
+        from .formats import FORMATS
+        limits = FORMATS[self.format]
+        if len(self.scenes) > limits['max_scenes']:
+            raise ValueError(f"{limits['label']} supports up to {limits['max_scenes']} scenes"
+                             + ('; choose YouTube video for a longer script' if self.format == 'reel' else ''))
+        if self.target_seconds > limits['max_seconds']:
+            raise ValueError(f"{limits['label']} supports a target of up to {limits['max_seconds'] // 60} minutes")
         return self

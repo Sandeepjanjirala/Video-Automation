@@ -262,7 +262,7 @@ const StudioJobs = (() => {
         html += `  <details style="margin-top:0.5rem;font-size:0.85rem;">`;
         html += `    <summary>Footage search results</summary>`;
         j.result.selections.forEach(x => {
-          html += `    <p>${escapeHtml(x.scene_id)}: ${escapeHtml(x.error || 'Candidate downloaded; review after applying.')}</p>`;
+          html += `    <p>${escapeHtml(x.scene_id)}: ${escapeHtml(x.error || x.match || 'Candidate downloaded; review after applying.')}</p>`;
         });
         html += `  </details>`;
       }
@@ -319,20 +319,23 @@ const StudioJobs = (() => {
     let html = '';
     exportJobs.forEach(j => {
       const videoSrc = `/api/exports/${encodeURIComponent(j.id)}/reel.mp4`;
-      const resLabel = (j.result?.dimensions || []).join('x') || 'Rendered reel';
+      const resLabel = (j.result?.dimensions || []).join('x') || 'Rendered video';
+      const [vw, vh] = j.result?.dimensions || [1080, 1920];
+      const kind = vw > vh ? 'YouTube video (16:9)' : 'Vertical Reel';
+      const isDraft = Math.max(vw, vh) <= 960;
 
       html += `<div class="card export-card" style="margin-bottom:1.5rem;padding:1rem;border-radius:var(--radius);background:var(--surface);border:1px solid var(--border);" data-jid="${escapeHtml(j.id)}">`;
       html += `  <div style="display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">`;
       html += `    <div style="min-width:0;overflow-wrap:anywhere;">`;
-      html += `      <h4 style="margin:0;">${escapeHtml(resLabel)} ${j.result?.dimensions?.[0] === 540 ? 'Draft Preview' : 'Vertical Reel'}</h4>`;
+      html += `      <h4 style="margin:0;">${escapeHtml(resLabel)} ${isDraft ? 'Draft Preview' : kind}</h4>`;
       html += `      <span class="muted" style="font-size:0.85rem;">Job: ${escapeHtml(j.id)} · v${escapeHtml(j.revision || 1)} · ${escapeHtml(resLabel)}</span>`;
       html += `    </div>`;
-      html += `    <a href="${videoSrc}" download="reel_${escapeHtml(j.id)}.mp4" class="btn primary" style="font-size:0.85rem;padding:0.4rem 0.8rem;text-decoration:none;">Download MP4</a>`;
+      html += `    <a href="${videoSrc}" download="${vw > vh ? 'youtube' : 'reel'}_${escapeHtml(j.id)}.mp4" class="btn primary" style="font-size:0.85rem;padding:0.4rem 0.8rem;text-decoration:none;">Download MP4</a>`;
       html += `  </div>`;
       if (j.result?.files?.includes('timing-manifest.json')) {
         html += `<p><a href="/api/exports/${encodeURIComponent(j.id)}/timing-manifest.json" download="timing-manifest.json">Download timing manifest (JSON)</a></p>`;
       }
-      html += `  <div class="video-preview-wrapper" style="max-width:360px;margin:0 auto;border-radius:var(--radius);overflow:hidden;background:#000;">`;
+      html += `  <div class="video-preview-wrapper" style="max-width:${vw > vh ? 760 : 360}px;margin:0 auto;border-radius:var(--radius);overflow:hidden;background:#000;">`;
       html += `    <video controls preload="metadata" style="width:100%;display:block;max-height:540px;" src="${videoSrc}">`;
       html += `      Your browser does not support the video tag.`;
       html += `    </video>`;

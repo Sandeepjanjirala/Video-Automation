@@ -80,6 +80,10 @@
             let data = {};
             try { data = bodyText ? JSON.parse(bodyText) : {}; } catch(e) { data = { detail: bodyText }; }
 
+            // Another device whose sign-in expired goes back to the sign-in page.
+            if (res.status === 401 && window.location && window.location.pathname !== '/login') {
+              window.location.href = '/login?next=' + encodeURIComponent(window.location.pathname);
+            }
             if (!res.ok) {
               const errMsg = data.detail || (typeof data === 'string' ? data : res.statusText || `HTTP ${res.status}`);
               const err = new Error(typeof errMsg === 'string' ? errMsg : JSON.stringify(errMsg));

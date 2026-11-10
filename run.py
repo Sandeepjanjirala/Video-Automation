@@ -1,6 +1,8 @@
 """Launch Django production studio and local workers.
 
-Django server runs on http://127.0.0.1:8788.
+Django server runs on http://127.0.0.1:8788. With STUDIO_LAN=1 (START_PHONE_ACCESS.bat) it also
+listens on this computer's network address, so a phone on the same Wi-Fi can use it after
+signing in with the studio password.
 """
 import os
 import socket
@@ -17,7 +19,8 @@ def main():
         raise SystemExit('Dependencies are missing. Run SETUP_WINDOWS.bat first.')
 
     target_port = int(os.environ.get('STUDIO_PORT', 8788))
-    bind_host = '0.0.0.0' if os.environ.get('STUDIO_DOCKER') == '1' else '127.0.0.1'
+    lan = os.environ.get('STUDIO_LAN') == '1'
+    bind_host = '0.0.0.0' if os.environ.get('STUDIO_DOCKER') == '1' or lan else '127.0.0.1'
 
     with socket.socket() as check:
         try:
@@ -44,6 +47,17 @@ def main():
 
     try:
         print(f'\n[Django Production Studio] Open http://127.0.0.1:{target_port} in your browser. Keep this window open.\n')
+        if lan:
+            from studio import access
+            addresses = network_addresses()
+            print('Phone and other devices on the same Wi-Fi can open:')
+            for n, address in enumerate(addresses or ['(no network address found; check Wi-Fi)']):
+                print(f'    http://{address}:{target_port}' + ('   <- most likely' if n == 0 and len(addresses) > 1 else ''))
+            print('Allow Python through Windows Firewall (private networks) if Windows asks.')
+            if not access.password_set():
+                print('\nNo password is set yet, so other devices are refused. On this computer open '
+                      'Settings & providers and set "Password for phone and other devices".')
+            print(flush=True)
         os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
         from django.core.management import execute_from_command_line
         execute_from_command_line(['manage.py', 'runserver', f'{bind_host}:{target_port}', '--noreload'])
@@ -54,6 +68,24 @@ def main():
                 worker.wait(timeout=8)
             except subprocess.TimeoutExpired:
                 worker.kill()
+
+
+def network_addresses():
+    """This computer's private IPv4 addresses (home or office network), best guess first."""
+    found = []
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.connect(('192.0.2.1', 9))  # no packet is sent; picks the outgoing interface
+            found.append(probe.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        found += socket.gethostbyname_ex(socket.gethostname())[2]
+    except OSError:
+        pass
+    private = [a for a in dict.fromkeys(found) if a.startswith(('192.168.', '10.')) or
+               (a.startswith('172.') and 16 <= int(a.split('.')[1]) <= 31)]
+    return private
 
 
 if __name__ == '__main__':

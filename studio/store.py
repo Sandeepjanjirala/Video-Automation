@@ -344,7 +344,7 @@ def preflight(project_data: Any) -> Dict[str, Any]:
         sid = s.get('id', f'scene_{idx}')
         if not s.get('narration', '').strip():
             errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'narration', 'message': f'Scene {idx}: narration is empty'})
-        if not s.get('roman', '').strip():
+        if not s.get('roman', '').strip() and project_data.get('captions_enabled', True):
             errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'roman', 'message': f'Scene {idx}: Roman caption text is empty'})
         if s.get('narration_source_roman') and s['narration_source_roman'] != s.get('roman'):
             errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'narration', 'message': f'Scene {idx}: Roman source changed; review and apply Telugu narration again'})
@@ -368,6 +368,13 @@ def preflight(project_data: Any) -> Dict[str, Any]:
                                          'message': f"Scene {idx}: trim end is past the clip's end ({clip_seconds:.2f} s); the clip's end is used"})
             except ValueError as exc:
                 errors.append({'scene_index': idx, 'scene_id': sid, 'field': field, 'message': f'Scene {idx}: {exc}'})
+        if vis in ('upload', 'stock'):
+            for shot in s.get('extra_shots') or []:
+                try:
+                    asset_path(shot, 'video')
+                except ValueError as exc:
+                    errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'extra_shots',
+                                   'message': f'Scene {idx}: an extra shot is unavailable ({exc}); remove the extra shots'})
 
     if project_data.get('music_asset'):
         if not project_data.get('music_rights_reviewed'):

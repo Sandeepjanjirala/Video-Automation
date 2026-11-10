@@ -46,7 +46,13 @@ const StudioSettings = (() => {
     $('#hint-gemini-key').text(cfg.gemini_key_configured ? 'A key is saved.' : 'Needed for research and AI drafts.');
 
     $('#setting-gemini-model').val(cfg.gemini_model || '');
+    $('#setting-gemini-fallback-models').val(cfg.gemini_fallback_models || '');
     $('#setting-daily-ai-calls').val(cfg.daily_ai_calls || 20);
+    $('#setting-access-password').val('').prop('disabled', !!cfg.access_password_from_server)
+      .attr('placeholder', cfg.access_password_set ? 'A password is set (type a new one to change it)' : 'At least 8 characters');
+    $('#setting-access-password-clear').prop('checked', false);
+    $('#row-access-password-clear').prop('hidden', !cfg.access_password_set || !!cfg.access_password_from_server);
+    if (cfg.access_password_from_server) $('#hint-access-password').text('Set on the server (STUDIO_PASSWORD); change it there.');
 
     $('#setting-pixabay-key').val('').attr('placeholder', cfg.pixabay_key_configured ? '●●●●●●●● (saved key)' : 'Enter Pixabay key');
     $('#hint-pixabay-key').text(cfg.pixabay_key_configured ? 'A key is saved.' : 'Needed for stock search and downloads.');
@@ -72,11 +78,19 @@ const StudioSettings = (() => {
       const payload = {
         online_enabled: $('#setting-online-enabled').is(':checked'),
         gemini_model: $('#setting-gemini-model').val().trim(),
+        gemini_fallback_models: $('#setting-gemini-fallback-models').val().trim(),
         daily_ai_calls: parseInt($('#setting-daily-ai-calls').val(), 10) || 20,
         azure_region: $('#setting-azure-region').val().trim(),
         ffmpeg: $('#setting-ffmpeg').val().trim(),
         ffprobe: $('#setting-ffprobe').val().trim()
       };
+
+      const accessPassword = $('#setting-access-password').val();
+      if ($('#setting-access-password-clear').is(':checked')) payload.access_password_clear = true;
+      else if (accessPassword) {
+        if (accessPassword.length < 8) throw new Error('Use a password of at least 8 characters for other devices.');
+        payload.access_password = accessPassword;
+      }
 
       // Only send keys if non-empty (blank preserves existing server-side key)
       const gemini = $('#setting-gemini-key').val().trim();

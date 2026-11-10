@@ -87,6 +87,8 @@ const StudioApp = (() => {
       }
 
       // Populate project list
+      // Other devices signed in with the studio password can sign out; the studio PC never signs in.
+      $('#link-sign-out').prop('hidden', !data.access || data.access.local !== false);
       const projects = data.projects || [];
       StudioState.setProjects(projects);
 
@@ -138,6 +140,7 @@ $(document).ready(() => {
   StudioCaptions.init();
   StudioFraming.init();
   StudioCaptionStyle.init();
+  StudioAutopilot.init();
   StudioSettings.init();
   StudioApp.init();
 });

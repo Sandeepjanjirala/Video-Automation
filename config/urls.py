@@ -1,8 +1,10 @@
 """URL configuration for Telugu Reel Studio (Stage M9)."""
 from django.urls import path, re_path, include
-from core.views import serve_m8_ui, serve_static_asset, serve_static_path
+from core.views import login_view, logout_view, serve_m8_ui, serve_static_asset, serve_static_path
 
 urlpatterns = [
+    path('login', login_view, name='login'),
+    path('logout', logout_view, name='logout'),
     path('api/', include('core.urls')),
     re_path(r'^static/(?P<path>.*)$', serve_static_path, name='ui_static_dir'),
     path('', serve_m8_ui, name='ui_root'),

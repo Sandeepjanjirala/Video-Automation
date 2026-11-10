@@ -1,0 +1,39 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#204d3d">
+  <title>Sign in · Telugu Reel Studio</title>
+  <link rel="stylesheet" href="{% static 'app.css' %}">
+  <link rel="manifest" href="{% static 'manifest.webmanifest' %}">
+  <link rel="icon" href="{% static 'icon.svg' %}" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="{% static 'icon-192.png' %}">
+</head>
+<body class="loginpage">
+  <main class="loginbox">
+    <div class="brand">
+      <div class="brandicon">&#127916;</div>
+      <div>Telugu Reel Studio<span>AI-ASSISTED PRODUCTION</span></div>
+    </div>
+    {% if disabled %}
+      <h2>Access from other devices is off</h2>
+      <p class="muted">For your safety, this studio only opens on the computer it runs on until a password is set.
+        On that computer, open <b>Settings &amp; providers</b>, set <b>Password for phone and other devices</b>, then
+        reload this page.</p>
+    {% else %}
+      <h2>Sign in</h2>
+      <p class="muted">Enter the studio password set on the studio computer. This device stays signed in for 30 days.</p>
+      <form method="post" action="/login">
+        <input type="hidden" name="next" value="{{ next }}">
+        <label class="field"><span>Password</span>
+          <input type="password" name="password" autocomplete="current-password" autofocus required>
+        </label>
+        {% if message %}<p class="cueissue error" role="alert">{{ message }}</p>{% endif %}
+        <button type="submit" class="primary" style="width:100%">Sign in</button>
+      </form>
+    {% endif %}
+  </main>
+</body>
+</html>

@@ -9,6 +9,7 @@ import uuid
 import hashlib
 import json
 import mimetypes
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 import subprocess
 import secrets
 import shutil
@@ -29,7 +30,7 @@ from rest_framework.views import APIView
 
 from studio.config import public_settings, save_settings, executable, DATA
 from studio.media import probe, run as media_run
-from studio import captions, framing, store
+from studio import captions, formats, framing, store
 from studio.models import Project as PydanticProject, Scene as PydanticScene
 import pydantic
 from core import services
@@ -294,11 +295,42 @@ class BootstrapView(APIView):
         ws_id = request.query_params.get('workspace_id', 'default')
         projs = Project.objects.filter(workspace_id=ws_id).order_by('-updated_at')
         projects_payload = [serialize_project_dict(p) for p in projs]
+        from studio import access
         return Response({
             'token': DJANGO_TOKEN,
             'settings': public_settings(),
             'projects': projects_payload,
+            'access': {'local': access.is_local(request)},
         })
+
+
+def login_view(request):
+    """Sign-in page for phones and other devices (the studio PC itself never needs it)."""
+    from django.shortcuts import redirect, render
+    from studio import access
+    target = request.POST.get('next') if request.method == 'POST' else request.GET.get('next')
+    target = target if isinstance(target, str) and target.startswith('/') and not target.startswith(('//', '/\\')) else '/'
+    if not access.password_set() and not access.is_local(request):
+        return render(request, 'studio/login.html', {'disabled': True}, status=403)
+    message, code = '', 200
+    if request.method == 'POST':
+        if access.locked_out(request):
+            message, code = 'Too many wrong passwords. Wait 15 minutes and try again.', 429
+        elif access.verify(request.POST.get('password', '')):
+            access.clear_failures(request)
+            return access.sign_in(redirect(target), request)
+        else:
+            access.record_failure(request)
+            message, code = 'That password is not right.', 401
+    elif access.allowed(request):
+        return redirect(target)
+    return render(request, 'studio/login.html', {'next': target, 'message': message}, status=code)
+
+
+def logout_view(request):
+    from django.shortcuts import redirect
+    from studio import access
+    return access.sign_out(redirect('/login'))
 
 
 # ==============================================================================
@@ -375,6 +407,14 @@ class ProjectDetailView(APIView):
             return Response(serialize_project_dict(p), status=status.HTTP_200_OK)
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pid: str, *args, **kwargs):
+        """DELETE /api/projects/{pid} - Permanently deletes the project; media library clips stay."""
+        try:
+            return Response(services.delete_project(pid))
+        except ValueError as exc:
+            code = status.HTTP_404_NOT_FOUND if str(exc) == 'Project not found' else status.HTTP_409_CONFLICT
+            return Response({'detail': str(exc)}, status=code)
 
 
 class ProjectHistoryView(APIView):
@@ -538,10 +578,12 @@ class ProjectCaptionTimingView(APIView):
 
 
 def caption_settings(data, saved):
-    """Caption size, margin and style from an unsaved editor body, falling back to the saved project."""
+    """Video format and caption size, margin and style from an unsaved editor body, falling back to
+    the saved project."""
     return PydanticProject.model_validate({
         field: data.get(field, saved.get(field, default))
-        for field, default in (('caption_size', 56), ('caption_bottom', 300), ('caption_style', 'classic'))
+        for field, default in (('caption_size', 56), ('caption_bottom', 300), ('caption_style', 'classic'),
+                               ('format', 'reel'))
     }).model_dump()
 
 
@@ -564,7 +606,7 @@ class ProjectFramingPreviewView(APIView):
             caption = str(data.get('caption') or '')[:160]
             source_time = data.get('source_time')
             source_time = None if source_time in (None, '') else float(source_time)
-            width, height = (540, 960) if data.get('quality') == 'draft' else (1080, 1920)
+            width, height = formats.size(settings_body, data.get('quality'))
             path = store.asset_path(scene['video_asset'], 'image' if scene['visual'] == 'image' else 'video')
             work = DATA / 'tmp' / f'framing_{uuid.uuid4().hex}'
             work.mkdir(parents=True, exist_ok=True)
@@ -599,7 +641,7 @@ class ProjectCaptionPreviewView(APIView):
             if scene['visual'] != 'graphic':
                 return ProjectFramingPreviewView().post(request, pid)
             settings_body = caption_settings(data, proj.body or {})
-            width, height = (540, 960) if data.get('quality') == 'draft' else (1080, 1920)
+            width, height = formats.size(settings_body, data.get('quality'))
             work = DATA / 'tmp' / f'framing_{uuid.uuid4().hex}'
             work.mkdir(parents=True, exist_ok=True)
             try:
@@ -674,6 +716,8 @@ class ProjectJobsView(APIView):
             'tts_provider': tts_provider,
             'quality': quality,
             'script': script,
+            # Draft jobs with fill=True complete existing scenes instead of re-segmenting a script.
+            'fill': data.get('fill') is True,
             'video_id': video_id,
             'stock_provider': stock_provider,
             'scene_id': scene_id,
@@ -1231,9 +1275,21 @@ class SettingsView(APIView):
     def post(self, request, *args, **kwargs):
         if not isinstance(request.data, dict):
             return Response({'detail': 'Invalid settings body'}, status=status.HTTP_400_BAD_REQUEST)
+        data = dict(request.data)
         try:
+            # The password for other devices arrives in plain text and is stored only as a hash.
+            if 'access_password_hash' in data:
+                raise ValueError('Unknown setting')
+            password = data.pop('access_password', None)
+            if data.pop('access_password_clear', False) is True:
+                data['access_password_hash'] = ''
+            elif password:
+                from studio.access import MIN_LENGTH, hash_password
+                if not isinstance(password, str) or len(password) < MIN_LENGTH or len(password) > 200:
+                    raise ValueError(f'Use a password of at least {MIN_LENGTH} characters for other devices.')
+                data['access_password_hash'] = hash_password(password)
             with SETTINGS_LOCK:
-                res = save_settings(request.data)
+                res = save_settings(data)
                 return Response(res, status=status.HTTP_200_OK)
         except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
