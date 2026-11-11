@@ -348,6 +348,17 @@ saved projects still reference them.
 
 ## Verification
 
+On this PC, `VERIFY_WINDOWS.bat` runs dependency checks, Django checks, and the
+isolated audit suite. It uses the project-local Node runtime when available.
+To recreate that test environment without upgrading your system Node installation:
+
+```powershell
+.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
+npm.cmd install --prefix .local-tools --no-save --package-lock=false node@24.15.0
+$env:PATH = "$PWD\.local-tools\node_modules\node\bin;$env:PATH"
+npm.cmd ci --prefix frontend
+```
+
 ```powershell
 .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 Push-Location frontend
