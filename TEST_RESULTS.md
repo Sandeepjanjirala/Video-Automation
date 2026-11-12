@@ -1,3 +1,20 @@
+# API keys: .env defaults that Settings can change — 12 November 2026
+
+Same branch. Requested change: the keys in `.env` should be the defaults, changeable from Settings (before, a key
+in `.env` locked its Settings field with "Set in the .env file").
+
+- `studio/config.py`: a key typed in Settings (stored in `data/settings.json`) replaces the `.env` default;
+  `use_default_keys` in a Settings save drops it again. Only typed keys are stored; a stored copy identical to the
+  `.env` key (written by earlier versions) counts as the default and is dropped on the next save. Public settings
+  report each key's `_source` (`settings`, `env` or none) and `_env_default`; keys never reach the browser.
+- Settings screen: every key field can be typed in. It says "Default key from .env in use" or "saved here", and
+  **Use the default key from .env instead** appears where a typed key replaces a default.
+
+Verification: the .env key test now covers default → typed key → other settings saved → back to the default; a new
+browser-DOM test covers the Settings fields and what a save sends. Real Chrome against an isolated studio reading a
+test `.env` with fake keys: defaults shown and editable, the fake keys absent from the page, a typed Gemini key
+stored and shown as "saved here" (the untouched Pixabay default not copied), "use the default" cleared it again.
+
 # Uploaded narration, one continuous soundtrack, and a release audit — 12 November 2026
 
 Branch `feature/narration-upload-and-release-audit`. No new dependencies, no database migration (new project and

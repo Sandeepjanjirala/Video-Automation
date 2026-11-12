@@ -6,7 +6,9 @@
       <button type="button" id="btn-close-settings" class="ghost" style="font-size:16px;">&times;</button>
     </div>
 
-    <p class="muted">Keys stay in this local application's data folder. Blank key fields preserve saved keys. Online actions send your topic/script or search terms to the chosen provider.</p>
+    <p class="muted">API keys in your <code>.env</code> file are the defaults. Type a key below to use a different one (it is saved
+      in this studio's data folder); leave a field blank to keep the key in use. Online actions send your topic/script or
+      search terms to the chosen provider.</p>
 
     <label class="check">
       <input type="checkbox" id="setting-online-enabled">
@@ -17,6 +19,9 @@
       <span>Gemini API key</span>
       <input type="password" id="setting-gemini-key" autocomplete="off" placeholder="Enter key to update">
       <small id="hint-gemini-key">Needed for research and AI drafts.</small>
+      <label class="check key-default" id="row-gemini-key-default" hidden>
+        <input type="checkbox" id="setting-gemini-key-default"> Use the default key from .env instead
+      </label>
     </div>
 
     <div class="field">
@@ -52,12 +57,18 @@
       <span>Pixabay API key</span>
       <input type="password" id="setting-pixabay-key" autocomplete="off" placeholder="Enter key to update">
       <small id="hint-pixabay-key">Needed for stock search and downloads.</small>
+      <label class="check key-default" id="row-pixabay-key-default" hidden>
+        <input type="checkbox" id="setting-pixabay-key-default"> Use the default key from .env instead
+      </label>
     </div>
 
     <div class="field">
       <span>Pexels API key (optional stock fallback)</span>
       <input type="password" id="setting-pexels-key" autocomplete="off" placeholder="Enter key to update">
-      <small>Pixabay is searched first. Add Pexels for more footage choices.</small>
+      <small id="hint-pexels-key">Pixabay is searched first. Add Pexels for more footage choices.</small>
+      <label class="check key-default" id="row-pexels-key-default" hidden>
+        <input type="checkbox" id="setting-pexels-key-default"> Use the default key from .env instead
+      </label>
     </div>
 
     <!-- Conditional Sarvam Fields -->
@@ -65,12 +76,19 @@
       <span>Sarvam API subscription key</span>
       <input type="password" id="setting-sarvam-key" autocomplete="off" placeholder="Enter key to update">
       <small id="hint-sarvam-key">Optional metered Telugu conversion and final voice upgrade.</small>
+      <label class="check key-default" id="row-sarvam-key-default" hidden>
+        <input type="checkbox" id="setting-sarvam-key-default"> Use the default key from .env instead
+      </label>
     </div>
 
     <!-- Conditional Azure Fields -->
     <div class="field">
       <span>Azure Speech key</span>
       <input type="password" id="setting-azure-key" autocomplete="off" placeholder="Enter key to update">
+      <small id="hint-azure-key">Optional: Azure neural voices.</small>
+      <label class="check key-default" id="row-azure-key-default" hidden>
+        <input type="checkbox" id="setting-azure-key-default"> Use the default key from .env instead
+      </label>
     </div>
     <div class="field">
       <span>Azure region</span>

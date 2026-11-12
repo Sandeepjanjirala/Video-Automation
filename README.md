@@ -48,8 +48,9 @@ for frontend tests; Node 20 is too old for the pinned jsdom dependency.
 6. Put your API keys in a `.env` file next to the project, once per computer: copy
    `.env.example` to `.env` and fill in `STUDIO_GEMINI_KEY`, `STUDIO_SARVAM_KEY`,
    `STUDIO_PIXABAY_KEY` (and optionally Pexels/Azure). `.env` is ignored by Git, so your keys
-   are never pushed and `git pull` never changes them; keys in `.env` are used instead of keys
-   typed in Settings, and Settings shows "Set in the .env file" for them. Never put real keys in
+   are never pushed and `git pull` never changes them. They are the **defaults**: Settings shows
+   "Default key from .env in use", and typing a key there replaces it for this studio (saved in
+   `data/settings.json`); **Use the default key from .env** goes back. Never put real keys in
    `.env.example` or any other file in the repository. FFmpeg paths stay in Settings.
 
 The launcher checks database migrations before starting. Keep its terminal open
@@ -463,9 +464,10 @@ and [Pexels API](https://www.pexels.com/api/documentation/) documentation.
 
 Media, caches, settings, and exports live under `data/`, or `REEL_DATA_DIR` when set.
 Projects and job records live in PostgreSQL. Back up **both**, with workers stopped.
-Keys are kept in local settings and masked by the API. Keys from `.env` stay in `.env`: saving
-Settings no longer copies them into `data/settings.json` (copies written by earlier versions
-remain there until you clear them; removing a key from `.env` does not remove such a copy).
+Keys are kept in local settings and masked by the API (no key is ever sent to the browser). Keys
+from `.env` are defaults and stay in `.env`: only a key typed in Settings is stored in
+`data/settings.json`, and a copy of the `.env` key written there by an earlier version is
+dropped the next time Settings is saved.
 The FFmpeg and FFprobe paths in Settings must be the real `ffmpeg.exe`/`ffprobe.exe` on this
 computer. With `START_PHONE_ACCESS.bat` the studio answers only to this computer's own network
 addresses and name (no other host names), and in Docker to any name behind the password. Export reports can contain

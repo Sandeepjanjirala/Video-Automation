@@ -2275,23 +2275,45 @@ def test_free_voice_is_recorded_while_footage_is_found(monkeypatch):
         assert recorded == expected                                                # paid voices are never recorded early
 
 
+def forget_saved_keys():
+    """Earlier tests save keys in Settings, which replace .env defaults; start without any."""
+    from studio import config
+    path = DATA / 'settings.json'
+    if path.exists():
+        stored = json.loads(path.read_text('utf-8'))
+        path.write_text(json.dumps({k: v for k, v in stored.items() if k not in config.SECRETS}), 'utf-8')
+
+
 def test_keys_from_the_env_file_are_used_and_never_shown(tmp_path):
     import os
     from studio import config
+    forget_saved_keys()
     # The test runner never loads the developer's real .env.
     assert not any(os.environ.get(name) for name in config.ENV_KEYS.values())
     env = tmp_path / '.env'
     env.write_text('# keys\nSTUDIO_GEMINI_KEY="from-the-file"\nSTUDIO_SARVAM_KEY=\nNOT_A_KEY\n', 'utf-8')
-    save_settings({'gemini_key': 'typed-in-settings'})
     config.load_env_file(str(env))
     try:
-        assert config.settings()['gemini_key'] == 'from-the-file'            # .env wins over Settings
+        assert config.settings()['gemini_key'] == 'from-the-file'            # the .env key is the default
         public = config.public_settings()
-        assert public['gemini_key_from_env'] is True and public['sarvam_key_from_env'] is False
+        assert (public['gemini_key_source'], public['gemini_key_from_env'], public['gemini_key_env_default']) == ('env', True, True)
+        assert (public['sarvam_key_source'], public['sarvam_key_env_default']) == ('', False)
+        # A key typed in Settings replaces the default; "use the default" goes back to it.
+        save_settings({'gemini_key': 'typed-in-settings'})
+        assert config.settings()['gemini_key'] == 'typed-in-settings'
+        public = config.public_settings()
+        assert (public['gemini_key_source'], public['gemini_key_env_default']) == ('settings', True)
         assert 'from-the-file' not in json.dumps(public) and 'typed-in-settings' not in json.dumps(public)
+        save_settings({'voice': 'te-IN-MohanNeural'})                       # other changes keep the typed key
+        assert config.settings()['gemini_key'] == 'typed-in-settings'
+        save_settings({'use_default_keys': ['gemini_key']})
+        assert config.settings()['gemini_key'] == 'from-the-file'
+        assert config.public_settings()['gemini_key_source'] == 'env'
+        with pytest.raises(ValueError):
+            save_settings({'use_default_keys': ['access_password_hash']})
     finally:
         os.environ.pop('STUDIO_GEMINI_KEY', None)
-    assert config.settings()['gemini_key'] == 'typed-in-settings'
+    assert config.settings()['gemini_key'] == ''                              # nothing typed is left behind
 
 
 # Uploaded narration: one recording for the whole video, or one per scene -------------------------
@@ -2667,6 +2689,7 @@ def test_retry_respects_one_job_of_a_kind_at_a_time():
 def test_settings_keep_env_keys_out_of_the_settings_file_and_need_real_ffmpeg(tmp_path):
     import os
     from studio import config
+    forget_saved_keys()
     os.environ['STUDIO_GEMINI_KEY'] = 'from-the-env-file'
     try:
         save_settings({'voice': 'te-IN-MohanNeural'})
@@ -2680,3 +2703,9 @@ def test_settings_keep_env_keys_out_of_the_settings_file_and_need_real_ffmpeg(tm
     for path in (str(fake), '\\\\server\\share\\ffmpeg.exe', str(tmp_path / 'ffmpeg.exe')):
         with pytest.raises(ValueError, match='full path of ffmpeg'):
             save_settings({'ffmpeg': path})
+
+
+def test_settings_key_defaults_dom_behaviour():
+    page = DATA.parent / 'settings.html'
+    page.write_bytes(client().get('/').content)
+    subprocess.run(['node', 'tests/audit_settings_ui.cjs', str(page)], check=True, timeout=45)
