@@ -173,15 +173,19 @@
       : 'No captions yet. Add Roman Telugu captions on the Story tab, or reset from the Telugu narration.';
     const stash = (StudioState.clearedCues || {})[s.id];
     return `
-      <section class="panel caption-scene" data-id="${esc(s.id)}">
-        <div class="sectionhead">
+      <details class="panel caption-scene fold" data-id="${esc(s.id)}" data-fold="caption-${esc(s.id)}">
+        <summary class="foldhead sectionhead">
           <div>
             <span class="eyebrow">SCENE ${String(idx + 1).padStart(2, '0')}</span>
             <h2>${esc(heading)}</h2>
           </div>
           <span class="badge caption-scene-status"></span>
-        </div>
+        </summary>
         <p class="muted caption-source">${esc(info)}</p>
+        <label class="field caption-emphasis-field"><span>Key words in the highlight colour</span>
+          <input type="text" class="scene-emphasis-input" data-scene-id="${esc(s.id)}" maxlength="200"
+                 value="${esc((s.emphasis || []).join(', '))}" placeholder="e.g. Octopus, hearts (numbers are always highlighted)">
+        </label>
         ${m ? `<div class="captionplayer"><audio class="caption-audio" controls preload="metadata" data-key="${esc(s.id + '|' + m.audio_url)}" src="${esc(m.audio_url)}"></audio><span class="muted">Playhead <b class="caption-playhead">0.00</b> s</span></div>` : ''}
         <p class="muted">${esc(origin)}</p>
         ${stash ? `<div class="notice">Captions for this scene were cleared when its text or narration changed. <button type="button" class="btn-caption-restore">Restore previous captions</button></div>` : ''}
@@ -197,7 +201,7 @@
           <button type="button" class="btn-caption-reset needs-audio">Reset to automatic timing</button>
           <button type="button" class="btn-caption-discard">Discard unsaved changes</button>
         </div>
-      </section>`;
+      </details>`;
   }
 
   function stopAtEnd(sid, audio) {
@@ -248,6 +252,7 @@
     } else {
       $box.html(list.map(panelHtml).join(''));
     }
+    if (window.StudioFold) StudioFold.restore($box);  // keep scenes the user opened open
     $box.find('audio.caption-audio').each(function() {
       const old = players[$(this).attr('data-key')];
       if (old && old !== this) $(this).replaceWith(old);
@@ -331,6 +336,7 @@
       if (v.errors) {
         const n = scenes().indexOf(s) + 1;
         StudioState.setNotice(`Scene ${n}: fix ${v.errors} caption problem(s) before saving. Nothing was saved.`, true);
+        $(`#caption-scenes-container .caption-scene[data-id="${s.id}"]`).prop('open', true);
         const $first = $(`#caption-scenes-container .caption-scene[data-id="${s.id}"] .cuerow.invalid input`).first();
         if ($first.length) $first.trigger('focus');
         return Promise.resolve(null);
@@ -501,6 +507,7 @@
         const sid = $(this).attr('data-scene-id');
         if (window.StudioApp) StudioApp.switchTab('captions');
         const el = $(`#caption-scenes-container .caption-scene[data-id="${sid}"]`)[0];
+        if (el) el.open = true;
         if (el && el.scrollIntoView) el.scrollIntoView({block: 'start'});
       });
     }

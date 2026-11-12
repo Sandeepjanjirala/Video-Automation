@@ -2,14 +2,17 @@
   <section class="panel">
     <div class="sectionhead">
       <div>
-        <h2>Caption editor</h2>
-        <span class="muted">Telugu or Roman Telugu text, timed against measured narration audio</span>
+        <h2>Captions</h2>
+        <span class="muted">The words shown on screen. They are timed to the voice automatically</span>
       </div>
       <span id="captions-unsaved-badge" class="badge">No unsaved captions</span>
     </div>
-    <p class="muted">Times are seconds from the start of each scene's narration (for example <code>1.25</code> or <code>0:01.25</code>).
-      Play a caption to check it, or pause the audio and set a start or end from the playhead.
-      Saved captions replace automatic timing for that scene. Save, then approve the new revision before rendering.</p>
+    <details class="fold mini" data-fold="help-captions">
+      <summary>How to change a caption's words or timing</summary>
+      <p class="muted">Open a scene below. Times are seconds from the start of that scene's voice (for example <code>1.25</code> or
+        <code>0:01.25</code>). Play a caption to check it, or pause the audio and set a start or end from the playhead.
+        Saved captions replace the automatic timing for that scene. Save, then approve the new revision before rendering.</p>
+    </details>
     <div class="actions">
       <button type="button" class="primary" id="btn-save-captions" disabled>Save captions</button>
       <button type="button" id="btn-approve-captions">Approve current revision</button>
@@ -28,12 +31,21 @@
     <div class="sectionhead">
       <div>
         <h2>Caption style</h2>
-        <span class="muted">Applies to every caption in this reel, in previews, drafts and final exports</span>
+        <span class="muted">Pick how captions look. Applies to the whole video</span>
       </div>
     </div>
+    <label class="switchrow">
+      <input type="checkbox" id="caption-emphasis-toggle">
+      <span class="switch" aria-hidden="true"></span>
+      <span><b>Highlight key words</b>
+        <small class="muted">Important words and numbers in <span class="capem-sample">yellow</span> (white in Yellow accent),
+          like professional reels. The AI picks them; change them per scene below.</small></span>
+    </label>
     <div class="stylegrid">
       <div>
         <div id="caption-style-options" class="styleoptions" role="radiogroup" aria-label="Caption style"></div>
+        <details class="fold mini" data-fold="caption-size">
+          <summary>Caption size, position and preview text</summary>
         <div class="grid two">
           <label class="field"><span>Caption size (1080p pixels)</span>
             <input type="number" id="style-caption-size" class="project-field-bind caption-size-input" data-field="caption_size" min="30" max="90" value="56">
@@ -48,6 +60,7 @@
         </div>
         <p class="muted">Styles change only how captions look; text, timings, size and position stay as they are.
           Save and approve the project before exporting.</p>
+        </details>
       </div>
       <div class="stylepreview">
         <div class="framestage" id="caption-style-stage">

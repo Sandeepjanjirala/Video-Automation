@@ -1,11 +1,81 @@
 <div id="tab-write" class="tab-panel">
-  <!-- Story Brief Panel -->
+  <!-- Your script: the main way to make a video -->
   <section class="panel">
     <div class="sectionhead">
-      <h2>Brief &amp; storyboard planning</h2>
-      <span class="muted">Outline your narrative or let AI draft scenes</span>
+      <div>
+        <h2>Your script</h2>
+        <span class="muted">Paste your script, then make the video in one click</span>
+      </div>
+      <button type="button" class="ghost btn-open-guide" data-guide="reel">&#10067; How to use</button>
+    </div>
+    <div class="grid two">
+      <div class="field">
+        <span>Video format</span>
+        <select id="select-project-format">
+          <option value="reel">Instagram Reel: vertical 9:16, up to 3 minutes (default)</option>
+          <option value="youtube">YouTube video: landscape 16:9, long-form up to 60 minutes</option>
+        </select>
+        <small class="muted" id="format-hint"></small>
+      </div>
+      <div class="field">
+        <label for="script-input-format">Script is written in</label>
+        <select id="script-input-format"><option value="roman">Telugu written in English letters</option><option value="telugu">Telugu script (తెలుగు)</option></select>
+        <small class="muted">Lines in Telugu letters are always read as Telugu.</small>
+      </div>
+    </div>
+    <div class="field">
+      <textarea id="input-import-script" class="project-field-bind" data-field="draft_script" rows="5" placeholder="Paste your script here. One line or sentence becomes one scene.&#10;e.g. Mana Andhra Pradesh lo enno aasakthikaramaina vishayalu unnayi..."></textarea>
+    </div>
+    <div class="autopilotbox">
+      <button type="button" id="btn-autopilot" class="primary">&#128640; Create draft video automatically</button>
+      <p class="muted">Does everything for you: Telugu, captions, matching videos, voice and a small
+        <span class="format-draft-size">540&times;960</span> draft to watch. Your own text is kept.</p>
+      <div id="autopilot-panel" hidden>
+        <ol id="autopilot-steps" class="autopilotsteps"></ol>
+        <p id="autopilot-status" class="muted" aria-live="polite"></p>
+      </div>
+    </div>
+    <div class="actions">
+      <button type="button" id="btn-import-split" class="ghost">
+        &#9986; Split into scenes
+      </button>
+      <button type="button" class="ghost" data-action="queue-job" data-kind="draft" data-script-input="#input-import-script">Prepare my script with AI</button>
+    </div>
+    <details class="fold mini" data-fold="help-split">
+      <summary>Want to check scenes before making the video?</summary>
+      <p class="muted">Click <b>Split into scenes</b>: each line or sentence becomes a scene below. Lines in Telugu letters (English
+        words are fine) become the Telugu narration; lines in English letters become the Roman captions. With a Gemini key
+        the other box fills in by itself (one AI request). Check the scenes, then click <b>Create draft video automatically</b>.
+        Without Gemini, use <b>Convert to Telugu</b> on each scene. <b>Prepare my script with AI</b> fills anything still
+        missing in the scenes you already have.</p>
+    </details>
+  </section>
+
+  <!-- Scenes Editor -->
+  <section class="panel">
+    <div class="sectionhead">
+      <div>
+        <h2>Your scenes</h2>
+        <span class="muted">One box pair per scene: Telugu that is spoken, and the captions shown on screen</span>
+      </div>
+      <button type="button" id="btn-add-scene" class="ghost" style="font-size:12px;">+ Add scene</button>
     </div>
 
+    <div id="scenes-list">
+      <!-- Populated dynamically by StudioScenes.renderScenes -->
+    </div>
+
+    <div class="actions" style="margin-top:20px;">
+      <button type="button" id="btn-add-scene-bottom" class="ghost">+ Add scene</button>
+    </div>
+  </section>
+
+  <!-- Project details & AI writing (optional; opens on click) -->
+  <details class="panel fold" data-fold="story-brief">
+    <summary class="foldhead">
+      <span><b>Project details &amp; AI writing</b>
+        <small class="muted">Optional: name, topic, tone, length, research, or let AI write the script</small></span>
+    </summary>
     <div class="grid two">
       <div class="field">
         <span>Project title</span>
@@ -32,15 +102,6 @@
       <textarea id="input-project-topic" rows="3" placeholder="Enter your topic, key facts, or instructions for the AI storyboard..."></textarea>
     </div>
 
-    <div class="field">
-      <span>Video format</span>
-      <select id="select-project-format">
-        <option value="reel">Instagram Reel: vertical 9:16, up to 3 minutes (default)</option>
-        <option value="youtube">YouTube video: landscape 16:9, long-form up to 60 minutes</option>
-      </select>
-      <small class="muted" id="format-hint"></small>
-    </div>
-
     <div class="grid two">
       <div class="field">
         <span>Tone &amp; style</span>
@@ -65,61 +126,15 @@
         &#9889; Generate AI storyboard draft
       </button>
     </div>
-  </section>
+  </details>
 
-  <!-- Script Importer -->
-  <section class="panel">
-    <div class="sectionhead">
-      <h2>Quick script importer</h2>
-      <span class="muted">Your script, split locally into editable scenes</span>
-    </div>
-    <div class="field">
-      <label for="script-input-format">Script format</label>
-      <select id="script-input-format"><option value="roman">Telugu written in English letters</option><option value="telugu">Telugu script (తెలుగు)</option></select>
-      <textarea id="input-import-script" class="project-field-bind" data-field="draft_script" rows="3" placeholder="e.g. Mana Andhra Pradesh lo enno aasakthikaramaina vishayalu unnayi..."></textarea>
-    </div>
+  <!-- Evidence & editorial review (opens on click) -->
+  <details class="panel fold" data-fold="story-review">
+    <summary class="foldhead">
+      <span><b>Review notes</b>
+        <small class="muted">Where the facts come from, or that it is fiction. Needed once before approval</small></span>
+    </summary>
     <div class="actions">
-      <button type="button" id="btn-import-split" class="ghost">
-        &#9986; Split into scenes
-      </button>
-      <button type="button" class="primary" data-action="queue-job" data-kind="draft" data-script-input="#input-import-script">Prepare my script with AI</button>
-    </div>
-    <div class="autopilotbox">
-      <button type="button" id="btn-autopilot" class="primary">&#128640; Create draft video automatically</button>
-      <p class="muted">One click: AI prepares every scene (Telugu narration, captions, stock search words), stock clips are
-        found, rights are ticked, the project is approved, Mohan narrates and a <span class="format-draft-size">540&times;960</span> draft is rendered. Works on a
-        pasted script or on scenes you already have; your own text is kept. Uses your Gemini quota.</p>
-      <div id="autopilot-panel" hidden>
-        <ol id="autopilot-steps" class="autopilotsteps"></ol>
-        <p id="autopilot-status" class="muted" aria-live="polite"></p>
-      </div>
-    </div>
-    <p class="muted">Split into scenes is free and offline. Convert each scene to Telugu and review it below. The optional AI preparation uses your configured Gemini API quota.</p>
-  </section>
-
-  <!-- Scenes Editor -->
-  <section class="panel">
-    <div class="sectionhead">
-      <h2>Storyboard scenes</h2>
-      <button type="button" id="btn-add-scene" class="ghost" style="font-size:12px;">+ Add scene</button>
-    </div>
-    
-    <div id="scenes-list">
-      <!-- Populated dynamically by StudioScenes.renderScenes -->
-    </div>
-
-    <div class="actions" style="margin-top:20px;">
-      <button type="button" id="btn-add-scene-bottom" class="ghost">+ Add scene</button>
-    </div>
-  </section>
-
-  <!-- Evidence & editorial review -->
-  <section class="panel">
-    <div class="sectionhead">
-      <div>
-        <h2>Evidence &amp; editorial review</h2>
-        <span class="muted">Record factual review notes or label content as fictional before approval</span>
-      </div>
       <button type="button" class="ghost" id="btn-toggle-research">Show research</button>
     </div>
     <div id="research-review-container" style="display:none; margin-bottom:14px;">
@@ -131,5 +146,5 @@
       <textarea id="textarea-evidence-notes" rows="3" placeholder="Sources checked, corrections made, or fiction label…"></textarea>
       <small class="muted">Record what you checked, unresolved claims, or that the story is fictional. Approval records your review.</small>
     </label>
-  </section>
+  </details>
 </div>

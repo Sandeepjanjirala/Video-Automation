@@ -212,8 +212,17 @@ const StudioJobs = (() => {
     $container.data('jobs-signature', signature);
     const pending = list.filter(j => j.state === 'queued' || j.state === 'running').length;
     
+    // Results that wait for "Apply result" (the one-click draft applies its own).
+    const waiting = list.filter(j => j.state === 'succeeded' && !j.applied && ['research', 'draft', 'stock', 'stock_all'].includes(j.kind)
+      && (j.kind !== 'stock' || !!j.result?.scene_id)).length;
     if ($badge.length) {
-      $badge.text(pending ? `${pending} in progress` : 'Queue clear');
+      $badge.text(pending ? `${pending} in progress` : waiting ? `${waiting} result(s) to apply` : 'Queue clear');
+    }
+    // The panel is folded; open it (without remembering) while work runs or waits for the user.
+    const panel = document.getElementById('panel-production-jobs');
+    if (panel && !panel.open && (pending || waiting) && !(window.StudioAutopilot && StudioAutopilot.isRunning())) {
+      panel.setAttribute('data-auto-open', '');
+      panel.open = true;
     }
 
     if (list.length === 0) {

@@ -241,7 +241,7 @@
   function renderCaption($card, s) {
     // Drawn in the project's caption style (captionstyle.js mirrors media.CAPTION_STYLES).
     const text = $card.find('.framing-captions').is(':checked') ? captionSample(s) : '';
-    StudioCaptionStyle.overlay($card.find('.framecaption'), text, StudioState.current.project);
+    StudioCaptionStyle.overlay($card.find('.framecaption'), text, StudioState.current.project, s);
   }
 
   function describeTrim($card, s, source) {
@@ -343,7 +343,8 @@
     stop(sid);
     const p = StudioState.current.project, pid = StudioState.current.id;
     const video = $card.find('video.framemedia')[0];
-    const body = {scene: s, quality: 'final', format: p.format || 'reel', caption_size: p.caption_size, caption_bottom: p.caption_bottom,
+    const body = {scene: s, quality: 'final', format: p.format || 'reel', caption_emphasis: p.caption_emphasis || 'none',
+                  caption_size: p.caption_size, caption_bottom: p.caption_bottom,
                   caption_style: StudioCaptionStyle.styleOf(p),
                   caption: $card.find('.framing-captions').is(':checked') ? captionSample(s) : ''};
     if (video) body.source_time = Math.round(video.currentTime * 1000) / 1000;

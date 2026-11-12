@@ -104,6 +104,7 @@ const StudioApp = (() => {
 
       // Initial tab
       switchTab('write');
+      StudioGuide.welcome();  // first visit in this browser: show "How to use" once
     } catch (e) {
       $('#app-loading-state').html(`
         <div style="padding:2rem;text-align:center;">
@@ -141,6 +142,8 @@ $(document).ready(() => {
   StudioFraming.init();
   StudioCaptionStyle.init();
   StudioAutopilot.init();
+  StudioFold.init();
+  StudioGuide.init();
   StudioSettings.init();
   StudioApp.init();
 });

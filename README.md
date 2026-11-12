@@ -43,7 +43,12 @@ for frontend tests; Node 20 is too old for the pinned jsdom dependency.
    ```
 
 5. Run `START_WINDOWS.bat` and open **http://127.0.0.1:8788**.
-6. Configure FFmpeg paths and optional provider credentials in Settings.
+6. Put your API keys in a `.env` file next to the project, once per computer: copy
+   `.env.example` to `.env` and fill in `STUDIO_GEMINI_KEY`, `STUDIO_SARVAM_KEY`,
+   `STUDIO_PIXABAY_KEY` (and optionally Pexels/Azure). `.env` is ignored by Git, so your keys
+   are never pushed and `git pull` never changes them; keys in `.env` are used instead of keys
+   typed in Settings, and Settings shows "Set in the .env file" for them. Never put real keys in
+   `.env.example` or any other file in the repository. FFmpeg paths stay in Settings.
 
 The launcher checks database migrations before starting. Keep its terminal open
 while jobs run. This is a single-user app using Django's development server.
@@ -109,6 +114,17 @@ named database. Plain `docker build .` still produces the application image used
 
 ## Make a reel from your script
 
+**❓ How to use** (top of every page, in the sidebar, and on each main panel) opens a short
+step-by-step guide in plain words; it also opens once on the first visit in a browser. The
+screens show the main steps first: **Your script** (video format, paste, Create draft video
+automatically, Split into scenes) and **Your scenes** on the Story tab; the picture of each
+scene on Voice & visuals; caption on/off, highlight and style on Captions; **Ready to render?**
+and **Your videos** on Preview & export. Everything else is one click away in a bar marked
+**▸**: Project details & AI writing, Review notes, each scene's **More** and **Change footage &
+framing**, Voice settings, Voice Lab, Background music, each scene's caption timing, caption
+size and position, and Production jobs (which opens by itself while work runs or a result
+waits for **Apply result**). Bars you open stay open in that browser. No option was removed.
+
 ### Video format: Instagram Reel or YouTube video
 
 Every new project is an **Instagram Reel**. Choose **Video format** on the Story tab to make a
@@ -133,6 +149,23 @@ in Settings spread these over several free quotas. Pixabay searches are paced to
 video downloads a few hundred clips (several gigabytes in `data/assets`) and takes about an
 hour on a typical laptop; keep the page open. **Generate AI storyboard draft** writes a
 long-form script for a YouTube project (about one scene per 5 seconds of the target).
+
+### How fast it is
+
+A 7-scene reel goes from pasted script to draft in about a minute (65–90 s measured, from about
+3 minutes 15 seconds before these changes):
+
+- Gemini's slow "thinking" is turned off where it adds nothing: writing Telugu and captions,
+  planning shots and checking clips (each 2–3 times faster; a model that rejects the setting is
+  simply asked again normally). Research and long-form AI storyboards keep full thinking.
+- Footage: every scene is searched at the same time (still spaced to Pixabay's rate limit),
+  long videos' AI checks run two at a time, and clips download four at a time.
+- The free Mohan voice is recorded while footage is being found, so the voice step usually takes
+  a second; paid voices are only recorded in the voice step. Four scenes are recorded at once.
+- Scenes are rendered three at a time (on a computer with 12 or more cores), in scene order.
+
+No new software is needed for this. FFmpeg's Intel Quick Sync encoder works on this PC, but
+encoding is a small part of the time, so the tested libx264 encoder is kept.
 
 ### One click to a draft
 
@@ -159,10 +192,14 @@ export**. The steps below describe the same workflow done by hand.
 
 1. Create a story and paste your script into **Quick script importer**.
 2. Select **Telugu written in English letters** (default) or native Telugu.
-   **Split into scenes** works locally. Each scene preserves your Roman Telugu
-   input/captions separately from its native Telugu narration. **Convert to Telugu**
-   opens a review window: use your configured Gemini or Sarvam text API, or paste
-   Telugu manually. Apply only after checking names and pronunciation. Editing a
+   **Split into scenes** splits locally: a line in Telugu letters (English words are fine)
+   becomes the Telugu narration, a line in English letters the Roman captions. Then (with
+   online services and a Gemini key) it fills the other box automatically with one AI request, together with
+   stock search words, headings and caption key words; text you wrote is kept. Without
+   Gemini, or if that request fails, the split scenes stay and a message says so. Each
+   scene preserves your Roman Telugu input/captions separately from its native Telugu
+   narration. **Convert to Telugu** on a scene opens a review window: use your configured
+   Gemini or Sarvam text API, or paste Telugu manually. Apply only after checking names and pronunciation. Editing a
    converted Roman source requires another narration review before export.
 3. Add your research/evidence notes, or identify the script as original fiction.
    Save and approve the current revision.
@@ -255,6 +292,17 @@ Captions are on for every project. To make a reel without burned-in captions, tu
 switch, saved with the project), then approve and render. Title cards keep their heading,
 `captions.srt` is still included with the export, and Roman caption text is no longer
 required by the readiness check.
+
+### Highlighted key words
+
+**Highlight key words** (Captions tab, on for new projects) shows each line's most important
+words and every number in yellow, and the rest in the style's colour, like professional reels;
+with **Yellow accent** the key words are white instead. The AI chooses up to three key words per
+line, copied from the line, when it prepares the scenes (Split into scenes, Prepare my script
+with AI, or the one-click draft); edit them per scene under **Key words in the highlight
+colour**. A scene without key words highlights its stock search words and numbers. Projects
+created before this option keep plain captions until it is turned on. Drafts, final exports and
+every preview draw the same highlight.
 
 ### Caption styles
 

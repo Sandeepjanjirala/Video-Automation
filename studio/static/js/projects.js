@@ -368,6 +368,7 @@
       if (!StudioState.current) return Promise.resolve(null);
       StudioState.setBusy(true);
       const pid = StudioState.current.id;
+      Scenes.moveTeluguToNarration(StudioState.current.project);
       const payload = {
         revision: StudioState.current.revision,
         project: StudioState.current.project
@@ -409,6 +410,13 @@
         })
         .catch(function(err) {
           StudioState.setNotice(err.message, true);
+          // The review notes live in a fold-out on the Story tab: take the user there.
+          if (/review notes/i.test(err.message) && window.StudioFold) {
+            if (window.StudioApp) StudioApp.switchTab('write');
+            StudioFold.show('story-review');
+            const notes = document.getElementById('textarea-evidence-notes');
+            if (notes) { notes.scrollIntoView({block: 'center'}); notes.focus(); }
+          }
         })
         .finally(function() {
           StudioState.setBusy(false);
@@ -431,6 +439,7 @@
     restoreDraft: function() {
       if (!StudioState.draftRecoverable || !StudioState.current) return;
       StudioState.current.project = StudioState.draftRecoverable.body;
+      Scenes.moveTeluguToNarration(StudioState.current.project);
       StudioState.markDirty(true);
       StudioState.draftRecoverable = null;
       Projects.renderDraftBanner();

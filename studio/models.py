@@ -53,6 +53,8 @@ class Scene(StrictModel):
     cues: list[Cue] = Field(default_factory=list, max_length=200)
     # More stock clips of the same subject; a long scene cuts to the next one about every 4 seconds.
     extra_shots: list[str] = Field(default_factory=list, max_length=4)
+    # The line's key words, shown in the highlight colour when the project's caption_emphasis is on.
+    emphasis: list[str] = Field(default_factory=list, max_length=6)
 
     @model_validator(mode='after')
     def check(self):
@@ -60,6 +62,8 @@ class Scene(StrictModel):
             raise ValueError('Roman caption field must use English letters, not Telugu script')
         if any(not re.fullmatch(r'[a-f0-9]{32}', a) for a in self.extra_shots):
             raise ValueError('Extra shots must be media library clip IDs')
+        if any(not isinstance(w, str) or not w.strip() or len(w) > 40 for w in self.emphasis):
+            raise ValueError('Key words must be single words of at most 40 characters')
         if self.trim_end and self.trim_end <= self.trim_start:
             raise ValueError('Trim end must be after trim start')
         last = 0.0
@@ -100,6 +104,9 @@ class Project(StrictModel):
     caption_style: Literal['classic', 'black_box', 'yellow_accent', 'translucent'] = 'classic'
     # Off: no captions are burned into the video (title cards keep their title; the SRT is still exported).
     captions_enabled: bool = True
+    # 'keywords': each line's key words (and numbers) in yellow, the rest in the style's colour. Projects
+    # saved before this option keep plain captions; new projects turn it on (state.js).
+    caption_emphasis: Literal['none', 'keywords'] = 'none'
     script_approved_hash: str = Field(default='', max_length=64)
     draft_script: str = Field(default='', max_length=50000)
 

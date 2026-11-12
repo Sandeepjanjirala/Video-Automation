@@ -89,6 +89,30 @@ def voice_for(scene, project, provider):
     )
 
 
+VOICE_WORKERS = 4  # narration requests at the same time (Edge, Sarvam and Azure all accept a few)
+
+
+def prefetch_voices(project, provider, workers=VOICE_WORKERS):
+    """Synthesize every scene's narration in parallel so the scene-by-scene loop that follows finds it
+    in the speech cache (synthesize caches by text and voice settings). Errors are left for that loop
+    to report with its own message."""
+    from concurrent.futures import ThreadPoolExecutor
+    from django.db import connections
+    scenes = [s for s in project.get('scenes', []) if (s.get('narration') or '').strip() and not s.get('audio_asset')]
+    if len(scenes) < 2:
+        return
+
+    def one(scene):
+        try:
+            voice_for(scene, project, provider)
+        except Exception:
+            pass
+        finally:
+            connections.close_all()  # this worker thread's own connection
+    with ThreadPoolExecutor(min(workers, len(scenes))) as pool:
+        list(pool.map(one, scenes))
+
+
 def captions(scene, audio_duration, boundaries):
     if scene['cues']:
         if scene['cues'][-1]['end'] > audio_duration + 0.1:
@@ -123,9 +147,36 @@ def auto_captions(text, audio_duration, boundaries):
 from .timeline import stamp
 
 
-def ass_text(text, width=32):
+def word_key(word):
+    """A word compared without case or punctuation (Telugu letters and digits kept)."""
+    return re.sub(r'[^0-9a-z\u0c00-\u0c7f]', '', (word or '').lower())
+
+
+def emphasis_words(scene, project):
+    """Words to highlight in this scene's captions: the scene's key words, or else the subject words of
+    its stock search; numbers are always highlighted. Empty when the project's highlighting is off."""
+    if (project or {}).get('caption_emphasis') != 'keywords':
+        return None
+    chosen = {word_key(w) for w in scene.get('emphasis') or []} - {''}
+    if not chosen:
+        chosen = {k for k in map(word_key, (scene.get('keywords') or '').split()) if len(k) >= 4}
+    return chosen
+
+
+# Yellow (&HBBGGRR) on white styles; white on the all-yellow style.
+EMPHASIS_COLOUR = {'yellow_accent': '&HFFFFFF&'}
+
+
+def ass_text(text, width=32, emphasis=None, colour='&H00D7FF&'):
     safe = text.replace('\\', '/').replace('{', '(').replace('}', ')').replace('\r', ' ').replace('\n', ' ')
-    return r'\N'.join(textwrap.wrap(safe, width=width))
+    lines = textwrap.wrap(safe, width=width)
+    if emphasis is not None:
+        # Tags go in after wrapping, so they never count towards the line width.
+        def mark(word):
+            key = word_key(word)
+            return f'{{\\1c{colour}}}{word}{{\\r}}' if key and (key in emphasis or any(ch.isdigit() for ch in key)) else word
+        lines = [' '.join(mark(word) for word in line.split(' ')) for line in lines]
+    return r'\N'.join(lines)
 
 
 # Captions are always ASS. The ass filter shapes complex scripts by default on every FFmpeg
@@ -164,7 +215,8 @@ def caption_style_line(name, font, project):
             f"-1,0,0,0,100,100,0,0,{preset['border']},{outline},{preset['shadow']},2,{left},{right},{formats.caption_margin(project)},1")
 
 
-def write_ass(path, cues, project, title=None, total=0):
+def write_ass(path, cues, project, title=None, total=0, emphasis=None):
+    """`emphasis`: the scene's words to highlight (emphasis_words), or None for plain captions."""
     # Fixed 1080p design coordinates are scaled by libass for draft resolution.
     width, height = formats.size(project)
     wrap = formats.of(project)['caption_chars']
@@ -184,7 +236,8 @@ Style: Title,Arial,78,&H00B9F8CF,&H00FFFFFF,&H00120E0B,&H00000000,-1,0,0,0,100,1
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 '''
     rows = [f"Dialogue: 0,{stamp(c['start'], True)},{stamp(c['end'], True)},"
-            f"{'Telugu' if TELUGU_SCRIPT.search(c['text']) else 'Default'},,0,0,0,,{ass_text(c['text'], wrap)}"
+            f"{'Telugu' if TELUGU_SCRIPT.search(c['text']) else 'Default'},,0,0,0,,"
+            f"{ass_text(c['text'], wrap, emphasis, EMPHASIS_COLOUR.get(project.get('caption_style'), '&H00D7FF&'))}"
             for c in cues]
     if title:
         rows.insert(0, f'Dialogue: 0,0:00:00.00,{stamp(total, True)},Title,,0,0,0,,{{\\fad(250,200)}}{ass_text(title, 20 if wrap == 32 else 34)}')

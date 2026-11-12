@@ -1,10 +1,10 @@
 <div id="tab-export" class="tab-panel" style="display:none;">
-  <!-- Export Settings & Subtitle Styling -->
-  <section class="panel">
-    <div class="sectionhead">
-      <h2>Video layout &amp; subtitle margins</h2>
-      <span class="muted">Keep Roman Telugu captions inside the video frame</span>
-    </div>
+  <!-- Export Settings & Subtitle Styling (opens on click) -->
+  <details class="panel fold" data-fold="export-layout">
+    <summary class="foldhead">
+      <span><b>Captions on/off, size and position</b>
+        <small class="muted">The same settings as on the Captions tab</small></span>
+    </summary>
     <label class="switchrow">
       <input type="checkbox" class="captions-enabled-toggle project-field-bind" data-field="captions_enabled" checked>
       <span class="switch" aria-hidden="true"></span>
@@ -23,15 +23,17 @@
         <input type="number" id="range-caption-bottom" class="project-field-bind" data-field="caption_bottom" min="180" max="600" value="300">
       </div>
     </div>
-  </section>
+  </details>
 
   <!-- Preflight Readiness Checklist -->
   <section class="panel">
     <div class="sectionhead">
-      <h2>Preflight readiness check</h2>
+      <div>
+        <h2>Ready to render?</h2>
+        <span class="muted">Everything below must be green. A red line says what to fix</span>
+      </div>
       <span id="preflight-summary-badge" class="badge">Checking…</span>
     </div>
-    <p class="muted" style="margin-top:0;">The automated preflight pipeline validates your script, rights, media codecs, and voice takes before triggering FFmpeg.</p>
 
     <div id="preflight-checklist-items" class="checklist">
       <!-- Populated dynamically by StudioProjects.updatePreflight -->
@@ -39,7 +41,8 @@
     </div>
 
     <p class="voice-billing-note muted" role="status"></p>
-    <p class="muted">Both resolutions use the voice you selected. Download the MP4 and upload it manually to Instagram or YouTube.</p>
+    <p class="muted">The quick draft is small and fast, for checking. Render the full video when you are happy, then download
+      the MP4 and upload it to Instagram or YouTube.</p>
     <div class="actions" style="margin-top:20px;">
       <button type="button" class="ghost" id="btn-render-preview" data-action="queue-job" data-kind="render" data-extra='{"quality":"draft"}'>
         &#9889; Quick draft preview (<span class="format-draft-size">540&times;960</span>)
@@ -53,8 +56,8 @@
   <!-- Exported Reels & Video Player -->
   <section class="panel">
     <div class="sectionhead">
-      <h2>Exported videos</h2>
-      <span class="muted">Completed MP4 videos ready for download and publishing</span>
+      <h2>Your videos</h2>
+      <span class="muted">Watch and download finished videos</span>
     </div>
 
     <div id="export-cards-container">

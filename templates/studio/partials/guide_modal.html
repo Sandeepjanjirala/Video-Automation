@@ -1,0 +1,91 @@
+<!-- How to use: plain steps for anyone (opened from "How to use" in the header, sidebar and welcome page) -->
+<div id="guide-modal" class="modalback" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="guide-title">
+  <div class="modal wide guide">
+    <div class="sectionhead">
+      <h2 id="guide-title">&#10067; How to use Telugu Reel Studio</h2>
+      <button type="button" id="btn-close-guide" class="ghost" aria-label="Close the guide" style="font-size:16px;">&times;</button>
+    </div>
+
+    <nav class="guidenav">
+      <a href="#guide-setup">First time</a>
+      <a href="#guide-reel">Make a reel</a>
+      <a href="#guide-youtube">YouTube video</a>
+      <a href="#guide-improve">Change things</a>
+      <a href="#guide-phone">Phone</a>
+      <a href="#guide-help">Problems</a>
+    </nav>
+
+    <section id="guide-setup">
+      <h3>1. First time only: add your keys</h3>
+      <ol>
+        <li>Click <b>&#9881; Settings &amp; providers</b> (bottom left; on a phone, open <b>&#9776;</b> first).</li>
+        <li>Tick <b>Enable online services</b>.</li>
+        <li>Paste your <b>Gemini API key</b> (writes Telugu and picks footage) and <b>Pixabay API key</b> (free stock videos).</li>
+        <li>Click <b>Save settings</b>. You never need to do this again.</li>
+      </ol>
+    </section>
+
+    <section id="guide-reel">
+      <h3>2. Make an Instagram Reel (4 steps)</h3>
+      <ol>
+        <li>Click <b>+ New project</b>.</li>
+        <li>Paste your script in the big box under <b>Your script</b>. Telugu letters or English letters, both are fine.</li>
+        <li>Click <b>&#128640; Create draft video automatically</b> and press <b>OK</b>. Wait a few minutes; keep the page open.
+          It writes the Telugu, finds a matching video for every line, adds the voice and makes a small draft.</li>
+        <li>Watch the draft on <b>Preview &amp; export</b>. If you like it, click <b>&#127916; Render &hellip;</b> for the full-quality
+          video, then <b>Download MP4</b> and upload it to Instagram.</li>
+      </ol>
+      <p class="muted">Want to check the scenes first? Click <b>&#9986; Split into scenes</b> instead of step 3. Each line becomes a scene and
+        the Telugu (or English-letter captions) fill in by themselves. Fix any scene, then click Create draft video automatically.</p>
+    </section>
+
+    <section id="guide-youtube">
+      <h3>3. Make a YouTube video (16:9, long)</h3>
+      <ol>
+        <li>In a new project, set <b>Video format</b> to <b>YouTube video</b>.</li>
+        <li>Paste your long script and click <b>&#128640; Create draft video automatically</b>, the same as a reel.</li>
+        <li>A long video takes longer (a 20-minute video about an hour). Keep the computer on and the page open.</li>
+      </ol>
+    </section>
+
+    <section id="guide-improve">
+      <h3>4. Change things (only if you want to)</h3>
+      <p>Grey bars with <b>&#9656;</b> open more options. Click a bar to open it, click again to close.</p>
+      <ul>
+        <li><b>A scene's video:</b> <b>Voice &amp; visuals</b> tab &rarr; the scene &rarr; <b>Change footage &amp; framing</b>.
+          Search new stock, upload your own clip, move or zoom the picture.</li>
+        <li><b>The words:</b> <b>Story</b> tab &rarr; edit the scene's Telugu or captions box.</li>
+        <li><b>Caption look:</b> <b>Captions</b> tab &rarr; pick a style. <b>Highlight key words</b> shows important words in yellow.
+          Turn <b>Show captions on the video</b> off for no captions.</li>
+        <li><b>The voice:</b> <b>Voice &amp; visuals</b> tab &rarr; <b>Voice settings</b> (speed, style, other voices).</li>
+        <li>After changing anything, click <b>&#10003; Approve revision</b> (top right), then render again.</li>
+      </ul>
+    </section>
+
+    <section id="guide-phone">
+      <h3>5. Use it on your phone</h3>
+      <ol>
+        <li>On the computer: <b>Settings</b> &rarr; set <b>Password for phone and other devices</b>.</li>
+        <li>Start the studio with <b>START_PHONE_ACCESS.bat</b>. It shows an address like <code>http://192.168.1.20:8788</code>.</li>
+        <li>On the phone (same Wi-Fi), open that address and sign in. <b>&#9776;</b> shows your projects; the four steps are at the bottom.</li>
+      </ol>
+      <p class="muted">The computer does the work, so keep it on while a video is made.</p>
+    </section>
+
+    <section id="guide-help">
+      <h3>6. If something goes wrong</h3>
+      <ul>
+        <li><b>A red message appears:</b> read it; it says what to do. Fix that, then click the same button again. Finished work is reused.</li>
+        <li><b>"Gemini … quota" or "busy":</b> the free AI limit is used up for today. Wait, or add a paid key in Settings.</li>
+        <li><b>A scene shows a title card instead of video:</b> no good stock clip was found. Open <b>Change footage &amp; framing</b>
+          on that scene and search other words or upload a clip.</li>
+        <li><b>Render button does nothing useful:</b> look at <b>Ready to render?</b> on <b>Preview &amp; export</b>; it lists what is missing.</li>
+        <li><b>Delete a project:</b> &#128465; next to it in the project list, or <b>Delete</b> at the top.</li>
+      </ul>
+    </section>
+
+    <div class="actions">
+      <button type="button" class="primary" id="btn-close-guide-bottom">Got it</button>
+    </div>
+  </div>
+</div>

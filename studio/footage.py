@@ -14,7 +14,8 @@ import json
 import logging
 import math
 import re
-from concurrent.futures import ThreadPoolExecutor
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import httpx
 
@@ -26,6 +27,10 @@ log = logging.getLogger('studio.footage')
 MIN_SCORE = 5      # Gemini's 0-10 fit score below which a scene gets no clip
 MAX_SHOTS = 4      # clips per scene: its own and up to three extra shots
 PLAN_BATCH = 40    # scenes planned per Gemini request (the whole script is always sent as context)
+# Work done at the same time: searches (still spaced to the provider's rate limit in stock.paced),
+# Gemini requests for long videos, and clip downloads.
+SEARCH_WORKERS, GEMINI_WORKERS, DOWNLOAD_WORKERS = 4, 2, 4
+MAX_QUERIES = 3    # planned phrases (plus keywords) searched per scene; the subject word may add one
 # Candidates per scene that Gemini sees (a preview costs ~260 tokens) and scenes per pick request.
 # A long YouTube video has hundreds of scenes, so it shows fewer candidates in bigger batches.
 SHOWN = {'reel': 10, 'youtube': 6}
@@ -99,6 +104,22 @@ def batches(items, size):
     return [items[k:k + size] for k in range(0, len(items), size)]
 
 
+def parallel(fn, items, workers):
+    """fn over items with up to `workers` at once, results in item order."""
+    if len(items) <= 1:
+        return [fn(item) for item in items]
+    with ThreadPoolExecutor(min(workers, len(items))) as pool:
+        return list(pool.map(fn, items))
+
+
+def close_db():
+    """Worker threads open their own database connection (downloads record assets); close it."""
+    import threading
+    if threading.current_thread() is not threading.main_thread():
+        from django.db import connections
+        connections.close_all()
+
+
 def plan(project, need, progress=lambda text: None):
     """{scene index: {'shot', 'queries'}} from Gemini, PLAN_BATCH scenes per request; scenes of a
     batch Gemini could not plan are left out (their keywords are searched instead)."""
@@ -107,14 +128,20 @@ def plan(project, need, progress=lambda text: None):
             + f"Topic: {project.get('topic') or project.get('title') or ''}\n"
             + f"SCRIPT: {json.dumps(script, ensure_ascii=False)}\n")
     plans, groups = {}, batches(need, PLAN_BATCH)
-    for k, group in enumerate(groups, 1):
-        if len(groups) > 1:
-            progress(f'Reading the script and planning shots ({k}/{len(groups)})')
+
+    def ask(group):
         try:
-            rows = parse(providers.gemini(head + f'NEED: {json.dumps(group)}')[0])
+            # Thinking off: as good a plan in a third of the time (and fewer malformed answers).
+            return group, parse(providers.gemini(head + f'NEED: {json.dumps(group)}', fast=True)[0])
         except (KeyError, TypeError, ValueError) as exc:
             log.warning('footage plan unavailable: %s', exc)
-            continue
+            return group, []
+        finally:
+            close_db()
+    answers = parallel(ask, groups, GEMINI_WORKERS)
+    for k, (group, rows) in enumerate(answers, 1):
+        if len(groups) > 1:
+            progress(f'Reading the script and planning shots ({k}/{len(groups)})')
         for row in rows if isinstance(rows, list) else []:
             try:
                 i = int(row['index'])
@@ -222,8 +249,16 @@ def pick(project, scenes, plans, pools, progress=lambda text: None):
     prompt = PICK_PROMPT.format(orientation=formats.of(project)['orientation'], shown=shown, minimum=MIN_SCORE, script=script,
                                 shape='; a landscape clip that fills a 16:9 frame' if formats.landscape(project) else '')
     chosen, groups = {}, batches(sorted(i for i in pools if pools[i]), PICK_BATCH.get(kind, 12))
-    for k, group in enumerate(groups, 1):
-        progress('Checking candidate clips with AI' + (f' ({k}/{len(groups)})' if len(groups) > 1 else ''))
+    progress('Checking candidate clips with AI' + (f' ({len(groups)} batches)' if len(groups) > 1 else ''))
+
+    def judge(group):
+        try:
+            return judge_batch(group)
+        finally:
+            close_db()
+
+    def judge_batch(group):
+        found = {}
         flat = [(i, n, hit) for i in group for n, hit in enumerate(pools[i][:shown], 1)]
         with ThreadPoolExecutor(8) as pool:
             frames = list(pool.map(lambda item: preview(item[2]), flat))
@@ -240,19 +275,22 @@ def pick(project, scenes, plans, pools, progress=lambda text: None):
             offered.setdefault(i, {})[n] = hit
             parts.append((label, *frame))
         if not offered:
-            continue
+            return found
         try:
-            rows = parse(providers.gemini(prompt, images=parts)[0])
+            rows = parse(providers.gemini(prompt, images=parts, fast=True)[0])  # thinking off: about twice as fast
         except (KeyError, TypeError, ValueError) as exc:
             log.warning('footage pick unavailable: %s', exc)
-            continue
+            return found
         for row in rows if isinstance(rows, list) else []:
             try:
                 i, picks = int(row['index']), [(int(p['candidate']), float(p['score'])) for p in row.get('picks') or []]
             except (KeyError, TypeError, ValueError):
                 continue
             if i in offered:
-                chosen[i] = [(offered[i][n], score) for n, score in picks if n in offered[i] and score >= MIN_SCORE]
+                found[i] = [(offered[i][n], score) for n, score in picks if n in offered[i] and score >= MIN_SCORE]
+        return found
+    for found in parallel(judge, groups, GEMINI_WORKERS):
+        chosen.update(found)
     return chosen
 
 
@@ -261,22 +299,39 @@ def find(project, scenes, progress=lambda text: None):
     index = {s['id']: i for i, s in enumerate(project['scenes'])}
     by_index = {index[s['id']]: s for s in scenes}
     landscape, shot_seconds = formats.landscape(project), formats.of(project)['shot_seconds']
+    started = time.monotonic()
     progress('Reading the script and planning shots')
     plans = plan(project, sorted(by_index), progress) if by_index else {}
-    pools, errors = {}, {}
-    for n, (i, scene) in enumerate(sorted(by_index.items()), 1):
-        progress(f'Searching footage {n}/{len(by_index)}')
+    planned = time.monotonic()
+    pools, errors, todo = {}, {}, {}
+    for i, scene in sorted(by_index.items()):
         keywords = (scene.get('keywords') or '').strip()
-        queries = list(dict.fromkeys(plans.get(i, {}).get('queries', []) + ([keywords] if keywords else [])))
-        if not queries:
+        queries = list(dict.fromkeys(plans.get(i, {}).get('queries', []) + ([keywords] if keywords else [])))[:MAX_QUERIES]
+        if queries:
+            todo[i] = queries
+        else:
             errors[i] = 'Add English search keywords'
-            continue
+
+    def search(i):
         try:
-            pools[i] = candidates(scene, queries, landscape)
+            return i, candidates(by_index[i], todo[i], landscape), None
         except ValueError as exc:
-            errors[i] = str(exc)
+            return i, None, str(exc)
+        finally:
+            close_db()
+    with ThreadPoolExecutor(SEARCH_WORKERS) as pool:
+        futures = [pool.submit(search, i) for i in todo]
+        for n, future in enumerate(as_completed(futures), 1):
+            i, hits, error = future.result()
+            if error is None:
+                pools[i] = hits
+            else:
+                errors[i] = error
+            progress(f'Searching footage {n}/{len(todo)}')
+    searched = time.monotonic()
     chosen = pick(project, project['scenes'], plans, pools, progress) if pools else {}
-    selected, used = [], set()
+    picked = time.monotonic()
+    selected, used, assigned = [], set(), []
     for i, scene in sorted(by_index.items()):
         if i in errors:
             selected.append({'scene_id': scene['id'], 'error': errors[i]})
@@ -290,23 +345,42 @@ def find(project, scenes, progress=lambda text: None):
         if not fresh:
             selected.append({'scene_id': scene['id'], 'error': 'No suitable stock result. Upload footage or choose a graphic.'})
             continue
-        # The best clip, then extra shots for a long scene (also from the accepted clips).
-        progress(f'Downloading footage {len(selected) + 1}/{len(by_index)}')
-        clips = []
-        for hit, score in fresh[:shots_needed(scene, shot_seconds)]:
-            try:
-                clips.append((providers.download_stock(hit['id'], hit.get('provider', 'pixabay'), landscape=landscape), score))
-            except ValueError as exc:
-                if not clips:
-                    error = str(exc)
-                continue
-            used.add((hit.get('provider', 'pixabay'), hit['id']))
-        if not clips:
-            selected.append({'scene_id': scene['id'], 'error': error})
+        # The best clip, then extra shots for a long scene (also from the accepted clips); every scene
+        # gets its own clips, decided in scene order before the downloads start.
+        clips = fresh[:shots_needed(scene, shot_seconds)]
+        used.update((hit.get('provider', 'pixabay'), hit['id']) for hit, _ in clips)
+        assigned.append((i, scene, clips))
+        selected.append(None)  # filled in after the downloads, keeping scene order
+
+    def fetch(hit):
+        try:
+            return providers.download_stock(hit['id'], hit.get('provider', 'pixabay'), landscape=landscape), None
+        except ValueError as exc:
+            return None, str(exc)
+        finally:
+            close_db()
+    wanted = {(h.get('provider', 'pixabay'), h['id']): h for _, _, clips in assigned for h, _ in clips}
+    files = {}
+    with ThreadPoolExecutor(DOWNLOAD_WORKERS) as pool:
+        futures = {pool.submit(fetch, hit): key for key, hit in wanted.items()}
+        for n, future in enumerate(as_completed(futures), 1):
+            files[futures[future]] = future.result()
+            progress(f'Downloading footage {n}/{len(wanted)} clips')
+    slots = iter(k for k, s in enumerate(selected) if s is None)
+    for i, scene, clips in assigned:
+        got = [(files[(h.get('provider', 'pixabay'), h['id'])][0], score) for h, score in clips]
+        failed = [files[(h.get('provider', 'pixabay'), h['id'])][1] for h, _ in clips]
+        got = [(asset, score) for asset, score in got if asset]
+        k = next(slots)
+        if not got:
+            selected[k] = {'scene_id': scene['id'], 'error': next((e for e in failed if e), 'Stock download failed')}
             continue
-        (asset, score), extras = clips[0], [a for a, _ in clips[1:]]
+        (asset, score), extras = got[0], [a for a, _ in got[1:]]
         shot = plans.get(i, {}).get('shot', '')
-        selected.append({'scene_id': scene['id'], 'asset': asset, 'extra_assets': extras,
-                         'match': (f'AI-checked match ({score:g}/10)' if score is not None else 'Best keyword match')
-                                  + (f' + {len(extras)} more shot(s)' if extras else '') + (f': {shot}' if shot else '')})
+        selected[k] = {'scene_id': scene['id'], 'asset': asset, 'extra_assets': extras,
+                       'match': (f'AI-checked match ({score:g}/10)' if score is not None else 'Best keyword match')
+                                + (f' + {len(extras)} more shot(s)' if extras else '') + (f': {shot}' if shot else '')}
+    done = time.monotonic()
+    log.info('footage for %d scenes: plan %.1fs, search %.1fs, AI check %.1fs, download %.1fs (%d clips)', len(by_index),
+             planned - started, searched - planned, picked - searched, done - picked, len(wanted))
     return selected
