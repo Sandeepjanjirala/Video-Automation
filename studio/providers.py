@@ -58,10 +58,22 @@ def model_unavailable(exc):
     return re.search(r'HTTP (429|503|404)\b', str(exc))
 
 
-def gemini(prompt, grounded=False, images=(), max_tokens=12000):
+def thinking_off(model):
+    """Generation settings that skip the model's slow "thinking" for simple, well-specified tasks
+    (writing Telugu, captions and search words); None for models where it cannot be turned off."""
+    if re.search(r'2\.5-flash', model):
+        return {'thinkingBudget': 0}
+    if model.startswith('gemini-3') or model.endswith('-latest'):
+        return {'thinkingLevel': 'low'}
+    return None
+
+
+def gemini(prompt, grounded=False, images=(), max_tokens=12000, fast=False):
     """Ask Gemini. images: (label, mime type, bytes) tuples, each sent as a caption followed by the picture.
 
     When a model is out of quota, busy or retired, the backup models from Settings are tried in order.
+    fast=True turns the model's thinking off (much quicker; for tasks that need no reasoning); a model
+    that rejects that setting is asked again without it.
     """
     cfg = online()
     models = gemini_models(cfg)
@@ -88,13 +100,18 @@ def gemini(prompt, grounded=False, images=(), max_tokens=12000):
             if not acquire_rate_slot('gemini'):
                 raise ValueError('Gemini rate limit reached. Try again shortly.')
             store.reserve_ai_call(cfg['daily_ai_calls'])
+            config = thinking_off(model) if fast and not grounded else None
+            sent = {**body, 'generationConfig': {**body['generationConfig'], 'thinkingConfig': config}} if config else body
             try:
                 response_data = request('POST', f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                                        headers={'x-goog-api-key': cfg['gemini_key']}, json=body,
+                                        headers={'x-goog-api-key': cfg['gemini_key']}, json=sent,
                                         timeout=100 if max_tokens <= 12000 else 600).json()
                 break
             except ValueError as exc:
                 error = exc
+            if config and 'HTTP 400' in str(error) and attempt < 2:
+                fast = False  # this model does not accept the setting: ask again normally
+                continue
             # With no backup left, wait out high demand (503) or a per-minute limit ("Please retry in
             # 12.3s"); daily limits ask for minutes or hours.
             wait = re.search(r'retry in (\d+(?:\.\d+)?)s\b', str(error))
@@ -165,6 +182,25 @@ def clean_caption(text):
     return re.sub(r'\s+', ' ', text).strip()
 
 
+# Common Roman Telugu and English filler words that never deserve the highlight colour.
+FILLER_WORDS = set('oka idi adi ani mana meeku manaki kuda chala and the this that with from'.split())
+
+
+def key_words(words, line):
+    """Up to three of the model's key words that really occur in the line, as written there."""
+    from .media import word_key
+    present = {word_key(w): w.strip('.,!?;:"\'()') for w in line.split()}
+    chosen = []
+    for word in words if isinstance(words, list) else []:
+        for part in str(word).split():
+            key = word_key(part)
+            if (len(key) < 3 and not key.isdigit()) or key in FILLER_WORDS:
+                continue
+            if key in present and present[key] not in chosen and len(chosen) < 3:
+                chosen.append(present[key])
+    return chosen
+
+
 FILL_BATCH = 30  # scenes completed per Gemini request (a whole reel fits in one)
 
 
@@ -180,6 +216,9 @@ def fill_scenes(project):
     for i, original in enumerate(project['scenes']):
         s = dict(original)
         s['roman'] = clean_caption(s.get('roman', ''))
+        if TELUGU.search(s['roman']) and not (s.get('narration') or '').strip():
+            # Telugu letters in the Roman captions box are the narration; Roman captions are written from it.
+            s.update(narration=s['roman'], roman='', narration_source_roman='')
         narration = (s.get('narration') or '').strip()
         source = s.get('narration_source_roman') or ''
         needs = {
@@ -187,8 +226,10 @@ def fill_scenes(project):
             'roman': not s['roman'] and bool(narration),
             'keywords': not (s.get('keywords') or '').strip(),
             'graphic_title': not (s.get('graphic_title') or '').strip(),
+            # Asked for together with anything else missing, never on its own (no extra requests).
+            'emphasis': not s.get('emphasis'),
         }
-        if (s['roman'] or narration) and any(needs.values()):
+        if (s['roman'] or narration) and any(v for k, v in needs.items() if k != 'emphasis'):
             wanted.append((i, needs))
         scenes.append(s)
     # A reel is completed in one request; a long YouTube script in batches that each see the whole script.
@@ -213,9 +254,12 @@ def fill_scenes(project):
                   'subject (title, hook, question, "comment below") name the reel\'s main subject or a fitting human '
                   'reaction such as "surprised woman phone"; never abstract words such as facts, information, '
                   'shocking, concept or question; no people\'s names, no on-screen text); '
-                  'graphic_title (a heading of at most 6 words). Return JSON with one key "scenes". Scenes: '
+                  'graphic_title (a heading of at most 6 words); emphasis (a list of the 1 to 3 most important words '
+                  'of the line that a viewer should notice in the captions, copied exactly from roman (or from the '
+                  'narration when roman is empty): the subject, a number, a surprising fact or a strong feeling word; '
+                  'never small words such as ki, lo, oka, idi, the, a). Return JSON with one key "scenes". Scenes: '
                   + json.dumps(script, ensure_ascii=False))
-        text, _ = gemini(prompt)
+        text, _ = gemini(prompt, fast=True)  # transliteration and keywords need no reasoning
         try:
             rows = {int(r['index']): r for r in
                     json.loads(text.strip().removeprefix('```json').removesuffix('```').strip())['scenes']}
@@ -247,6 +291,8 @@ def fill_scenes(project):
                 s['keywords'] = clean_caption(str(row.get('keywords') or ''))[:100]
             if needs['graphic_title']:
                 s['graphic_title'] = clean_caption(str(row.get('graphic_title') or ''))[:150]
+            if needs['emphasis']:
+                s['emphasis'] = key_words(row.get('emphasis'), s['roman'] or s.get('narration') or '')
     return [Scene.model_validate(s).model_dump() for s in scenes]
 
 

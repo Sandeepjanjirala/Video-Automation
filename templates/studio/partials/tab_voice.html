@@ -2,13 +2,23 @@
   <!-- Voice Profile & Synthesis Configuration -->
   <section class="panel">
     <div class="sectionhead">
-      <h2>Voice profile &amp; narration engine</h2>
-      <span class="muted">Select neural Telugu voice model and pacing</span>
+      <div>
+        <h2>Voice</h2>
+        <span class="muted">Who reads your Telugu script</span>
+      </div>
+      <button type="button" class="ghost btn-open-guide" data-guide="improve">&#10067; How to use</button>
     </div>
 
-    <p class="muted">Start with Mohan, the free online preview narrator. When the video looks right, select Sarvam and render again. Audio is reused for identical text and voice settings.</p>
+    <p class="muted">Mohan (free) reads your video. When the video looks right you can switch to the paid Sarvam voice and render again.</p>
     <div class="actions"><button type="button" id="btn-free-preview-voice">Use free male voice</button><button type="button" id="btn-upgrade-sarvam">Upgrade to Sarvam voice</button></div>
     <p class="voice-billing-note muted" role="status"></p>
+    <div class="actions">
+      <button type="button" class="primary" data-action="queue-job" data-kind="voice">
+        &#127897; Prepare narration for all scenes
+      </button>
+    </div>
+    <details class="fold mini" data-fold="voice-settings">
+      <summary>Voice settings: provider, voice, style, speed</summary>
     <div class="grid two">
       <div class="field">
         <span>Narration provider</span>
@@ -57,20 +67,15 @@
       <input type="checkbox" id="check-voice-lock">
       <span><b>Lock voice settings</b> (Prevent automatic preset overrides when editing project script)</span>
     </label>
-
-    <div class="actions">
-      <button type="button" class="primary" data-action="queue-job" data-kind="voice">
-        &#127897; Prepare narration for all scenes
-      </button>
-    </div>
+    </details>
   </section>
 
   <!-- Phase 4 Voice Lab (A/B Testing, Polish, Dictionary) -->
-  <section class="panel voicelab">
-    <div class="sectionhead">
-      <h3>&#129302; Voice Lab &mdash; Telugu Pronunciation &amp; A/B Polish</h3>
-      <span class="muted">Colloquial rewrites, dictionary overrides, and take audition</span>
-    </div>
+  <details class="panel voicelab fold" data-fold="voice-lab">
+    <summary class="foldhead">
+      <span><b>&#129302; Voice Lab: fix pronunciation, compare takes</b>
+        <small class="muted">Advanced: colloquial rewrites, dictionary overrides and A/B auditions</small></span>
+    </summary>
 
     <div class="grid two" style="margin-bottom:16px;">
       <div class="field">
@@ -126,13 +131,16 @@
       <summary><b>Project voice take history</b></summary>
       <table style="width:100%"><thead><tr><th>Take</th><th>Scene</th><th>Voice</th><th>Preset</th><th>Duration</th><th>Status</th><th>Playback</th></tr></thead><tbody id="voicelab-takes-tbody"></tbody></table>
     </details>
-  </section>
+  </details>
 
   <!-- Scene Visuals & Footage Assignment -->
   <section class="panel">
     <div class="sectionhead">
-      <h2>Scene visual footage</h2>
-      <div style="display:flex;gap:8px;">
+      <div>
+        <h2>Footage for each scene</h2>
+        <span class="muted">The picture shown while each line is spoken. Open a scene's options to change it</span>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <button type="button" class="ghost" data-action="queue-job" data-kind="stock_all">
           &#128269; Find stock for empty scenes
         </button>
@@ -147,13 +155,13 @@
     </div>
   </section>
 
-  <!-- Background Music & Ducking -->
-  <section class="panel">
-    <div class="sectionhead">
-      <div>
-        <h2>Background music &amp; audio ducking</h2>
-        <span class="muted">Add subtle atmospheric music beneath the Telugu narration</span>
-      </div>
+  <!-- Background Music & Ducking (opens on click) -->
+  <details class="panel fold" data-fold="voice-music">
+    <summary class="foldhead">
+      <span><b>Background music</b>
+        <small class="muted">Optional: quiet music under the voice (it gets softer while the voice speaks)</small></span>
+    </summary>
+    <div class="actions">
       <button type="button" class="ghost" id="btn-remove-music" style="display:none;">Remove music</button>
     </div>
 
@@ -183,5 +191,5 @@
         <b>I reviewed and confirmed commercial / attribution rights for this background track</b>
       </label>
     </div>
-  </section>
+  </details>
 </div>

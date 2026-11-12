@@ -10,12 +10,18 @@ import shutil
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from celery import shared_task
 from .celery_app import app
 from .config import DATA, executable, settings
 from . import store
+from django.db import connections
+
+# Scenes rendered at the same time; each FFmpeg uses 4 threads, so 3 keep a 12+ core PC busy without
+# starving the rest of the system.
+RENDER_WORKERS = max(1, min(3, (os.cpu_count() or 4) // 4))
 
 
 FencingError = store.FencingError
@@ -177,7 +183,18 @@ def task_stock_all(self, job_id: str):
                 store.progress(job_id, text, stage_name='footage')
 
             scenes = [s for s in p['scenes'] if s['visual'] != 'graphic' and not s['video_asset']]
+            # Footage search waits on the network most of the time, so the voice is recorded meanwhile and the
+            # voice step finds it cached: always the free voice, and a paid voice (Sarvam, Azure) only when the
+            # one-click draft asks for it, since that run records the voice right after footage anyway.
+            voice, options = None, job_data['snapshot'].get('options', {})
+            provider = options.get('tts_provider') or 'edge'
+            if provider == 'edge' or options.get('prefetch_voice') is True:
+                from .media import prefetch_voices
+                voice = threading.Thread(target=prefetch_voices, args=(p, provider), daemon=True)
+                voice.start()
             selected = find(p, scenes, progress)
+            if voice:
+                voice.join()
             result = {'selections': selected, 'note': 'Clips chosen from the script by AI where available. Review relevance, framing, and rights before rendering.'}
 
             lease.check_ownership()
@@ -204,6 +221,9 @@ def task_voice_pipeline(self, job_id: str):
 
             provider = job_data['snapshot'].get('options', {}).get('tts_provider') or settings()['tts_provider']
             prepared = []
+            from .media import prefetch_voices
+            store.progress(job_id, f"Synthesizing narration for {len(p['scenes'])} scenes", stage_name='narration')
+            prefetch_voices(p, provider)
 
             for i, scene in enumerate(p['scenes']):
                 lease.check_ownership()
@@ -257,6 +277,8 @@ def task_render_pipeline(self, job_id: str):
             # 2. Narration & Alignment stages
             provider = job_data['snapshot'].get('options', {}).get('tts_provider') or settings()['tts_provider']
             prepared = []
+            from .media import prefetch_voices
+            prefetch_voices(p, provider)  # usually cached already by the voice job
             for i, scene in enumerate(p['scenes']):
                 lease.check_ownership()
                 store.progress(job_id, f"Preparing narration {i + 1}/{len(p['scenes'])}", stage_name='narration')
@@ -290,10 +312,12 @@ def task_render_pipeline(self, job_id: str):
 
             scene_files, report_scenes = [], []
 
-            # 3. Scene rendering stage
-            for i, (scene, voice, timing) in enumerate(zip(p['scenes'], prepared, timeline.scenes)):
+            # 3. Scene rendering stage: several scenes at once (each FFmpeg uses 4 threads), in scene order.
+            rendered, progress_lock = [0], threading.Lock()
+
+            def render_scene(i, scene, voice, timing):
+              try:
                 lease.check_ownership()
-                store.progress(job_id, f"Rendering scene {i + 1}/{len(p['scenes'])} ({'draft' if draft else f'{width}x{height}'})", stage_name='scene_rendering')
                 length = timing.scene_duration
                 cues = timing.cues if p.get('captions_enabled', True) else []
                 shots = scene_shots(scene, length, format_of(p)['shot_seconds'])
@@ -308,7 +332,9 @@ def task_render_pipeline(self, job_id: str):
                     'width': width,
                     'caption_size': p['caption_size'],
                     'caption_bottom': p['caption_bottom'],
-                    'caption_style': p.get('caption_style', 'classic')
+                    'caption_style': p.get('caption_style', 'classic'),
+                    # Only projects that highlight key words add to the key, so older renders stay cached.
+                    **({'caption_emphasis': p['caption_emphasis']} if p.get('caption_emphasis', 'none') != 'none' else {}),
                 })
                 cached = DATA / 'cache' / (cache_key + '.scene.mp4')
 
@@ -323,8 +349,10 @@ def task_render_pipeline(self, job_id: str):
                 if not is_cached_valid:
                     work = temp / str(i)
                     work.mkdir(exist_ok=True)
+                    from .media import emphasis_words
                     write_ass(work / 'captions.ass', cues, p,
-                              scene['graphic_title'] if scene['visual'] == 'graphic' else None, length)
+                              scene['graphic_title'] if scene['visual'] == 'graphic' else None, length,
+                              emphasis_words(scene, p))
                     args = [executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-filter_threads', '1']
                     if scene['visual'] == 'graphic':
                         args += ['-f', 'lavfi', '-i', f'color=c=0x12251F:s={width}x{height}:r=30:d={length}']
@@ -372,15 +400,30 @@ def task_render_pipeline(self, job_id: str):
                             shutil.copyfile(temp_cache, cached)
                         temp_cache.unlink(missing_ok=True)
 
-                scene_files.append(cached)
-                report_scenes.append({
+                report = {
                     'scene_id': scene['id'],
                     'duration': length,
                     'alignment': voice['alignment'],
                     'visual': store.asset(scene['video_asset']) if scene['visual'] != 'graphic' else {'provider': 'explicit graphic'},
                     'extra_shots': [store.asset(shot['video_asset']) for shot in shots[1:]],
                     'source_audio_muted': True
-                })
+                }
+                with progress_lock:
+                    rendered[0] += 1
+                    store.progress(job_id, f"Rendering scenes {rendered[0]}/{len(p['scenes'])} ({'draft' if draft else f'{width}x{height}'})",
+                                   stage_name='scene_rendering')
+                return cached, report
+              finally:
+                if threading.current_thread() is not threading.main_thread():
+                    connections.close_all()  # each worker thread opened its own database connection
+
+            lease.check_ownership()
+            store.progress(job_id, f"Rendering scenes 0/{len(p['scenes'])} ({'draft' if draft else f'{width}x{height}'})", stage_name='scene_rendering')
+            jobs = list(enumerate(zip(p['scenes'], prepared, timeline.scenes)))
+            with ThreadPoolExecutor(max_workers=min(RENDER_WORKERS, len(jobs))) as pool:
+                results = list(pool.map(lambda item: render_scene(item[0], *item[1]), jobs))
+            scene_files = [cached for cached, _ in results]
+            report_scenes = [report for _, report in results]
 
             # 4. Assembly stage
             lease.check_ownership()

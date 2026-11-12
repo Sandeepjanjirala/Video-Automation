@@ -60,7 +60,13 @@
         StudioState.markDirty(true);
         Projects.populateEditor();
         Projects.triggerAutosave();
-        StudioState.setNotice('Script split locally. Use Convert to Telugu on each scene, or paste your reviewed Telugu narration.');
+        Scenes.autoTelugu(scenes.length);
+      });
+
+      // Key words shown in the highlight colour (Captions tab), comma- or space-separated.
+      $(document).on('change', '.scene-emphasis-input', function() {
+        const words = String($(this).val() || '').split(/[,\s]+/).map(w => w.trim()).filter(Boolean).slice(0, 6).map(w => w.slice(0, 40));
+        Scenes.updateSceneField($(this).data('scene-id'), {emphasis: words});
       });
 
       // Move scene up
@@ -82,6 +88,49 @@
       });
     },
 
+    /** After "Split into scenes": write every scene's Telugu narration (and stock words, headings and
+     *  caption key words) with one AI job, the same preparation the one-click draft uses. */
+    autoTelugu: function(count) {
+      const cfg = StudioState.getCfg() || {};
+      const scenes = StudioState.current.project.scenes || [];
+      // Lines in English letters need Telugu narration; lines in Telugu letters need Roman captions.
+      const needTelugu = scenes.some(s => String(s.roman || '').trim() && !String(s.narration || '').trim());
+      const needRoman = scenes.some(s => String(s.narration || '').trim() && !String(s.roman || '').trim());
+      const writing = [needTelugu && 'Telugu narration', needRoman && 'Roman captions'].filter(Boolean).join(' and ') || 'stock search words';
+      if (!cfg.online_enabled || !cfg.gemini_key_configured || !window.StudioAutopilot) {
+        return StudioState.setNotice(`Script split into ${count} scene(s).` + (needTelugu || needRoman
+          ? ` Turn on online services and add a Gemini key in Settings to write the ${writing} automatically, or use Convert to Telugu on each scene.`
+          : ''));
+      }
+      if (StudioAutopilot.isRunning()) return;
+      StudioState.setNotice(`Script split into ${count} scene(s). Writing the ${writing} with AI… (about ${count > 30 ? 'a few minutes' : 'a minute'}; keep this page open)`);
+      $('#btn-import-split').prop('disabled', true).addClass('keep-disabled');
+      return StudioAutopilot.prepareScenes()
+        .then(function() {
+          const ready = StudioState.current.project.scenes.filter(s => String(s.narration || '').trim() && String(s.roman || '').trim()).length;
+          StudioState.setNotice(`Telugu narration and Roman captions ready for ${ready} of ${count} scene(s). Review them before recording; edit any scene or use Convert to Telugu there.`);
+        })
+        .catch(function(err) {
+          StudioState.setNotice(`Script split into ${count} scene(s), but the ${writing} could not be written: ${err.message} `
+            + 'Click Prepare my script with AI to try again, or use Convert to Telugu on each scene.', true);
+        })
+        .finally(function() {
+          $('#btn-import-split').prop('disabled', false).removeClass('keep-disabled');
+        });
+    },
+
+    /** Telugu letters typed or pasted into the Roman captions box belong to the Telugu narration
+     *  (the Roman box takes English letters only); move them there when that box is empty. */
+    moveTeluguToNarration: function(p) {
+      (p && p.scenes || []).forEach(function(s) {
+        if (/[\u0c00-\u0c7f]/.test(s.roman || '') && !String(s.narration || '').trim()) {
+          s.narration = s.roman;
+          s.roman = '';
+          s.narration_source_roman = '';
+        }
+      });
+    },
+
     // One scene per line or sentence, keeping the writer's own words (minus chat formatting).
     splitScript: function(text, isRoman) {
       const parts = String(text || '').trim().split(/\n+|(?<=[.!?।])\s+/u).map(Scenes.cleanCaption).filter(Boolean);
@@ -91,7 +140,12 @@
         throw new Error(`${fmt.label} supports at most ${fmt.maxScenes} scenes (this script has ${parts.length}) and 3,000 characters per scene.`
           + (fmt.maxScenes < 400 ? ' For a longer script choose "YouTube video" as the video format.' : ''));
       }
-      return parts.map(text => ({...StudioState.createEmptyScene(), narration: isRoman ? '' : text, roman: isRoman ? text : ''}));
+      // A line written in Telugu letters (even with English words, "ఒక lake దగ్గర") is Telugu narration;
+      // the Roman captions box only takes English letters and is written from it automatically.
+      return parts.map(text => {
+        const telugu = !isRoman || /[ఀ-౿]/.test(text);
+        return {...StudioState.createEmptyScene(), narration: telugu ? text : '', roman: telugu ? '' : text};
+      });
     },
 
     // Mirrors providers.clean_caption: markdown emphasis, heading marks and 'Title:'-style labels.
@@ -199,21 +253,27 @@
                   <textarea class="scene-roman-input input-scene-caption" rows="4" placeholder="Telugulo mee katha…">${$('<div>').text(s.roman || '').html()}</textarea>
                 </label>
               </div>
-              <label class="field"><span>English footage search keywords</span><input type="text" class="scene-keywords-input input-scene-visual-prompt" maxlength="100" value="${$('<div>').text(s.keywords || '').html().replace(/"/g, '&quot;')}"></label>
               <div class="rowtools">
                 <button type="button" class="btn-scene-transliterate" data-scene-id="${s.id}">Convert to Telugu</button>
-                <button type="button" class="btn-scene-prompt" data-scene-id="${s.id}">Prompt</button>
-                <button type="button" class="btn-move-scene-up"${disableMoveUp}>Move up</button>
-                <button type="button" class="btn-remove-scene">Remove scene</button>
-                <label class="filebutton ghost">Upload narration<input type="file" class="scene-upload-audio-input" data-scene-id="${s.id}" accept="audio/*"></label>
-                ${s.audio_asset ? `<audio controls preload="none" src="/api/assets/${s.audio_asset}/media"></audio><button type="button" class="btn-remove-scene-audio" data-scene-id="${s.id}">Remove recording</button>` : ''}
                 ${attachedAudioMsg}
               </div>
+              <details class="fold mini" data-fold="scene-more-${s.id}">
+                <summary>More: search words, prompt, move, remove, own recording</summary>
+                <label class="field"><span>English footage search keywords</span><input type="text" class="scene-keywords-input input-scene-visual-prompt" maxlength="100" value="${$('<div>').text(s.keywords || '').html().replace(/"/g, '&quot;')}"></label>
+                <div class="rowtools">
+                  <button type="button" class="btn-scene-prompt" data-scene-id="${s.id}">Prompt</button>
+                  <button type="button" class="btn-move-scene-up"${disableMoveUp}>Move up</button>
+                  <button type="button" class="btn-remove-scene">Remove scene</button>
+                  <label class="filebutton ghost">Upload narration<input type="file" class="scene-upload-audio-input" data-scene-id="${s.id}" accept="audio/*"></label>
+                  ${s.audio_asset ? `<audio controls preload="none" src="/api/assets/${s.audio_asset}/media"></audio><button type="button" class="btn-remove-scene-audio" data-scene-id="${s.id}">Remove recording</button>` : ''}
+                </div>
+              </details>
             </div>
           </div>
         `;
         $container.append(rowHtml);
       });
+      if (window.StudioFold) StudioFold.restore($container);
     },
 
     renderSceneVisuals: function() {
@@ -279,6 +339,12 @@
             <div class="scenegrid">
               <div>${previewHtml}</div>
               <div>
+                <p class="visualnow">${s.visual === 'graphic' ? 'Showing a title card'
+                  : s.video_asset ? `Showing ${s.visual === 'image' ? 'an image' : s.visual === 'stock' ? 'stock footage' : 'your footage'}`
+                    + ((s.extra_shots || []).length ? ` + ${s.extra_shots.length} more shot(s)` : '')
+                  : 'No footage yet: open the options below, or use Find stock for empty scenes'}</p>
+                <details class="fold mini footagefold" data-fold="scene-footage-${s.id}">
+                <summary>Change footage &amp; framing</summary>
                 <label class="field">
                   <span>Visual source</span>
                   <select class="scene-visual-source-select">
@@ -294,6 +360,7 @@
                   <span>Hold after narration (seconds)</span>
                   <input type="number" class="scene-field-bind" data-field="hold_seconds" min="0" max="30" step="0.1" value="${s.hold_seconds || 0}" />
                 </label>
+                </details>
                 <label class="check">
                   <input type="checkbox" class="scene-rights-checkbox" ${s.rights_reviewed ? 'checked' : ''} />
                   I reviewed visual relevance and permission to use it.
@@ -308,6 +375,7 @@
         `;
         $container.append(cardHtml);
       });
+      if (window.StudioFold) StudioFold.restore($container);
       StudioFraming.mount();
     }
   };

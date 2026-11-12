@@ -19,7 +19,7 @@
   // Minutes per job, plus minutes per scene: a 20-minute YouTube video has a few hundred scenes.
   const TIMEOUT_MINUTES = {draft: [4, 0.5], stock_all: [20, 1], voice: [15, 0.3], render: [20, 0.6]};
   let running = false;
-  let pollDelay = 2000;
+  let pollDelay = 1000;  // ms between progress checks while a step runs
 
   const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
   const esc = value => $('<div>').text(value == null ? '' : value).html();
@@ -93,7 +93,7 @@
     footage: async function() {
       const missing = () => project().scenes.filter(s => s.visual !== 'graphic' && !s.video_asset);
       if (missing().length) {
-        const job = await queueJob('stock_all');
+        const job = await queueJob('stock_all', {prefetch_voice: true});  // the voice is recorded during footage
         await applyJob(await waitJob('footage', job));
       }
       // Scenes without a usable stock clip become title cards rather than blocking the draft.
@@ -176,8 +176,21 @@
     }
   }
 
+  /** Complete every scene with one AI job (Telugu narration, captions, stock words, headings, key
+   *  words) and apply it to the open project; used by "Split into scenes". */
+  async function prepareScenes() {
+    if (running) throw new Error('The one-click draft is already running.');
+    running = true;
+    try {
+      const job = await queueJob('draft', {fill: true});
+      await applyJob(await waitJob('prepare', job));
+    } finally {
+      running = false;
+    }
+  }
+
   window.StudioAutopilot = {
-    STEPS, start, run,
+    STEPS, start, run, prepareScenes,
     isRunning: () => running,
     setPollDelay: ms => { pollDelay = ms; },
     init: function() {

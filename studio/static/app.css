@@ -153,3 +153,38 @@ button[hidden]{display:none}
 .loginbox{margin:0;width:100%;max-width:400px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:28px 24px}
 .loginbox .brand{margin-bottom:22px}.loginbox h2{margin-top:0}
 .loginbox input{font-size:16px!important}
+
+/* Key words in the highlight colour (media.EMPHASIS_COLOUR): yellow, or white in Yellow accent */
+.framecaption .capem{color:#ffd700}
+.framecaption.capstyle-yellow_accent .capem{color:#fff}
+.capem-sample{color:#a57c00;font-weight:700}
+.caption-emphasis-field{max-width:520px}
+
+/* Fold-outs: less-used options open on click (studio/static/js/ui.js remembers which are open) */
+details.fold>summary{list-style:none;cursor:pointer;user-select:none}
+details.fold>summary::-webkit-details-marker{display:none}
+details.fold>summary::before{content:'\25B8';display:inline-block;width:18px;color:var(--green);transition:transform .15s;flex:0 0 auto}
+details.fold[open]>summary::before{transform:rotate(90deg)}
+details.panel.fold>summary.foldhead{display:flex;align-items:flex-start;gap:6px;margin:0}
+details.panel.fold>summary.foldhead b{font-size:17px;font-weight:600;color:#253c33}
+details.panel.fold>summary.foldhead small{display:block;margin-top:3px}
+details.panel.fold>summary.foldhead::before{font-size:18px;margin-top:1px}
+details.panel.fold[open]>summary.foldhead{margin-bottom:14px}
+details.panel.fold:not([open]){padding-top:18px;padding-bottom:18px}
+details.panel.fold>summary.foldhead.sectionhead{justify-content:flex-start}
+details.panel.fold>summary.foldhead.sectionhead>div{flex:1;min-width:0}
+details.panel.fold>summary.foldhead.sectionhead h2{margin:4px 0 0;font-size:18px}
+details.fold.mini{margin:10px 0;border:1px solid var(--line);border-radius:8px;background:#f8faf5}
+details.fold.mini>summary{padding:10px 12px;font-size:13px;font-weight:600;color:var(--green)}
+details.fold.mini[open]{background:#fff}
+details.fold.mini[open]>summary{border-bottom:1px solid var(--line)}
+details.fold.mini>:not(summary){margin-left:12px;margin-right:12px}
+details.fold.mini>:last-child{margin-bottom:12px}
+.visualnow{font-size:13px;font-weight:600;margin:0 0 6px;color:#253c33}
+/* How to use guide */
+.modal.guide h3{font-size:16px;margin:22px 0 8px;color:var(--green)}
+.modal.guide ol,.modal.guide ul{padding-left:22px;margin:0}
+.modal.guide li{font-size:14px;line-height:1.6;margin:6px 0}
+.guidenav{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 6px}
+.guidenav a{font-size:12px;border:1px solid var(--line);border-radius:14px;padding:5px 10px;text-decoration:none;background:#f4f6ef}
+.guide section{scroll-margin-top:70px}

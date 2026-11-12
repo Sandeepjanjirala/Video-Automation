@@ -1,12 +1,15 @@
-<!-- Production Background Jobs Panel -->
-<section class="panel jobs" id="panel-production-jobs">
-  <div class="sectionhead">
-    <h2>Production jobs</h2>
+<!-- Production Background Jobs Panel (opens on click, and by itself while work runs or waits to be applied) -->
+<details class="panel jobs fold" id="panel-production-jobs" data-fold="jobs">
+  <summary class="foldhead sectionhead">
+    <div>
+      <h2>Production jobs</h2>
+      <small class="muted">Background work: AI writing, footage, voice and renders. Opens by itself when something needs you</small>
+    </div>
     <span class="badge" id="jobs-pending-badge">Queue clear</span>
-  </div>
-  
+  </summary>
+
   <div id="jobs-list">
     <!-- Populated dynamically by StudioJobs.renderJobs -->
     <p class="muted">Research, voice preparation, downloads, and renders appear here.</p>
   </div>
-</section>
+</details>

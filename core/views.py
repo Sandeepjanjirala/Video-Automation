@@ -583,7 +583,7 @@ def caption_settings(data, saved):
     return PydanticProject.model_validate({
         field: data.get(field, saved.get(field, default))
         for field, default in (('caption_size', 56), ('caption_bottom', 300), ('caption_style', 'classic'),
-                               ('format', 'reel'))
+                               ('format', 'reel'), ('caption_emphasis', 'none'))
     }).model_dump()
 
 
@@ -718,6 +718,8 @@ class ProjectJobsView(APIView):
             'script': script,
             # Draft jobs with fill=True complete existing scenes instead of re-segmenting a script.
             'fill': data.get('fill') is True,
+            # The one-click draft lets footage search record a paid voice early (it is used right after).
+            'prefetch_voice': data.get('prefetch_voice') is True,
             'video_id': video_id,
             'stock_provider': stock_provider,
             'scene_id': scene_id,

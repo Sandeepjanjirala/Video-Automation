@@ -17,6 +17,29 @@ DEFAULTS = {
     'access_password_hash': '',
 }
 SECRETS = {'gemini_key', 'pixabay_key', 'pexels_key', 'azure_key', 'sarvam_key'}
+# Keys in the .env file next to the project (git-ignored, so pulls and pushes never touch it) are used
+# instead of keys typed in Settings. .env.example lists the names.
+ENV_KEYS = {'gemini_key': 'STUDIO_GEMINI_KEY', 'pixabay_key': 'STUDIO_PIXABAY_KEY', 'pexels_key': 'STUDIO_PEXELS_KEY',
+            'azure_key': 'STUDIO_AZURE_KEY', 'sarvam_key': 'STUDIO_SARVAM_KEY'}
+
+
+def load_env_file(path=None):
+    """Read KEY=value lines from .env into the environment (variables already set win). The test runner
+    turns this off with STUDIO_ENV_FILE= so tests never use real keys."""
+    target = os.environ.get('STUDIO_ENV_FILE', str(ROOT / '.env')) if path is None else path
+    if not target or not Path(target).is_file():
+        return
+    for raw in Path(target).read_text('utf-8').splitlines():
+        line = raw.strip()
+        if not line or line.startswith('#') or '=' not in line:
+            continue
+        name, value = line.split('=', 1)
+        value = value.strip().strip('"').strip("'")
+        if name.strip() and value:
+            os.environ.setdefault(name.strip(), value)
+
+
+load_env_file()
 
 
 def setup():
@@ -27,7 +50,14 @@ def setup():
 def settings():
     setup()
     path = DATA / 'settings.json'
-    return DEFAULTS | (json.loads(path.read_text('utf-8')) if path.exists() else {})
+    cfg = DEFAULTS | (json.loads(path.read_text('utf-8')) if path.exists() else {})
+    for key, name in ENV_KEYS.items():
+        if os.environ.get(name):
+            cfg[key] = os.environ[name]
+    # With keys in .env, online services start on (Settings can still turn them off).
+    if 'online_enabled' not in (json.loads(path.read_text('utf-8')) if path.exists() else {}) and os.environ.get('STUDIO_ONLINE') == '1':
+        cfg['online_enabled'] = True
+    return cfg
 
 
 def save_settings(values):
@@ -66,6 +96,7 @@ def public_settings():
     cfg = settings()
     return {**{k: v for k, v in cfg.items() if k not in SECRETS and k != 'access_password_hash'},
             **{k + '_configured': bool(cfg[k]) for k in SECRETS},
+            **{k + '_from_env': bool(os.environ.get(name)) for k, name in ENV_KEYS.items()},
             'access_password_set': bool(cfg.get('access_password_hash')),
             'access_password_from_server': bool(os.environ.get('STUDIO_PASSWORD'))}
 

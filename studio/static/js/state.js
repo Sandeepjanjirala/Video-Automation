@@ -42,7 +42,8 @@
       take_id: '',
       delivery_preset: 'conversational',
       cues: [],
-      extra_shots: []
+      extra_shots: [],
+      emphasis: []
     };
   }
 
@@ -96,6 +97,7 @@
       caption_bottom: 300,
       caption_style: 'classic',
       captions_enabled: true,
+      caption_emphasis: 'keywords',
       script_approved_hash: '',
       draft_script: ''
     };

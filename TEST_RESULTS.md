@@ -1,3 +1,108 @@
+# API keys from .env and the first Sarvam video — 12 November 2026
+
+Same branch. No database changes.
+
+- `studio/config.py` reads `.env` (git-ignored) at start: `STUDIO_GEMINI_KEY`, `STUDIO_SARVAM_KEY`,
+  `STUDIO_PIXABAY_KEY`, `STUDIO_PEXELS_KEY`, `STUDIO_AZURE_KEY` override keys saved in Settings; `STUDIO_ONLINE=1`
+  starts online services on. Public settings report `<key>_from_env` (never the key); Settings disables those
+  fields. `.env.example` (committed) has the names with empty values. `scripts/run_audit_tests.py` sets
+  `STUDIO_ENV_FILE=` and drops key variables, so tests never use real keys.
+- One-click draft: footage search also records a paid voice (Sarvam, Azure) in the background
+  (`prefetch_voice`), since that run records the voice right after footage anyway; a manual footage search still
+  records only the free voice.
+- Checked live: both keys valid (Gemini lists models; Sarvam returns Telugu audio); the app's Sarvam request
+  (`bulbul:v3`, speaker `shubh`) answers in 1.2 s.
+
+Verification: **121 passed** (120 previous + 1 new: .env keys override Settings, are never exposed, are not loaded
+by the test runner; plus the paid-voice prefetch case in the footage test). Real Chrome: a 6-line script, Voice tab
+**Upgrade to Sarvam voice**, then **Create draft video automatically** → 16.8 s 540×960 draft in 84 s (AI 7 s,
+footage 69 s, voice 1 s recorded during footage, render 4 s); all six narrations are Sarvam WAV (24 kHz).
+
+# Faster video creation — 12 November 2026
+
+Same branch. No new dependencies, no database changes.
+
+Measured on real one-click runs of 7-scene reels (job times from the database), before → after:
+
+| Step | Before | After |
+|---|---|---|
+| AI scene preparation (Telugu, captions, search words) | 25 s | 7–8 s |
+| Footage (plan, search, AI clip check, downloads) | 128 s | 50 s |
+| Voice | 26 s | 1 s (recorded during footage) |
+| Draft render | 13 s | 4–6 s |
+| **Whole one-click draft** | **about 195 s** | **65 s** |
+
+- `providers.gemini(fast=True)`: `thinkingBudget: 0` (2.5 Flash) or `thinkingLevel: low` (Gemini 3 and
+  `-latest` models); a model answering HTTP 400 is asked again without it. Used for scene preparation,
+  per-scene Convert to Telugu, shot planning and the clip check (planning 16 s → 5.5 s and clip check
+  35 s → 19 s on the same scenes, with equivalent picks; the normal planning answer was malformed JSON).
+- `footage.find`: searches for all scenes in parallel (4 workers; `stock.paced` still spaces requests),
+  planning and clip-check batches 2 at a time, clips assigned in scene order then downloaded 4 at a time.
+- `media.prefetch_voices`: 4 narrations at once in the voice and render jobs; the footage job records the
+  free Edge voice in the background (never a paid provider).
+- Render: scenes rendered 3 at a time (`RENDER_WORKERS`, from the CPU count), results kept in scene order.
+- One-click progress is checked every second instead of every two.
+
+Verification: **120 passed** (115 previous + 5 new: thinking settings and the HTTP 400 retry, parallel
+narration with errors left to the scene loop, scene order of a parallel real render, overlapping downloads
+with one clip per scene and a failed download reported, free voice recorded during footage but not a paid one).
+Real Chrome: fresh volcano script 91 s (before fast footage AI), fresh space script 65 s; clips on topic.
+
+# Simpler screens and a "How to use" guide — 12 November 2026
+
+Same branch. No server changes.
+
+- Story tab: **Your script** first (video format moved here, script format, paste box, Create draft video
+  automatically, Split into scenes, Prepare my script with AI; how Split works in a fold), then **Your scenes**
+  (each row: the two text boxes and Convert to Telugu; search words, Prompt, Move up, Remove, Upload narration in
+  **More**), then folded **Project details & AI writing** and **Review notes**. Voice & visuals: Voice (free/Sarvam
+  buttons, Prepare narration) with **Voice settings** folded; **Voice Lab** and **Background music** folded; each
+  scene card shows its picture, a one-line summary, rights and captions, with **Change footage & framing** folded.
+  Captions: help folded, each scene's timing editor folded with its status visible, **Caption size, position and
+  preview text** folded. Preview & export: layout folded, **Ready to render?** and **Your videos** open.
+  **Production jobs** folded on every tab; it opens by itself while a job runs or a result waits to be applied.
+- `studio/static/js/ui.js`: fold-outs (`details.fold[data-fold]`) remember which ones the user opened in this
+  browser (also across redraws of scene cards); opening by the app is not remembered. Approval without review
+  notes opens them; "Edit captions & timing" and caption errors open that scene. `guide_modal.html`: a six-part
+  guide (first time, reel, YouTube, changing things, phone, problems), opened from **How to use** buttons and once
+  on a first visit.
+
+Verification: **115 passed** (114 previous + 1 new DOM test: every former control still present, which parts start
+open or folded, folds remembered across redraws, caption scene opening, review-notes jump, jobs panel auto-open
+not remembered, guide first-visit/once/buttons/Esc). Real Chrome at 1440×900 and 390×844: every tab renders without
+horizontal overflow or page errors (`test-outputs/folds/`).
+
+# Automatic Telugu after splitting and highlighted caption key words — 12 November 2026
+
+Branch `feature/auto-telugu-and-caption-highlights` (from `main`). No database migrations.
+
+- **Split into scenes** now continues automatically: one fill job (the one-click draft's preparation step,
+  `StudioAutopilot.prepareScenes`) writes every scene's Telugu narration, stock words, headings and caption
+  key words; text the user wrote is kept. Without online services or a Gemini key, or when the job fails,
+  the split scenes stay and the notice says what to do.
+- **Scripts in Telugu letters** (with English words, e.g. "ఒక lake దగ్గరకు వెళ్లిన animals"): each such line goes
+  to the Telugu narration box whatever the script format, and the Roman captions box (English letters only)
+  is written from it. Before this fix the split put Telugu into the Roman box, the project could not be saved
+  (the model rejects Telugu there) and the narration stayed empty. Saving, restoring an autosave and the fill
+  job move Telugu letters found in the Roman box to an empty narration.
+- **Highlight key words** (`Project.caption_emphasis`: `keywords` for new projects, `none` for existing ones;
+  `Scene.emphasis`): `media.ass_text` colours key words and numbers with `{\1c&H00D7FF&}…{\r}` after
+  wrapping (white on Yellow accent); words come from the AI (up to three, copied from the line, filler words
+  dropped, asked only together with other missing fields), are editable per scene on the Captions tab, and
+  fall back to the scene's stock search words. Same in drafts, final exports, exact-frame and caption
+  previews and the live CSS previews. Projects without the option produce byte-identical subtitle files and
+  keep their scene cache.
+
+Verification: **114 passed** (109 previous + 5 new: Telugu letters in the Roman box become narration; highlighting on/off, wrapping unchanged, fallback words,
+yellow-accent colour, byte-identical plain captions; AI key words filtered and no extra requests; yellow pixels
+in a real render and caption preview only when on; DOM behaviour of automatic Telugu after splitting, its failure
+and no-Gemini messages, the highlight switch, swatches and per-scene key words). Real Chrome: a 7-line Roman
+Telugu script → Split into scenes → Telugu narration for 7 of 7 scenes in 27 s (English words written as spoken,
+e.g. "లేక్ నేట్రాన్", "టెంపరేచర్ 60 డిగ్రీస్"), key words such as "Lake Natron Tanzania" and "60 degrees"; then the
+one-click draft shows them in yellow in the video (`test-outputs/emphasis/`). A 7-line script in Telugu letters
+with English words, default script format: each line in the Telugu narration box at once, Roman captions
+("Oka lake daggaraku vellina animals...") for 7 of 7 scenes 16 s later, project saved (`telugu_split.py`).
+
 # Phone, PC and deployment — 10 November 2026
 
 Same branch, `feature/one-click-draft`. No database migrations.

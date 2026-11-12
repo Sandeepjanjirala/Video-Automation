@@ -237,7 +237,9 @@ def preview_frame(scene, path, source, width, height, source_time, work, project
         args += ['-ss', f'{max(0.0, at - 0.0001):.6f}']
     args += ['-i', path]
     if caption.strip():
-        write_ass(Path(work) / 'captions.ass', [{'start': 0, 'end': 60, 'text': caption.strip()}], project)
+        from .media import emphasis_words
+        write_ass(Path(work) / 'captions.ass', [{'start': 0, 'end': 60, 'text': caption.strip()}], project,
+                  emphasis=emphasis_words(scene, project))
         vf += ',' + CAPTION_FILTER
     # JPEG viewers assume full-range BT.601; convert from the export's BT.709 limited range.
     vf += ',scale=in_color_matrix=bt709:in_range=tv:out_color_matrix=bt601:out_range=pc'
@@ -250,7 +252,8 @@ def title_frame(scene, width, height, work, project, caption=''):
     """A title-card scene's frame, as the renderer draws it, one second in (after the title fades in)."""
     from .media import CAPTION_FILTER, run, write_ass
     cues = [{'start': 0, 'end': 60, 'text': caption.strip()}] if caption.strip() else []
-    write_ass(Path(work) / 'captions.ass', cues, project, scene.get('graphic_title') or None, 60)
+    from .media import emphasis_words
+    write_ass(Path(work) / 'captions.ass', cues, project, scene.get('graphic_title') or None, 60, emphasis_words(scene, project))
     vf = (f"drawbox=x=0:y={int(height * .24)}:w=iw:h=4:color=0xB9F8CF:t=fill,{CAPTION_FILTER},"
           'scale=in_color_matrix=bt709:in_range=tv:out_color_matrix=bt601:out_range=pc')
     output = Path(work) / 'frame.jpg'

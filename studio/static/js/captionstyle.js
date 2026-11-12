@@ -46,18 +46,30 @@
     return (ems[lang] = factor);
   }
 
+  // Mirrors media.word_key / emphasis_words: a scene's key words (or its stock subject words) and numbers.
+  const wordKey = w => String(w || '').toLowerCase().replace(/[^0-9a-z\u0c00-\u0c7f]/g, '');
+  function emphasisWords(scene, p) {
+    if (!p || p.caption_emphasis !== 'keywords') return null;
+    let chosen = new Set((scene && scene.emphasis || []).map(wordKey).filter(Boolean));
+    if (!chosen.size) chosen = new Set(String(scene && scene.keywords || '').split(/\s+/).map(wordKey).filter(k => k.length >= 4));
+    return chosen;
+  }
+
   function cq(px) {
     return (px / dims()[0] * 100) + 'cqw';
   }
 
-  /** Draw `text` into a .framecaption element the way the export will place and style it. */
-  function overlay($cap, text, p) {
+  /** Draw `text` into a .framecaption element the way the export will place and style it
+   * (key words of `scene` in the highlight colour when the project highlights them). */
+  function overlay($cap, text, p, scene) {
     text = String(text || '').trim();
     const style = styleOf(p), lang = TELUGU.test(text) ? 'te' : 'en';
     // Same placement as media.write_ass for the project's format (studio/formats.py).
     const fmt = StudioState.formatOf(p), [W, H] = [fmt.width, fmt.height];
     const size = num(p && p.caption_size, 56), bottom = StudioState.captionMargin(p);
-    const lines = StudioFraming.wrap(text, fmt.captionChars).map(line => `<span class="capline">${esc(line)}</span>`);
+    const em = emphasisWords(scene, p);
+    const mark = word => em && wordKey(word) && (em.has(wordKey(word)) || /\d/.test(word)) ? `<span class="capem">${esc(word)}</span>` : esc(word);
+    const lines = StudioFraming.wrap(text, fmt.captionChars).map(line => `<span class="capline">${line.split(' ').map(mark).join(' ')}</span>`);
     const html = style === 'translucent' ? `<span class="capblock">${lines.join('<br>')}</span>` : lines.join('<br>');
     $cap.attr('class', 'framecaption capstyle-' + style).attr('lang', lang).prop('hidden', !text)
       .css({bottom: (bottom / H * 100) + '%', left: (fmt.sides[0] / W * 100) + '%', right: (fmt.sides[1] / W * 100) + '%',
@@ -101,6 +113,7 @@
     const p = StudioState.current.project;
     return StudioApi.blob('/projects/' + StudioState.current.id + '/caption-preview', {
       scene: s, source_time: sourceTime(s), caption: caption, quality: 'final', format: p.format || 'reel',
+      caption_emphasis: p.caption_emphasis || 'none',
       caption_size: p.caption_size, caption_bottom: p.caption_bottom, caption_style: styleOf(p)});
   }
 
@@ -163,9 +176,11 @@
     });
     // Each swatch shows its own style; only size and margin come from the project.
     $('.stylesample .framecaption').each(function() {
-      overlay($(this), $(this).attr('data-sample'), Object.assign({}, p, {caption_style: $(this).closest('.stylecard').attr('data-style')}));
+      overlay($(this), $(this).attr('data-sample'), Object.assign({}, p, {caption_style: $(this).closest('.stylecard').attr('data-style')}),
+              {emphasis: ['katha']});
     });
-    overlay($('#caption-style-stage .framecaption'), sampleText(), p);
+    overlay($('#caption-style-stage .framecaption'), sampleText(), p, chosenScene());
+    $('#caption-emphasis-toggle').prop('checked', p.caption_emphasis === 'keywords');
     $('.caption-size-input').val(num(p.caption_size, 56));
     $('.caption-bottom-input').val(num(p.caption_bottom, 300));
     if (window.StudioFraming) scenes().forEach(s => StudioFraming.apply(s.id));
@@ -209,7 +224,7 @@
   }
 
   const CaptionStyle = {
-    STYLES, overlay, styleOf, emFactor, render, renderExact, loadBackground,
+    STYLES, overlay, styleOf, emFactor, emphasisWords, render, renderExact, loadBackground,
 
     onTabChange: function(tab) {
       active = tab === 'captions';
@@ -232,6 +247,14 @@
       $(document).on('input change', '.caption-size-input, .caption-bottom-input, #range-caption-size, #range-caption-bottom', function() {
         const field = $(this).attr('data-field');
         $(`[data-field="${field}"]`).not(this).val($(this).val());
+        showLive();
+        refreshPreviews();
+      });
+      $(document).on('change', '#caption-emphasis-toggle', function() {
+        if (!StudioState.current) return;
+        StudioState.current.project.caption_emphasis = this.checked ? 'keywords' : 'none';
+        StudioState.markDirty(true);
+        Projects.triggerAutosave();
         showLive();
         refreshPreviews();
       });

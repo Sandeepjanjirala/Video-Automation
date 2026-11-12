@@ -60,6 +60,13 @@ const StudioSettings = (() => {
     $('#setting-pexels-key').val('').attr('placeholder', cfg.pexels_key_configured ? 'Saved key (leave blank to keep)' : 'Enter Pexels key');
 
     $('#setting-sarvam-key').val('').attr('placeholder', cfg.sarvam_key_configured ? '●●●●●●●● (saved key)' : 'Enter Sarvam key');
+    // Keys from the .env file win over typed keys; say so instead of offering a field that would be ignored.
+    [['gemini', 'gemini_key'], ['pixabay', 'pixabay_key'], ['pexels', 'pexels_key'], ['sarvam', 'sarvam_key'], ['azure', 'azure_key']]
+      .forEach(([id, key]) => {
+        const fromEnv = !!cfg[key + '_from_env'];
+        $(`#setting-${id}-key`).prop('disabled', fromEnv).attr('placeholder', fromEnv ? 'Set in the .env file' : $(`#setting-${id}-key`).attr('placeholder'));
+        if (fromEnv) $(`#hint-${id}-key`).text('Using the key from the .env file (change it there).');
+      });
     $('#hint-sarvam-key').text(cfg.sarvam_key_configured ? 'A key is saved.' : 'Optional metered Telugu conversion and final voice upgrade.');
 
     $('#setting-azure-key').val('').attr('placeholder', cfg.azure_key_configured ? '●●●●●●●● (saved key)' : 'Enter Azure key');

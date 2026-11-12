@@ -727,6 +727,7 @@ def test_caption_timing_uses_measured_prepared_narration_and_detects_stale_speec
     assert task_voice_pipeline.run(job['id'])['status'] == 'succeeded'
     voice = store.job(job['id'])['result']['voices'][0]
     assert len(voice['boundaries']) == 4
+    synthesized = len(calls)
 
     first = caption_timing(row['id'])['scene1']
     assert first['status'] == 'measured'
@@ -753,7 +754,7 @@ def test_caption_timing_uses_measured_prepared_narration_and_detects_stale_speec
     assert timing['scene2']['status'] == 'unmeasured'
     edited['speech_rate'] = 10
     assert {t['status'] for t in caption_timing(row['id'], edited).values()} == {'unmeasured'}
-    assert len(calls) == 2  # measuring never synthesizes
+    assert len(calls) == synthesized  # measuring never synthesizes
     bad = client().post(f"/api/projects/{row['id']}/caption-timing", {'project': {'scenes': [{'id': '../x'}]}},
                         content_type='application/json')
     assert bad.status_code == 422
@@ -1243,7 +1244,7 @@ def fake_gemini(monkeypatch, rows=None, calls=None):
     """Answer like Gemini: Telugu narration, Roman captions, keywords and a heading per scene."""
     calls = [] if calls is None else calls
 
-    def gemini(prompt, grounded=False):
+    def gemini(prompt, grounded=False, **options):
         calls.append(prompt)
         scenes = json.loads(prompt[prompt.index('Scenes: ') + len('Scenes: '):])
         out = rows if rows is not None else [
@@ -1416,7 +1417,7 @@ def footage_fixture(monkeypatch, gemini):
 def test_footage_plans_from_the_script_and_lets_ai_pick_from_previews(monkeypatch):
     prompts = []
 
-    def gemini(prompt, grounded=False, images=()):
+    def gemini(prompt, grounded=False, images=(), **options):
         prompts.append((prompt, list(images)))
         if not images:  # planning
             assert 'Octopus ki moodu hearts untayi!' in prompt and 'NEED: [0, 1, 2, 3]' in prompt
@@ -1432,7 +1433,7 @@ def test_footage_plans_from_the_script_and_lets_ai_pick_from_previews(monkeypatc
     steps = []
     selected = {s['scene_id']: s for s in footage.find(body, body['scenes'], steps.append)}
     assert len(prompts) == 2
-    assert searched[:3] == ['random facts', 'octopus tentacles', 'octopus']
+    assert set(searched) == {'random facts', 'octopus tentacles', 'octopus', 'honey jar'}   # searched in parallel
     # Gemini saw each scene's line and intended shot, then the phrases' best frames in turn: the octopus
     # (first phrase), the octopus aquarium clip (second phrase), then the heart.
     labels = [label for label, _, _ in prompts[1][1]]
@@ -1443,12 +1444,12 @@ def test_footage_plans_from_the_script_and_lets_ai_pick_from_previews(monkeypatc
     assert selected['honey']['asset']['id'] == f'{4:032x}'           # green screen ranked last
     assert 'No stock clip matched this scene well' in selected['title']['error']
     assert selected['honey2']['asset']['id'] == f'{5:032x}' and selected['honey2']['match'].startswith('AI-checked match (6/10)')
-    assert downloaded == [3, 4, 5]
+    assert sorted(downloaded) == [3, 4, 5]                       # downloaded in parallel
     assert steps[0] == 'Reading the script and planning shots' and 'Checking candidate clips with AI' in steps
 
 
 def test_footage_without_gemini_uses_keywords_and_ranking(monkeypatch):
-    def gemini(prompt, grounded=False, images=()):
+    def gemini(prompt, grounded=False, images=(), **options):
         raise ValueError('Gemini rate limit reached. Try again shortly.')
     footage, body, searched, downloaded = footage_fixture(monkeypatch, gemini)
     body['scenes'].append({**body['scenes'][2], 'id': 'honey2'})       # the same words: never the same clip twice
@@ -1665,8 +1666,8 @@ def test_captions_can_be_turned_off_per_project(tmp_path, monkeypatch):
     assert store.preflight({**body, 'captions_enabled': False})['ready']       # no Roman captions needed when off
     written = []
     original = media.write_ass
-    monkeypatch.setattr(media, 'write_ass', lambda path, cues, project, title=None, total=0:
-                        written.append((list(cues), title)) or original(path, cues, project, title, total))
+    monkeypatch.setattr(media, 'write_ass', lambda path, cues, project, title=None, total=0, emphasis=None:
+                        written.append((list(cues), title)) or original(path, cues, project, title, total, emphasis))
     pid, _ = framing_project([{'id': 'title', 'visual': 'graphic', 'graphic_title': 'Heading'}], tmp_path)
     c = client()
     for enabled in (True, False):
@@ -1681,7 +1682,7 @@ def test_captions_can_be_turned_off_per_project(tmp_path, monkeypatch):
 
 
 def test_footage_downloads_extra_shots_for_a_long_scene(monkeypatch):
-    def gemini(prompt, grounded=False, images=()):
+    def gemini(prompt, grounded=False, images=(), **options):
         if not images:
             return json.dumps({'scenes': []}), {}
         labels = ' '.join(label for label, _, _ in images)
@@ -1695,7 +1696,7 @@ def test_footage_downloads_extra_shots_for_a_long_scene(monkeypatch):
     honey = selected['honey']
     assert honey['asset']['id'] == f'{4:032x}' and [a['id'] for a in honey['extra_assets']] == [f'{5:032x}']
     assert honey['match'].startswith('AI-checked match (9/10) + 1 more shot(s)')
-    assert downloaded == [4, 5]
+    assert sorted(downloaded) == [4, 5]
 
 
 def test_captions_switch_and_extra_shots_dom_behaviour():
@@ -1797,7 +1798,7 @@ def test_youtube_footage_prefers_landscape_clips_and_works_in_batches(monkeypatc
 
     calls = []
 
-    def gemini(prompt, grounded=False, images=()):
+    def gemini(prompt, grounded=False, images=(), **options):
         calls.append(len(images))
         if not images:
             need = json.loads(prompt[prompt.index('NEED: ') + 6:])
@@ -1821,9 +1822,9 @@ def test_youtube_footage_prefers_landscape_clips_and_works_in_batches(monkeypatc
     body['scenes'] = [{**body['scenes'][0], 'id': f's{i}', 'visual': 'stock', 'roman': 'Samudram lo alalu', 'keywords': ''} for i in range(45)]
     steps = []
     selected = footage.find(body, body['scenes'][:18], steps.append)
-    assert calls == [0, 6 * 16, 6 * 2]                     # one plan request; pick: 16 scenes, then 2, six frames each
+    assert calls[0] == 0 and sorted(calls[1:]) == [6 * 2, 6 * 16]   # one plan request; pick: 16 and 2 scenes, six frames each
     assert len(selected) == 18 and all('asset' in s for s in selected) and set(downloaded) == {True}
-    assert 'Checking candidate clips with AI (1/2)' in steps
+    assert 'Checking candidate clips with AI (2 batches)' in steps
     calls.clear()
     footage.plan(body, list(range(45)))
     assert calls == [0, 0]                                 # 45 scenes: planned in two requests
@@ -1987,3 +1988,227 @@ def test_server_password_from_the_environment(no_access_password, monkeypatch):
 
 def test_secret_key_is_not_the_old_public_default():
     assert settings.SECRET_KEY != 'django-insecure-studio-dev-key-7f2d37c50ff9429f0970aacf8f4aa068' and len(settings.SECRET_KEY) >= 40
+
+
+# Key words in the highlight colour and automatic Telugu after splitting ---------------------------
+
+def test_caption_key_words_are_highlighted_only_when_turned_on(tmp_path):
+    import re
+    scene = {'emphasis': ['Octopus', 'hearts'], 'keywords': 'octopus underwater'}
+    on = {**project(), 'caption_emphasis': 'keywords'}
+    words = media.emphasis_words(scene, on)
+    assert media.ass_text('Octopus ki moodu hearts untayi 3 sarlu!', 32, words) == \
+        r'{\1c&H00D7FF&}Octopus{\r} ki moodu {\1c&H00D7FF&}hearts{\r} untayi {\1c&H00D7FF&}3{\r}\Nsarlu!'
+    # Tags never count towards the line width: the same words wrap exactly as plain captions do.
+    plain = media.ass_text('Octopus ki moodu hearts untayi 3 sarlu!', 32)
+    assert re.sub(r'\{[^}]*\}', '', media.ass_text('Octopus ki moodu hearts untayi 3 sarlu!', 32, words)) == plain
+    # Without key words: the scene's stock subject words and numbers.
+    assert media.emphasis_words({'keywords': 'blue whale ocean'}, on) == {'blue', 'whale', 'ocean'}
+    assert media.emphasis_words(scene, project()) is None                      # older projects: plain captions
+    # The whole subtitle file is unchanged for a project that does not highlight.
+    before, after = tmp_path / 'before.ass', tmp_path / 'after.ass'
+    cues = [{'start': 0, 'end': 1, 'text': 'Octopus ki moodu hearts'}]
+    media.write_ass(before, cues, project())
+    media.write_ass(after, cues, project(), emphasis=media.emphasis_words(scene, project()))
+    assert before.read_bytes() == after.read_bytes() and b'1c&' not in before.read_bytes()
+    yellow_style = {**on, 'caption_style': 'yellow_accent'}
+    media.write_ass(after, cues, yellow_style, emphasis=words)
+    assert r'{\1c&HFFFFFF&}Octopus{\r}' in after.read_text('utf-8')            # white on the all-yellow style
+
+
+def test_fill_scenes_picks_key_words_from_the_line_without_extra_requests(monkeypatch):
+    rows = [{'index': 0, 'narration': 'ఆక్టోపస్', 'roman': 'x', 'keywords': 'octopus underwater', 'graphic_title': 'Octopus',
+             'emphasis': ['Octopus', 'ki', 'oka', 'HEARTS!', 'not-in-line', '3']}]
+    calls = fake_gemini(monkeypatch, rows=rows)
+    body = project()
+    body['scenes'][0].update(roman='Oka Octopus ki 3 hearts untayi!', narration='', keywords='', graphic_title='')
+    scene = providers.fill_scenes(body)[0]
+    assert scene['emphasis'] == ['Octopus', 'hearts', '3']                       # from the line, small words left out
+    # A complete scene without key words is not sent again just for them.
+    assert providers.fill_scenes(Project.model_validate({**body, 'scenes': [{**scene, 'emphasis': []}]}).model_dump())
+    assert len(calls) == 1
+    with pytest.raises(ValueError, match='Key words'):
+        Scene.model_validate({**scene, 'emphasis': ['x' * 41]})
+
+
+def bottom_yellow_pixels(path, at=0.5):
+    """Yellow pixels in the bottom third of the frame at `at` seconds."""
+    seek = ['-ss', f'{at:.2f}'] if at else []          # seeking a still image returns no frame
+    raw = subprocess.run([executable('ffmpeg'), '-v', 'error', *seek, '-i', str(path), '-frames:v', '1',
+                          '-vf', 'crop=iw:ih/3:0:ih*2/3,scale=270:-2', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],
+                         capture_output=True, check=True).stdout
+    return sum(1 for k in range(0, len(raw), 3) if raw[k] > 200 and raw[k + 1] > 170 and raw[k + 2] < 90)
+
+
+def test_highlighted_key_words_appear_yellow_in_renders_and_previews(tmp_path):
+    c = client()
+    cues = [{'start': 0, 'end': 1.9, 'text': 'Octopus ki moodu hearts'}]
+    pid, body = framing_project([{'id': 'title', 'visual': 'graphic', 'graphic_title': 'Ocean', 'cues': cues,
+                                  'emphasis': ['Octopus', 'hearts']}], tmp_path)
+    counts = {}
+    for mode in ('none', 'keywords'):
+        row = c.get(f'/api/projects/{pid}').json()
+        assert c.put(f'/api/projects/{pid}', {'revision': row['revision'], 'project': {**row['project'], 'caption_emphasis': mode}},
+                     content_type='application/json').status_code == 200
+        directory, _ = render_over_http(pid, 'draft')
+        counts[mode] = bottom_yellow_pixels(directory / 'reel.mp4')
+        preview = c.post(f'/api/projects/{pid}/caption-preview', {'scene': body['scenes'][0], 'caption': 'Octopus ki moodu hearts',
+                                                                'quality': 'draft', 'caption_emphasis': mode}, content_type='application/json')
+        assert preview.status_code == 200, preview.content
+        image = tmp_path / f'preview-{mode}.jpg'
+        image.write_bytes(preview.content)
+        counts['preview-' + mode] = bottom_yellow_pixels(image, 0)
+    assert counts['none'] == 0 and counts['keywords'] > 50, counts
+    assert counts['preview-none'] == 0 and counts['preview-keywords'] > 50, counts
+
+
+def test_auto_telugu_and_caption_highlight_dom_behaviour():
+    page = DATA.parent / 'emphasis.html'
+    page.write_bytes(client().get('/').content)
+    subprocess.run(['node', 'tests/audit_emphasis_ui.cjs', str(page)], check=True, timeout=60)
+
+
+def test_fill_scenes_treats_telugu_letters_in_the_roman_box_as_narration(monkeypatch):
+    calls = fake_gemini(monkeypatch)
+    body = project()
+    body['scenes'][0].update(roman='', narration='', keywords='', graphic_title='')
+    scene = dict(body['scenes'][0], roman='ఒక lake దగ్గరకు వెళ్లిన animals.')      # as an older split saved it
+    filled = providers.fill_scenes({**body, 'scenes': [scene]})[0]
+    assert filled['narration'] == 'ఒక lake దగ్గరకు వెళ్లిన animals.'                    # the writer's Telugu, unchanged
+    assert filled['roman'] == 'Drushyam 1' and filled['narration_source_roman'] == ''  # Roman captions written from it
+    assert '"roman": ""' in calls[0] and 'ఒక lake' in calls[0]
+
+
+def test_folds_and_how_to_use_guide_dom_behaviour():
+    page = DATA.parent / 'folds.html'
+    page.write_bytes(client().get('/').content)
+    subprocess.run(['node', 'tests/audit_folds_ui.cjs', str(page)], check=True, timeout=60)
+
+
+# Faster video creation ---------------------------------------------------------------------------
+
+def test_fast_gemini_turns_thinking_off_only_where_supported(monkeypatch):
+    assert providers.thinking_off('gemini-2.5-flash') == {'thinkingBudget': 0}
+    assert providers.thinking_off('gemini-3-flash-preview') == {'thinkingLevel': 'low'}
+    assert providers.thinking_off('gemini-2.5-pro') is None
+    sent = []
+
+    class Response:
+        def json(self):
+            return {'candidates': [{'finishReason': 'STOP', 'content': {'parts': [{'text': '{"ok": 1}'}]}}]}
+
+    def request(method, url, **kw):
+        sent.append((url.split('/models/')[1].split(':')[0], kw['json']['generationConfig'].get('thinkingConfig')))
+        if kw['json']['generationConfig'].get('thinkingConfig', {}).get('thinkingLevel'):
+            raise ValueError('Provider returned HTTP 400: Unknown name "thinkingLevel"')
+        return Response()
+    monkeypatch.setattr(providers, 'request', request)
+    monkeypatch.setattr(providers, 'online', lambda: {'gemini_key': 'k', 'gemini_model': 'gemini-2.5-flash', 'daily_ai_calls': 100})
+    providers.gemini('Hello', fast=True)
+    providers.gemini('Hello')
+    assert sent == [('gemini-2.5-flash', {'thinkingBudget': 0}), ('gemini-2.5-flash', None)]
+    # A model that rejects the setting is asked again without it (no failure).
+    sent.clear()
+    monkeypatch.setattr(providers, 'online', lambda: {'gemini_key': 'k', 'gemini_model': 'gemini-3-flash-preview', 'daily_ai_calls': 100})
+    assert providers.gemini('Hello', fast=True)[0] == '{"ok": 1}'
+    assert sent == [('gemini-3-flash-preview', {'thinkingLevel': 'low'}), ('gemini-3-flash-preview', None)]
+
+
+def test_narration_is_synthesized_for_several_scenes_at_once(monkeypatch):
+    import threading
+    active, peak, done = [0], [0], []
+    lock = threading.Lock()
+
+    def voice_for(scene, project, provider):
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        time.sleep(0.05)
+        with lock:
+            active[0] -= 1
+            done.append(scene['id'])
+        if scene['id'] == 's2':
+            raise ValueError('Edge is busy')                      # left for the scene loop to report
+        return Path('x.mp3'), []
+    monkeypatch.setattr(media, 'voice_for', voice_for)
+    body = project()
+    body['scenes'] = [{**body['scenes'][0], 'id': f's{i}'} for i in range(8)]
+    media.prefetch_voices(body, 'edge')
+    assert sorted(done) == [f's{i}' for i in range(8)] and peak[0] == media.VOICE_WORKERS
+
+
+def test_parallel_scene_rendering_keeps_scene_order(tmp_path):
+    clips = {c: colour_clip(tmp_path, c) for c in ('red', 'green', 'blue')}
+    scenes = [{'id': c, 'visual': 'stock', 'video_asset': clips[c], 'rights_reviewed': True} for c in ('red', 'green', 'blue')]
+    pid, _ = framing_project(scenes, tmp_path, tone_seconds=2.0)
+    from studio import tasks
+    assert tasks.RENDER_WORKERS >= 1
+    directory, manifest = render_over_http(pid, 'draft')
+    reel = directory / 'reel.mp4'
+    assert [centre_colour(reel, 1.0 + 2 * k) for k in range(3)] == ['r', 'g', 'b']
+    report = json.loads((directory / 'source-report.json').read_text('utf-8'))
+    assert [s['scene_id'] for s in report['scenes']] == ['red', 'green', 'blue']
+
+
+def test_footage_downloads_run_in_parallel_and_keep_one_clip_per_scene(monkeypatch):
+    import threading
+    active, peak = [0], [0]
+    lock = threading.Lock()
+
+    def slow_download(id, provider, landscape=False):
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        time.sleep(0.05)
+        with lock:
+            active[0] -= 1
+        if id == 5:
+            raise ValueError('Stock download returned HTTP 500')
+        return {'id': f'{id:032x}', 'provider': provider}
+
+    def gemini(prompt, grounded=False, images=(), **kw):
+        raise ValueError('offline')
+    footage, body, searched, downloaded = footage_fixture(monkeypatch, gemini)
+    monkeypatch.setattr(providers, 'download_stock', slow_download)
+    body['scenes'] = [{**body['scenes'][2], 'id': f'h{i}'} for i in range(2)] + [{**body['scenes'][0], 'id': 'title'}]
+    selected = footage.find(body, body['scenes'])
+    assert [s['scene_id'] for s in selected] == ['h0', 'h1', 'title']             # scene order kept
+    assert selected[0]['asset']['id'] == f'{4:032x}'                              # h1 never gets h0's clip:
+    assert selected[1]['error'] == 'Stock download returned HTTP 500'              # its own clip (5) failed to download
+    assert selected[2]['asset']['id'] == f'{7:032x}'
+    assert peak[0] > 1
+
+
+def test_free_voice_is_recorded_while_footage_is_found(monkeypatch):
+    from studio import footage, tasks
+    recorded = []
+    monkeypatch.setattr(media, 'prefetch_voices', lambda project, provider, workers=4: recorded.append(provider))
+    monkeypatch.setattr(footage, 'find', lambda project, scenes, progress: [])
+    for provider, options, expected in (('edge', {}, ['edge']), ('sarvam', {}, []), ('sarvam', {'prefetch_voice': True}, ['sarvam'])):
+        recorded.clear()
+        body = project()
+        body.update(tts_provider=provider)
+        body['scenes'][0].update(visual='upload', video_asset='')
+        row = store.save_project(body)
+        job = store.enqueue(row['id'], 1, 'stock_all', options)
+        assert tasks.task_stock_all.run(job['id'])['status'] == 'succeeded'
+        assert recorded == expected                                                # paid voices are never recorded early
+
+
+def test_keys_from_the_env_file_are_used_and_never_shown(tmp_path):
+    import os
+    from studio import config
+    # The test runner never loads the developer's real .env.
+    assert not any(os.environ.get(name) for name in config.ENV_KEYS.values())
+    env = tmp_path / '.env'
+    env.write_text('# keys\nSTUDIO_GEMINI_KEY="from-the-file"\nSTUDIO_SARVAM_KEY=\nNOT_A_KEY\n', 'utf-8')
+    save_settings({'gemini_key': 'typed-in-settings'})
+    config.load_env_file(str(env))
+    try:
+        assert config.settings()['gemini_key'] == 'from-the-file'            # .env wins over Settings
+        public = config.public_settings()
+        assert public['gemini_key_from_env'] is True and public['sarvam_key_from_env'] is False
+        assert 'from-the-file' not in json.dumps(public) and 'typed-in-settings' not in json.dumps(public)
+    finally:
+        os.environ.pop('STUDIO_GEMINI_KEY', None)
+    assert config.settings()['gemini_key'] == 'typed-in-settings'

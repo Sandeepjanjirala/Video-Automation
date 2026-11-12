@@ -59,7 +59,7 @@ def convert(text, provider):
         raw, _ = providers.gemini('Transliterate this Romanized Telugu into Telugu Unicode. '
                                  'Preserve pronunciation, meaning, names, facts and sentence order. '
                                  'Do not translate into English, rewrite, summarize or add claims. '
-                                 'Return JSON with exactly one key "telugu". Input JSON: ' + json.dumps(text))
+                                 'Return JSON with exactly one key "telugu". Input JSON: ' + json.dumps(text), fast=True)
         try:
             native = json.loads(raw.strip().removeprefix('```json').removesuffix('```').strip())['telugu']
         except (ValueError, KeyError, TypeError):
