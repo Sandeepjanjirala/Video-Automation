@@ -128,7 +128,8 @@ class AzureTTSAdapter:
             boundaries.append({
                 "start": round(curr, 3),
                 "end": round(curr + w_dur, 3),
-                "text": w
+                "text": w,
+                "estimated": True  # not measured: captions must not present these as word timings
             })
             curr += w_dur
         return boundaries

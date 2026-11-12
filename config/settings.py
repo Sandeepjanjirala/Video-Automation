@@ -6,6 +6,10 @@ from urllib.parse import urlparse, unquote
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# The .env file next to the project is read before any setting below looks at the environment, so
+# STUDIO_DATABASE_URL and the other STUDIO_* values in it apply (variables already set win).
+from studio.config import load_env_file  # noqa: E402  (studio.config loads .env when imported)
+
 # Security Settings
 # Signs the phone sign-in cookie, so it must be secret: from the environment, or generated once and
 # kept in the data folder (never a fixed value in the source).
@@ -35,8 +39,14 @@ DEBUG = os.environ.get('DJANGO_DEBUG', 'False').lower() in ('true', '1')
 # This computer only, unless phone/LAN access (STUDIO_LAN=1), Docker, or STUDIO_ALLOWED_HOSTS opens it.
 # Other devices must then sign in with the studio password (core.middleware.AccessMiddleware).
 ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'testserver']
-if os.environ.get('STUDIO_LAN') == '1' or os.environ.get('STUDIO_DOCKER') == '1':
+if os.environ.get('STUDIO_DOCKER') == '1':
     ALLOWED_HOSTS = ['*']
+elif os.environ.get('STUDIO_LAN') == '1':
+    # Phone access: this computer's own network addresses and name, never any host name. With '*' a web
+    # page elsewhere could reach the studio through DNS rebinding, as if it were this computer.
+    import socket
+    from run import network_addresses
+    ALLOWED_HOSTS += network_addresses() + [socket.gethostname(), socket.gethostname() + '.local']
 ALLOWED_HOSTS += [h.strip() for h in os.environ.get('STUDIO_ALLOWED_HOSTS', '').split(',') if h.strip()]
 
 # Behind an HTTPS reverse proxy (Caddy, nginx): trust its scheme and host headers.

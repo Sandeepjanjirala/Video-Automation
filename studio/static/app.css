@@ -188,3 +188,30 @@ details.fold.mini>:last-child{margin-bottom:12px}
 .guidenav{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 6px}
 .guidenav a{font-size:12px;border:1px solid var(--line);border-radius:14px;padding:5px 10px;text-decoration:none;background:#f4f6ef}
 .guide section{scroll-margin-top:70px}
+/* Narration source and recordings (narration.js) */
+.narrationsources{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin:6px 0 8px}
+.narrationsources label.check{border:1px solid var(--line);border-radius:8px;padding:10px 12px;align-items:flex-start;background:#fff;margin:0}
+.narrationsources label.check:has(input:checked){border-color:var(--green);background:#f1f7ee}
+.narrationsources small{display:block;margin-top:2px}
+.narrationsources label.check input[type=radio]{width:auto;flex:0 0 auto;margin:3px 0 0;accent-color:var(--green)}
+.tracktable td input.track-start-input{width:96px;padding:6px 8px}
+.scene-recording-row label input.scene-audio-trim{width:84px;padding:6px 8px}
+.scene-recording-row select.scene-audio-gain{width:auto;padding:6px 8px}
+.scene-recording-row .rowtools label:not(.filebutton){display:inline-flex;align-items:center;gap:6px;font-size:13px}
+#narration-track-box .rowtools input#input-track-end{width:140px}
+#narration-track-audio{width:100%;margin:8px 0 4px}
+.wavetools{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;font-size:12px;margin:4px 0}
+.wavetools button{padding:4px 10px;min-width:34px}
+.wavebox{overflow-x:auto;border:1px solid var(--line);border-radius:8px;background:#fbfcf9;touch-action:pan-x}
+.wavebox canvas{display:block;cursor:pointer}
+.warnlist{margin:4px 0 8px;padding-left:20px;color:#8a4b00;font-size:13px}
+.warnlist:empty{display:none}
+.tablewrap{overflow-x:auto;margin:8px 0}
+.tracktable{width:100%;border-collapse:collapse;font-size:13px}
+.tracktable th,.tracktable td{padding:5px 6px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+.tracktable .track-text{max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tracktable tr.track-row-bad td{background:#fdf1f0}
+.scene-recording-row{border-bottom:1px solid var(--line);padding:10px 0}
+.scene-recording-row audio{height:34px;max-width:100%}
+.muted.warn{color:#8a4b00}
+@media (max-width:640px){.tracktable .track-text{max-width:120px}.wavetools span.muted{display:block}}

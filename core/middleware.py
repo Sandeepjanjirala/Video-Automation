@@ -93,6 +93,8 @@ class LocalSecurityMiddleware(MiddlewareMixin):
                     is_allowed_mutation = True
                 elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/caption-timing', normalized_path):
                     is_allowed_mutation = True
+                elif re.fullmatch(r'/api/assets/[a-f0-9]{32}/narration', normalized_path):
+                    is_allowed_mutation = True  # scene placement estimates; changes nothing on the server
                 elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/(framing|caption)-preview', normalized_path):
                     is_allowed_mutation = True
                 elif re.fullmatch(r'/api/projects/[a-zA-Z0-9_-]+/assign-media', normalized_path):

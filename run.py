@@ -41,7 +41,7 @@ def main():
         raise SystemExit('PostgreSQL is unavailable or its schema cannot be read. Check STUDIO_DATABASE_URL and run python manage.py migrate.') from None
     worker = None
     if not distributed:
-        worker = subprocess.Popen([sys.executable, '-m', 'studio.worker'])
+        worker = Supervised([sys.executable, '-m', 'studio.worker'])
     else:
         print('Running in distributed mode: Celery workers and Outbox dispatcher handle tasks.', flush=True)
 
@@ -68,6 +68,38 @@ def main():
                 worker.wait(timeout=8)
             except subprocess.TimeoutExpired:
                 worker.kill()
+
+
+class Supervised:
+    """The background worker, started again if it ever stops (a crash would otherwise leave every new
+    job waiting forever while the page still works)."""
+
+    def __init__(self, args):
+        import threading
+        self.args, self.stopping = args, threading.Event()
+        self.proc = subprocess.Popen(args)
+        threading.Thread(target=self._watch, daemon=True).start()
+
+    def _watch(self):
+        import time
+        delay = 2
+        while not self.stopping.wait(delay):
+            if self.proc.poll() is None:
+                delay = 2
+                continue
+            print(f'Background worker stopped (exit code {self.proc.returncode}); starting it again.', flush=True)
+            self.proc = subprocess.Popen(self.args)
+            delay = min(60, delay * 2)
+
+    def terminate(self):
+        self.stopping.set()
+        self.proc.terminate()
+
+    def wait(self, timeout=None):
+        return self.proc.wait(timeout=timeout)
+
+    def kill(self):
+        self.proc.kill()
 
 
 def network_addresses():

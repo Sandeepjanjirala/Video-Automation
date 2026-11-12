@@ -216,8 +216,9 @@ def task_voice_pipeline(self, job_id: str):
         with lease:
             job_data = store.job(job_id)
             p = job_data['snapshot']['project']
-            if not p['scenes'] or any(not s.get('narration', '').strip() for s in p['scenes']):
-                raise ValueError('Cannot prepare voice: every scene needs Telugu narration text')
+            from .media import recorded
+            if not p['scenes'] or any(not s.get('narration', '').strip() and not recorded(s, p) for s in p['scenes']):
+                raise ValueError('Cannot prepare voice: every scene needs Telugu narration text or a recording')
 
             provider = job_data['snapshot'].get('options', {}).get('tts_provider') or settings()['tts_provider']
             prepared = []
@@ -229,13 +230,13 @@ def task_voice_pipeline(self, job_id: str):
                 lease.check_ownership()
                 # Narration stage
                 store.progress(job_id, f"Synthesizing narration {i + 1}/{len(p['scenes'])}", stage_name='narration')
-                from .media import voice_for, duration, captions
+                from .media import voice_for, audio_seconds, captions, speech_for
                 path, boundaries = voice_for(scene, p, provider)
-                seconds = duration(path)
+                seconds = audio_seconds(path)
 
                 # Alignment stage
                 store.progress(job_id, f"Aligning captions {i + 1}/{len(p['scenes'])}", stage_name='alignment')
-                cues, alignment = captions(scene, seconds, boundaries)
+                cues, alignment = captions(scene, seconds, boundaries, speech_for(scene, p, path, seconds, boundaries))
                 prepared.append({
                     'scene_id': scene['id'],
                     'audio_path': str(path),
@@ -282,19 +283,21 @@ def task_render_pipeline(self, job_id: str):
             for i, scene in enumerate(p['scenes']):
                 lease.check_ownership()
                 store.progress(job_id, f"Preparing narration {i + 1}/{len(p['scenes'])}", stage_name='narration')
-                from .media import CAPTION_FILTER, voice_for, duration, captions, write_ass, probe, run
+                from .media import CAPTION_FILTER, voice_for, audio_seconds, captions, speech_for, write_ass, probe, run
                 from .framing import COLOUR_TAGS, scene_shots, shot_lengths, source_info, visual_inputs
                 vpath, boundaries = voice_for(scene, p, provider)
-                sec = duration(vpath)
+                sec = audio_seconds(vpath)
 
                 store.progress(job_id, f"Aligning captions {i + 1}/{len(p['scenes'])}", stage_name='alignment')
-                cues, alignment = captions(scene, sec, boundaries)
+                cues, alignment = captions(scene, sec, boundaries, speech_for(scene, p, vpath, sec, boundaries))
+                from .media import recorded
                 prepared.append({
                     'scene_id': scene['id'],
                     'audio_path': str(vpath),
                     'duration': sec,
                     'cues': cues,
-                    'alignment': alignment
+                    'alignment': alignment,
+                    'recorded': recorded(scene, p),
                 })
 
             from .timeline import compute_timeline, to_srt
@@ -321,15 +324,15 @@ def task_render_pipeline(self, job_id: str):
                 length = timing.scene_duration
                 cues = timing.cues if p.get('captions_enabled', True) else []
                 shots = scene_shots(scene, length, format_of(p)['shot_seconds'])
+                # Picture only (soundtrack.py builds the sound), so narration, clip volume and timing
+                # fields that change only the sound do not re-render a scene; its length does.
+                sound_only = ('narration', 'spoken_text', 'audio_asset', 'audio_text_hash', 'take_id', 'delivery_preset',
+                              'audio_trim_start', 'audio_trim_end', 'audio_gain_db', 'clip_volume', 'track_start')
                 cache_key = store.digest({
-                    'renderer': 6,
-                    # Scenes without planned shot shares keep their key, so older renders stay cached.
-                    'scene': {k: v for k, v in scene.items() if k != 'shot_weights' or v},
-                    'audio': Path(voice['audio_path']).name,
-                    'audio_mtime_ns': Path(voice['audio_path']).stat().st_mtime_ns,
-                    'audio_size': Path(voice['audio_path']).stat().st_size,
+                    'renderer': 7,
+                    'scene': {k: v for k, v in scene.items() if k not in sound_only and (k != 'shot_weights' or v)},
+                    'frames': timing.frame_count,
                     'cues': cues,
-                    'speed': speed,
                     'width': width,
                     'caption_size': p['caption_size'],
                     'caption_bottom': p['caption_bottom'],
@@ -383,12 +386,11 @@ def task_render_pipeline(self, job_id: str):
                         args += ['-f', 'concat', '-safe', '0', '-i', 'shots.txt']
                         vf = 'null'
                     output = work / 'scene.mp4'
-                    args += ['-i', voice['audio_path'], '-map', '0:v:0', '-map', '1:a:0',
+                    args += ['-map', '0:v:0', '-an',
                              '-vf', vf + f",setsar=1,fps=30,{CAPTION_FILTER},{COLOUR_TAGS}",
-                             '-af', f'atempo={speed:.8f},loudnorm=I=-16:TP=-1.5:LRA=11,apad',
-                             '-t', str(length), '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '24' if draft else '20',
-                             '-pix_fmt', 'yuv420p', '-threads', '4', '-c:a', 'aac', '-b:a', '192k',
-                             '-ar', '48000', '-ac', '2', '-movflags', '+faststart', output]
+                             '-frames:v', str(timing.frame_count), '-c:v', 'libx264', '-preset', 'veryfast',
+                             '-crf', '24' if draft else '20', '-pix_fmt', 'yuv420p', '-r', '30', '-threads', '4',
+                             '-movflags', '+faststart', output]
                     run(args, cwd=work, job_id=job_id)
                     probe(output)
 
@@ -402,19 +404,27 @@ def task_render_pipeline(self, job_id: str):
                             shutil.copyfile(temp_cache, cached)
                         temp_cache.unlink(missing_ok=True)
 
+                clip_volume = float(scene.get('clip_volume') or 0) if scene['visual'] in ('upload', 'stock') else 0.0
                 report = {
                     'scene_id': scene['id'],
                     'duration': length,
                     'alignment': voice['alignment'],
+                    'narration': 'recording' if voice.get('recorded') else 'voice engine',
                     'visual': store.asset(scene['video_asset']) if scene['visual'] != 'graphic' else {'provider': 'explicit graphic'},
                     'extra_shots': [store.asset(shot['video_asset']) for shot in shots[1:]],
-                    'source_audio_muted': True
+                    'source_audio_muted': clip_volume == 0,
+                    'clip_volume': clip_volume,
                 }
                 with progress_lock:
                     rendered[0] += 1
                     store.progress(job_id, f"Rendering scenes {rendered[0]}/{len(p['scenes'])} ({'draft' if draft else f'{width}x{height}'})",
                                    stage_name='scene_rendering')
                 return cached, report
+              except ValueError as exc:  # name the scene whose clip, picture or caption failed
+                if any(sign in str(exc) for sign in ('Invalid data found', 'moov atom not found', 'End of file')):
+                    raise ValueError(f'Scene {i + 1}: its clip or picture could not be read; it may be damaged or only partly '
+                                     f'copied. Upload it again, then retry. (Details: {exc})') from None
+                raise ValueError(f'Scene {i + 1}: {exc}') from None
               finally:
                 if threading.current_thread() is not threading.main_thread():
                     connections.close_all()  # each worker thread opened its own database connection
@@ -427,7 +437,7 @@ def task_render_pipeline(self, job_id: str):
             scene_files = [cached for cached, _ in results]
             report_scenes = [report for _, report in results]
 
-            # 4. Assembly stage
+            # 4. Assembly stage: the scenes' pictures joined without re-encoding.
             lease.check_ownership()
             store.progress(job_id, 'Joining scenes into continuous video', stage_name='assembly')
             listing = temp / 'scenes.txt'
@@ -436,32 +446,48 @@ def task_render_pipeline(self, job_id: str):
             listing.write_text('\n'.join(f"file 'scene-{i}.mp4'" for i in range(len(scene_files))), 'utf-8')
             joined = temp / 'joined.mp4'
             run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '1',
-                 '-i', 'scenes.txt', '-c', 'copy', '-movflags', '+faststart', joined], cwd=temp, job_id=job_id)
+                 '-i', 'scenes.txt', '-map', '0:v:0', '-c', 'copy', '-an', joined], cwd=temp, job_id=job_id)
 
-            # 5. Mixing stage
+            # 5. Mixing stage: one continuous narration, clip sound and music, encoded once.
             lease.check_ownership()
-            store.progress(job_id, 'Mixing background audio and voice ducking', stage_name='mixing')
+            store.progress(job_id, 'Building the narration and mixing music', stage_name='mixing')
+            from . import soundtrack
+            sound = temp / 'sound'
+            sound.mkdir(exist_ok=True)
+            narration_wav, gains = soundtrack.narration_bed(p, prepared, timeline, sound, run, job_id)
+            clip_wav = soundtrack.clip_bed(p, timeline, sound, run, job_id)
+            music = store.asset_path(p['music_asset'], 'audio') if p['music_asset'] else None
             final = temp / 'reel.mp4'
-            if p['music_asset']:
-                run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-filter_complex_threads', '1',
-                     '-i', joined, '-stream_loop', '-1', '-i', store.asset_path(p['music_asset'], 'audio'),
-                     '-filter_complex', f"[0:a]asplit=2[v][side];[1:a]volume={p['music_gain']}[m];[m][side]sidechaincompress=threshold=0.03:ratio=8:attack=20:release=350[duck];[v][duck]amix=inputs=2:duration=first:normalize=0,alimiter=limit=0.95[a]",
-                     '-map', '0:v:0', '-map', '[a]', '-c:v', 'copy', '-c:a', 'aac', '-b:a', '192k', '-t', str(offset), '-movflags', '+faststart', final],
-                    job_id=job_id)
-            else:
-                shutil.copyfile(joined, final)
+            soundtrack.mux(joined, narration_wav, clip_wav, music, p, offset, final, run, job_id)
 
             # 6. Validation stage
             lease.check_ownership()
-            store.progress(job_id, 'Validating output video streams and duration', stage_name='validation')
+            store.progress(job_id, 'Checking the finished video', stage_name='validation')
             info = probe(final)
             video = next((s for s in info['streams'] if s['codec_type'] == 'video'), {})
             audio = next((s for s in info['streams'] if s['codec_type'] == 'audio'), {})
-            if (video.get('width'), video.get('height')) != (width, height) or not audio or abs(float(info['format']['duration']) - offset) > 0.5:
-                raise ValueError('Export validation failed: dimensions, audio, or duration did not match')
-            # A full decode; long YouTube videos need more than the reel's ten minutes.
-            run([executable('ffmpeg'), '-v', 'error', '-xerror', '-i', final, '-f', 'null', '-'],
-                timeout=max(600, int(offset * 3)), job_id=job_id)
+            problems = []
+            if (video.get('width'), video.get('height')) != (width, height):
+                problems.append(f"picture is {video.get('width')}x{video.get('height')}, not {width}x{height}")
+            # Joining scenes without re-encoding leaves the measured average a hair off 30 (e.g. 30.0002).
+            num, _, den = str(video.get('avg_frame_rate') or '0/1').partition('/')
+            average = float(num) / float(den or 1) if float(den or 1) else 0.0
+            if (video.get('codec_name'), video.get('pix_fmt'), video.get('r_frame_rate')) != ('h264', 'yuv420p', '30/1') \
+                    or abs(average - 30) > 0.05:
+                problems.append(f"picture is {video.get('codec_name')} {video.get('pix_fmt')} at {average:.3f} fps, not H.264 yuv420p 30 fps")
+            if (audio.get('codec_name'), str(audio.get('sample_rate')), audio.get('channels')) != ('aac', '48000', 2):
+                problems.append('sound is missing or not 48 kHz stereo AAC')
+            if abs(float(info['format']['duration']) - offset) > 0.1:
+                problems.append(f"length is {float(info['format']['duration']):.2f} s, not {offset:.2f} s")
+            if audio and abs(float(audio.get('duration') or 0) - float(video.get('duration') or 0)) > 0.1:
+                problems.append('sound and picture lengths differ')
+            if not soundtrack.moov_first(final):
+                problems.append('the file is not arranged for fast start')
+            if problems:
+                raise ValueError('Export validation failed: ' + '; '.join(problems))
+            # A full decode (any error fails the export) that also measures black picture, silences and
+            # loudness; long YouTube videos need more than the reel's ten minutes.
+            quality = soundtrack.inspect(final, run, max(600, int(offset * 3)), job_id)
 
             # 7. Atomic publication
             (temp / 'captions.srt').write_text(to_srt(timeline.all_cues), 'utf-8')
@@ -480,7 +506,11 @@ def task_render_pipeline(self, job_id: str):
                 'evidence_notes': p['evidence_notes'],
                 'research_sources': p['research_sources'],
                 'music': store.asset(p['music_asset']) if p['music_asset'] else None,
-                'speech_provider': job_data['snapshot']['options']['tts_provider']
+                'music_ducking': bool(p['music_asset']) and p.get('music_ducking', True),
+                'speech_provider': 'recording' if p.get('narration_mode') == 'track' else job_data['snapshot']['options']['tts_provider'],
+                'narration_mode': p.get('narration_mode', 'voice'),
+                'narration_gain_db': gains,
+                'quality': quality,
             }
             (temp / 'source-report.json').write_text(json.dumps(report, indent=2, ensure_ascii=False), 'utf-8')
             (temp / 'project.json').write_text(json.dumps(job_data['snapshot'], indent=2, ensure_ascii=False), 'utf-8')
@@ -489,6 +519,7 @@ def task_render_pipeline(self, job_id: str):
                 'export_id': job_id,
                 'duration': report['duration'],
                 'dimensions': report['dimensions'],
+                'quality_notes': quality['notes'],
                 'files': ['reel.mp4', 'captions.srt', 'source-report.json', 'project.json', 'timing-manifest.json']
             }
 

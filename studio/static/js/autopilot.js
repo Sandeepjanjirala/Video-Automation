@@ -69,6 +69,8 @@
   }
 
   async function applyJob(job) {
+    // Anything typed while the step ran is saved first, so the result merges with it instead of replacing it.
+    if (StudioState.isDirty) await Projects.saveProject();
     const res = await StudioApi.request('/projects/' + StudioState.current.id + '/apply-job/' + job.id, 'POST', {});
     Projects.sync(res.project);
     if (res.conflicts && res.conflicts.length) throw new Error(res.conflicts[0].reason);

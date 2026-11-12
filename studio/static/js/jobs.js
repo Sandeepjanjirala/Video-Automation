@@ -24,7 +24,12 @@ const StudioJobs = (() => {
     // Apply buttons
     $(document).on('click', '.btn-apply-job', function() {
       const jid = $(this).data('jid');
-      const force = $(this).data('force') === true || $(this).data('force') === 'true';
+      let force = $(this).data('force') === true || $(this).data('force') === 'true';
+      // Applying a result again is deliberate: it may replace edits made after the job ran.
+      if ($(this).data('applied') === true || $(this).data('applied') === 'true') {
+        if (!confirm('Apply this result again? Parts you edited after the job ran are replaced by the job\'s result.')) return;
+        force = true;
+      }
       applyJob(jid, force);
     });
 
@@ -116,15 +121,24 @@ const StudioJobs = (() => {
     if (!row) return;
 
     try {
+      // Unsaved edits are saved first, so the result merges with them instead of replacing them.
+      if (StudioState.isDirty) await StudioProjects.saveProject();
       StudioState.setBusy(true);
       const url = `/projects/${row.id}/apply-job/${jid}${force ? '?force=true' : ''}`;
       const res = await StudioApi.req(url, {}, 'POST');
 
       StudioProjects.sync(res.project);
 
+      // Nothing applied because every part of the result met a newer edit: offer to apply it over them.
+      if (res.applied === false && !force && res.conflicts && res.conflicts.length
+          && confirm(`Your newer edits were kept, so nothing from this job was applied (${res.conflicts.length} conflict(s)). `
+                     + 'Apply the job\'s result over your edits instead?')) {
+        return await applyJob(jid, true);  // its own busy state; this call's finally releases this one
+      }
       if (res.conflicts && res.conflicts.length > 0) {
         StudioProjects.setConflicts(res.conflicts);
-        StudioState.tell(`Result applied with ${res.conflicts.length} manual edit(s) preserved.`, true);
+        StudioState.tell(res.applied === false ? 'Nothing was applied: your newer edits were kept.'
+          : `Result applied with ${res.conflicts.length} manual edit(s) preserved.`, true);
       } else {
         StudioProjects.setConflicts([]);
         StudioState.tell(`Result applied successfully to project (v${res.project.revision}).`);
@@ -262,7 +276,7 @@ const StudioJobs = (() => {
         html += `    <button type="button" class="btn-retry-job" data-jid="${escapeHtml(j.id)}" data-mode="current" style="font-size:0.8rem;padding:0.25rem 0.5rem;">Re-run with current</button>`;
       }
       if (canApply) {
-        html += `    <button type="button" class="btn-apply-job ${j.applied ? 'ghost' : 'primary'}" data-jid="${escapeHtml(j.id)}" style="font-size:0.8rem;padding:0.25rem 0.5rem;">${j.applied ? 'Re-apply result' : 'Apply result'}</button>`;
+        html += `    <button type="button" class="btn-apply-job ${j.applied ? 'ghost' : 'primary'}" data-jid="${escapeHtml(j.id)}" data-applied="${j.applied ? 'true' : 'false'}" style="font-size:0.8rem;padding:0.25rem 0.5rem;">${j.applied ? 'Re-apply result' : 'Apply result'}</button>`;
       }
       html += `  </div>`;
 
@@ -343,6 +357,13 @@ const StudioJobs = (() => {
       html += `  </div>`;
       if (j.result?.files?.includes('timing-manifest.json')) {
         html += `<p><a href="/api/exports/${encodeURIComponent(j.id)}/timing-manifest.json" download="timing-manifest.json">Download timing manifest (JSON)</a></p>`;
+      }
+      // Findings of the check that decoded the finished file (black picture, long silences, loudness).
+      const notes = j.result?.quality_notes;
+      if (Array.isArray(notes)) {
+        html += notes.length
+          ? `<ul class="warnlist export-quality">${notes.map(n => `<li>${escapeHtml(n)}</li>`).join('')}</ul>`
+          : '<p class="muted export-quality">Checked after rendering: H.264/AAC MP4, plays from the start while downloading, no black picture or long silence found.</p>';
       }
       html += `  <div class="video-preview-wrapper" style="max-width:${vw > vh ? 760 : 360}px;margin:0 auto;border-radius:var(--radius);overflow:hidden;background:#000;">`;
       html += `    <video controls preload="metadata" style="width:100%;display:block;max-height:540px;" src="${videoSrc}">`;

@@ -125,16 +125,35 @@
     return scenes().some(s => isDirty(s.id));
   }
 
-  /** Clean drafts follow the project; dirty drafts are kept until saved or discarded. */
+  /** What a scene's caption timing is measured against: its words and its narration audio (recording,
+   *  trim, its part of a whole-video recording, or the voice settings). */
+  function speechSignature(s, k) {
+    const p = StudioState.current.project, all = scenes(), next = all[k + 1];
+    const track = p.narration_mode === 'track'
+      ? [(p.narration_track || {}).asset, (p.narration_track || {}).end, s.track_start, next ? next.track_start : null] : [];
+    return JSON.stringify([s.narration, s.roman, s.spoken_text, s.audio_asset, s.audio_trim_start, s.audio_trim_end,
+                           p.narration_mode, p.tts_provider, p.voice, p.speech_rate, p.delivery_preset].concat(track));
+  }
+
+  /** Clean drafts follow the project; dirty drafts are kept until saved or discarded, unless the scene's
+   *  words or narration audio changed under them: their timings no longer fit, so they are set aside
+   *  (restorable) instead of being saved against the new audio. */
   function syncDrafts() {
     const ids = new Set(scenes().map(s => s.id));
     Object.keys(drafts).forEach(sid => { if (!ids.has(sid)) delete drafts[sid]; });
-    scenes().forEach(s => {
-      if (isDirty(s.id)) return;
+    scenes().forEach((s, k) => {
+      const sig = speechSignature(s, k);
+      if (isDirty(s.id)) {
+        if (drafts[s.id].sig === sig) return;
+        StudioState.clearedCues = StudioState.clearedCues || {};
+        StudioState.clearedCues[s.id] = drafts[s.id].cues;
+        StudioState.setNotice('Unsaved caption edits were set aside because the scene\'s words or narration changed. '
+          + 'You can restore them on the Captions tab.', true);
+      }
       const manual = s.cues && s.cues.length;
       const auto = automaticRoman(s.id);
       const cues = manual ? toDraftCues(s.cues) : (auto || []);
-      drafts[s.id] = {cues, base: JSON.stringify(cues), origin: manual ? 'manual' : auto ? 'automatic' : 'none'};
+      drafts[s.id] = {cues, base: JSON.stringify(cues), origin: manual ? 'manual' : auto ? 'automatic' : 'none', sig};
     });
   }
 
@@ -168,8 +187,13 @@
     const info = !t ? 'Checking narration audio…'
       : m ? `${m.source} · measured ${fmt(m.duration)} s`
       : t.message;
-    const origin = d.origin === 'manual' ? 'Saved manual captions.'
-      : d.origin === 'automatic' ? `Automatic timing (${m ? m.automatic.roman.alignment : 'estimated'}). Editing saves manual captions.`
+    // Only word times reported by the voice engine are measured; everything else automatic is an estimate.
+    const alignment = m ? m.automatic.roman.alignment : 'estimated';
+    const origin = d.origin === 'manual' ? 'Your timing (saved captions you checked or edited).'
+      : d.origin === 'automatic' ? (alignment.startsWith('voice engine')
+        ? 'Automatic timing from the voice engine\'s word times, matched in word order: usually close; play to check. Editing saves your own timing.'
+        : 'Estimated timing (' + alignment.replace(/; review required$/, '').replace(/^estimated:?\s*/, '')
+          + '): not word by word. Play the scene and correct it; editing saves your own timing.')
       : 'No captions yet. Add Roman Telugu captions on the Story tab, or reset from the Telugu narration.';
     const stash = (StudioState.clearedCues || {})[s.id];
     return `
@@ -187,8 +211,9 @@
                  value="${esc((s.emphasis || []).join(', '))}" placeholder="e.g. Octopus, hearts (numbers are always highlighted)">
         </label>
         ${m ? `<div class="captionplayer"><audio class="caption-audio" controls preload="metadata" data-key="${esc(s.id + '|' + m.audio_url)}" src="${esc(m.audio_url)}"></audio><span class="muted">Playhead <b class="caption-playhead">0.00</b> s</span></div>` : ''}
-        <p class="muted">${esc(origin)}</p>
-        ${stash ? `<div class="notice">Captions for this scene were cleared when its text or narration changed. <button type="button" class="btn-caption-restore">Restore previous captions</button></div>` : ''}
+        <p class="muted caption-origin${d.origin === 'automatic' && !alignment.startsWith('voice engine') ? ' warn' : ''}">${esc(origin)}</p>
+        ${m && m.warning ? `<p class="muted warn caption-warning">${esc(m.warning)}</p>` : ''}
+        ${stash ?`<div class="notice">Captions for this scene were cleared when its text or narration changed. <button type="button" class="btn-caption-restore">Restore previous captions</button></div>` : ''}
         <div class="cuelist">${d.cues.map((c, i) => rowHtml(c, i, d.cues.length)).join('')}</div>
         <div class="caption-scene-issues"></div>
         <div class="actions">

@@ -5,12 +5,20 @@ import re
 import shutil
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 from .config import DATA, executable, settings
 from . import formats, store
 
 
-def run(args, cwd=None, timeout=1800, job_id=None):
+def short_paths(text):
+    """FFmpeg names files by their full path; messages shown in the studio keep only the file name."""
+    return re.sub(r'(?:[A-Za-z]:)?(?:[\\/][^\\/\r\n:*?"<>|]+)+[\\/]([^\\/\r\n:*?"<>|]+)', r'\1', text)
+
+
+def run(args, cwd=None, timeout=1800, job_id=None, binary=False, log=False):
+    """Run FFmpeg/FFprobe and return its output: text, raw bytes with `binary` (decoded audio), or
+    with `log` the messages FFmpeg writes to stderr (loudness and silence measurements)."""
     proc = None
     try:
         proc = subprocess.Popen(
@@ -18,18 +26,31 @@ def run(args, cwd=None, timeout=1800, job_id=None):
             cwd=cwd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
-            encoding='utf-8',
-            errors='replace',
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
             start_new_session=os.name != 'nt',
         )
         if job_id:
             store.register_subprocess(job_id, proc.pid)
-        stdout, stderr = proc.communicate(timeout=timeout)
+        # A job's FFmpeg runs check every half second whether the job was cancelled and stop themselves:
+        # a render encodes several scenes at once, and the job records only one process to kill.
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                stdout, stderr = proc.communicate(timeout=0.5 if job_id else timeout)
+                break
+            except subprocess.TimeoutExpired:
+                if not job_id or time.monotonic() > deadline:
+                    raise
+                if store.job_cancelled(job_id):
+                    proc.kill()
+                    proc.communicate()
+                    raise ValueError('The job was cancelled') from None
+        stderr = stderr.decode('utf-8', 'replace')
         if proc.returncode:
-            raise ValueError('Media processing failed: ' + stderr[-1500:])
-        return stdout
+            raise ValueError('Media processing failed: ' + short_paths(stderr[-1500:]).strip())
+        if log:
+            return stderr
+        return stdout if binary else stdout.decode('utf-8', 'replace')
     except subprocess.TimeoutExpired:
         if proc:
             proc.kill()
@@ -65,15 +86,45 @@ def duration(path):
     return float(probe(path)['format']['duration'])
 
 
+def audio_seconds(path):
+    """A narration file's length from its decoded audio (cached), the timing authority for scenes: what
+    the renderer plays. Container metadata can be wrong (a variable-bitrate MP3 without a header)."""
+    from . import narration
+    if narration.cut_key(path):  # a cut is 48 kHz PCM: its header holds the exact sample count
+        stream = probe(path)['streams'][0]
+        return int(stream['duration_ts']) / int(stream['sample_rate'])
+    return narration.analyze_file(path)['duration']
+
+
+def recorded(scene, project):
+    """True when this scene's narration comes from a recording (one for the whole video, or its own)."""
+    return project.get('narration_mode') == 'track' or bool(scene.get('audio_asset'))
+
+
 def voice_for(scene, project, provider):
+    """(narration audio path, word timings) for a scene. Word timings come only from a voice engine
+    that reports them (Edge, Azure); recordings have none."""
+    from . import narration
+    if project.get('narration_mode') == 'track':
+        return narration.track_cut(project, scene['id']), []
     if scene.get('audio_asset'):
-        if scene.get('audio_text_hash') != store.digest(scene['narration']):
-            raise ValueError('An uploaded narration no longer matches the script revision. Re-attach or reconfirm it.')
+        # The recording stays attached when its text is edited (it is the transcript of what was said);
+        # preflight warns until the text and recording are confirmed together again.
         boundaries = []
         if scene.get('take_id'):
             take = store.get_voice_take(scene['take_id'])
             if take and take.get('asset_id') == scene['audio_asset']:
                 boundaries = take.get('timing_data') or []
+        trim_start, trim_end = float(scene.get('audio_trim_start') or 0), float(scene.get('audio_trim_end') or 0)
+        if trim_start or trim_end or scene.get('audio_gain_db'):
+            result = narration.analyze(scene['audio_asset'])
+            path = narration.cut(scene['audio_asset'], trim_start, trim_end or None,
+                                 narration.user_gain(result, scene.get('audio_gain_db')))
+            # Word timings belong to the untrimmed take; shift them and keep the ones inside the trim.
+            end = trim_end or result['duration']
+            boundaries = [{**b, 'start': b['start'] - trim_start, 'end': b['end'] - trim_start}
+                          for b in boundaries if b['start'] >= trim_start and b['end'] <= end]
+            return path, boundaries
         return store.asset_path(scene['audio_asset'], 'audio'), boundaries
     from .providers import synthesize
     text = scene.get('spoken_text') or scene['narration']
@@ -98,7 +149,7 @@ def prefetch_voices(project, provider, workers=VOICE_WORKERS):
     to report with its own message."""
     from concurrent.futures import ThreadPoolExecutor
     from django.db import connections
-    scenes = [s for s in project.get('scenes', []) if (s.get('narration') or '').strip() and not s.get('audio_asset')]
+    scenes = [s for s in project.get('scenes', []) if (s.get('narration') or '').strip() and not recorded(s, project)]
     if len(scenes) < 2:
         return
 
@@ -113,22 +164,63 @@ def prefetch_voices(project, provider, workers=VOICE_WORKERS):
         list(pool.map(one, scenes))
 
 
-def captions(scene, audio_duration, boundaries):
+def captions(scene, audio_duration, boundaries, speech=None):
     if scene['cues']:
         if scene['cues'][-1]['end'] > audio_duration + 0.1:
             raise ValueError('A manual caption cue extends beyond its narration. Correct its timestamp.')
         return scene['cues'], 'manual'
-    return auto_captions(scene['roman'], audio_duration, boundaries)
+    return auto_captions(scene['roman'], audio_duration, boundaries, speech)
 
 
-def auto_captions(text, audio_duration, boundaries):
+def speech_for(scene, project, path, audio_duration, boundaries=()):
+    """The spoken parts of a scene's narration (pauses removed) in its own time, for timing captions
+    when there are no word timings. Recordings use the whole recording's analysis, whose background
+    level is known, clipped to the scene's part; generated audio is analysed on its own."""
+    if boundaries:
+        return None
+    from . import narration
+    try:
+        if project.get('narration_mode') == 'track':
+            (begin, end), found = narration.scene_range(project, scene['id'])
+        elif scene.get('audio_asset'):
+            found = narration.analyze(scene['audio_asset'])
+            begin = float(scene.get('audio_trim_start') or 0)
+            end = float(scene.get('audio_trim_end') or 0) or found['duration']
+        else:
+            found, begin, end = narration.analyze_file(path), 0.0, audio_duration
+    except (ValueError, OSError):
+        return None
+    return [[round(s - begin, 3), round(e - begin, 3)] for s, e in narration.clip_speech(found['speech'], begin, end)] or None
+
+
+# Alignment labels: only the first comes from measured word times, and it is still mapped by word order.
+WORD_TIMING = 'voice engine word timings, matched in word order; review required'
+PAUSE_TIMING = 'estimated: spread over the speech between pauses; review required'
+LENGTH_TIMING = 'estimated from text length; review required'
+
+
+def auto_captions(text, audio_duration, boundaries, speech=None):
+    """Automatic caption cues of four words. With word timings from the voice engine whose word count
+    matches, each cue takes its words' times. Otherwise the timing is an estimate: the speech time
+    (pauses skipped, when `speech` intervals are known) shared out by word length."""
     words = text.split()
     if not words:
         return [], 'empty'
-    # Index mapping is a useful initial alignment, not forced phonetic alignment.
     mapped = len(boundaries) == len(words) and all(b['end'] <= audio_duration + 0.2 for b in boundaries)
     weights = [max(len(w), 1) for w in words]
     total = sum(weights)
+    speech = [s for s in speech or [] if s[1] > s[0]]
+    talk = sum(e - s for s, e in speech)
+
+    def at(fraction):  # time in the narration when `fraction` of the speech has been said
+        if talk < 0.3:
+            return audio_duration * fraction
+        rest = talk * fraction
+        for s, e in speech:
+            if rest <= e - s + 1e-9:
+                return s + rest
+            rest -= e - s
+        return speech[-1][1]
     cues, offset = [], 0
     for start in range(0, len(words), 4):
         stop = min(start + 4, len(words))
@@ -136,11 +228,14 @@ def auto_captions(text, audio_duration, boundaries):
             begin = boundaries[start]['start']
             end = boundaries[stop - 1]['end']
         else:
-            begin = audio_duration * sum(weights[:start]) / total
-            end = audio_duration * sum(weights[:stop]) / total
+            # A cue shows from just before its first word (or the start of its sentence after a pause).
+            begin = at(sum(weights[:start]) / total)
+            end = at(sum(weights[:stop]) / total)
+            if talk >= 0.3:
+                begin = next((s for s, e in speech if s <= begin + 1e-9 < e and begin - s < 0.35), begin)
         cues.append({'start': max(offset, begin), 'end': min(audio_duration, end), 'text': ' '.join(words[start:stop])})
         offset = end
-    return cues, 'word-index mapping; review required' if mapped else 'estimated from text length; review required'
+    return cues, WORD_TIMING if mapped else PAUSE_TIMING if talk >= 0.3 else LENGTH_TIMING
 
 
 # Compatibility import for callers; ASS and SRT share timestamp formatting.
@@ -169,7 +264,9 @@ EMPHASIS_COLOUR = {'yellow_accent': '&HFFFFFF&'}
 
 def ass_text(text, width=32, emphasis=None, colour='&H00D7FF&'):
     safe = text.replace('\\', '/').replace('{', '(').replace('}', ')').replace('\r', ' ').replace('\n', ' ')
-    lines = textwrap.wrap(safe, width=width)
+    # Lines break only between words: a long Telugu word stays whole rather than being cut inside a
+    # conjunct (textwrap counts vowel signs and viramas as characters).
+    lines = textwrap.wrap(safe, width=width, break_long_words=False, break_on_hyphens=False)
     if emphasis is not None:
         # Tags go in after wrapping, so they never count towards the line width.
         def mark(word):
@@ -231,6 +328,7 @@ Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour,
 {caption_style_line('Default', 'Arial', project)}
 {caption_style_line('Telugu', TELUGU_FONT, project)}
 Style: Title,Arial,78,&H00B9F8CF,&H00FFFFFF,&H00120E0B,&H00000000,-1,0,0,0,100,100,0,0,1,1,0,5,100,100,0,1
+Style: TitleTelugu,{TELUGU_FONT},78,&H00B9F8CF,&H00FFFFFF,&H00120E0B,&H00000000,-1,0,0,0,100,100,0,0,1,1,0,5,100,100,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -240,7 +338,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             f"{ass_text(c['text'], wrap, emphasis, EMPHASIS_COLOUR.get(project.get('caption_style'), '&H00D7FF&'))}"
             for c in cues]
     if title:
-        rows.insert(0, f'Dialogue: 0,0:00:00.00,{stamp(total, True)},Title,,0,0,0,,{{\\fad(250,200)}}{ass_text(title, 20 if wrap == 32 else 34)}')
+        style = 'TitleTelugu' if TELUGU_SCRIPT.search(title) else 'Title'  # Arial has no Telugu letters
+        rows.insert(0, f'Dialogue: 0,0:00:00.00,{stamp(total, True)},{style},,0,0,0,,{{\\fad(250,200)}}{ass_text(title, 20 if wrap == 32 else 34)}')
     path.write_text(header + '\n'.join(rows), 'utf-8')
 
 
@@ -251,8 +350,8 @@ def prepare_voices(job):
     for i, scene in enumerate(p['scenes']):
         store.progress(job['id'], f"Preparing narration {i + 1}/{len(p['scenes'])}")
         path, boundaries = voice_for(scene, p, provider)
-        seconds = duration(path)
-        cues, alignment = captions(scene, seconds, boundaries)
+        seconds = audio_seconds(path)
+        cues, alignment = captions(scene, seconds, boundaries, speech_for(scene, p, path, seconds, boundaries))
         prepared.append({'scene_id': scene['id'], 'audio_path': str(path), 'duration': seconds,
                          'cues': cues, 'alignment': alignment})
     return prepared

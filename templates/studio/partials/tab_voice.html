@@ -1,6 +1,80 @@
 <div id="tab-voice" class="tab-panel" style="display:none;">
+  <!-- Narration source: voice engine, one recording for the whole video, or a recording per scene (narration.js) -->
+  <section class="panel" id="narration-panel">
+    <div class="sectionhead">
+      <div>
+        <h2>Narration</h2>
+        <span class="muted">Who speaks in your video</span>
+      </div>
+      <button type="button" class="ghost btn-open-guide" data-guide="narration">&#10067; How to use</button>
+    </div>
+    <div class="narrationsources" role="radiogroup" aria-label="Narration source">
+      <label class="check"><input type="radio" name="narration-source" value="voice" checked>
+        <span><b>Voice engine</b><small class="muted">Free Telugu male voice (Mohan), or Sarvam as a paid upgrade</small></span></label>
+      <label class="check"><input type="radio" name="narration-source" value="track">
+        <span><b>My recording, one file</b><small class="muted">You read the whole script; scenes follow your recording</small></span></label>
+      <label class="check"><input type="radio" name="narration-source" value="scenes">
+        <span><b>My recordings, one per scene</b><small class="muted">Upload a file for each scene you recorded</small></span></label>
+    </div>
+    <p class="muted" id="narration-mode-note" role="status"></p>
+
+    <div id="narration-track-box" hidden>
+      <div class="track-no-recording">
+        <p>Upload your narration as one audio file (MP3, M4A, WAV, AAC, OGG, OPUS or FLAC, up to 60 minutes and 200 MB).
+          Your recording is kept exactly as recorded; the video only levels its volume.</p>
+        <label class="filebutton primary">Upload recording<input type="file" id="input-narration-track" accept="audio/*,.m4a,.mp3,.wav,.ogg,.opus,.flac,.aac,.webm"></label>
+      </div>
+      <div class="track-has-recording" hidden>
+        <p id="narration-track-info" class="muted"></p>
+        <ul id="narration-track-warnings" class="warnlist"></ul>
+        <div class="rowtools">
+          <label class="filebutton ghost">Replace recording<input type="file" id="input-narration-track-replace" class="narration-track-replace" accept="audio/*,.m4a,.mp3,.wav,.ogg,.opus,.flac,.aac,.webm"></label>
+          <button type="button" class="ghost" id="btn-track-remove">Remove recording</button>
+          <button type="button" class="ghost" id="btn-track-restore" hidden>Restore previous boundaries</button>
+        </div>
+        <audio id="narration-track-audio" controls preload="metadata"></audio>
+        <div class="wavetools">
+          <span class="muted">Click the waveform to listen from there; drag a numbered blue line to move where that scene starts.
+            Shaded parts are pauses.</span>
+          <span><button type="button" class="ghost" id="btn-wave-zoom-out" aria-label="Zoom out">&minus;</button><button type="button" class="ghost" id="btn-wave-zoom-fit">Fit</button><button type="button" class="ghost" id="btn-wave-zoom-in" aria-label="Zoom in">+</button></span>
+        </div>
+        <div id="narration-wave-box" class="wavebox"><canvas id="narration-wave" height="132" aria-label="Narration waveform with scene boundaries"></canvas></div>
+        <div class="actions">
+          <button type="button" id="btn-track-place">Place scenes by their text</button>
+          <button type="button" class="ghost" id="btn-track-split">Make scenes from pauses (no script yet)</button>
+        </div>
+        <p class="muted" id="narration-track-status" role="status"></p>
+        <div class="tablewrap">
+          <table id="narration-track-scenes" class="tracktable">
+            <thead><tr><th>#</th><th>Scene</th><th>Starts at (s)</th><th></th><th>Length</th><th>Play</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <div class="grid two">
+          <div class="field">
+            <span>Narration ends at (seconds, empty = end of recording)</span>
+            <div class="rowtools"><input type="number" id="input-track-end" min="0" step="0.01" placeholder="end of recording">
+              <button type="button" class="ghost" id="btn-track-end-playhead">at playhead</button>
+              <button type="button" class="ghost" id="btn-track-end-full">whole recording</button></div>
+          </div>
+          <div class="field">
+            <span>Recording volume: <b id="label-track-gain">0 dB</b></span>
+            <input type="range" id="range-track-gain" min="-12" max="12" step="1" value="0">
+            <small class="muted">The video levels narration to about -16 LUFS; this adjusts it relative to that (a boost never makes it distort).</small>
+          </div>
+        </div>
+        <p class="muted">Caption timing for a recording is estimated from its pauses; check it on the Captions tab.</p>
+      </div>
+    </div>
+
+    <div id="narration-scenes-box" hidden>
+      <p class="muted">Set "Use from / to" to cut silence or a mistake at the start or end of a recording; the original file is kept.</p>
+      <div id="narration-scenes-list"></div>
+    </div>
+  </section>
+
   <!-- Voice Profile & Synthesis Configuration -->
-  <section class="panel">
+  <section class="panel" id="voice-engine-panel">
     <div class="sectionhead">
       <div>
         <h2>Voice</h2>
@@ -184,6 +258,13 @@
           <span>Music volume (<span id="music-gain-label">12%</span>)</span>
           <input type="range" id="range-music-gain" min="0" max="0.5" step="0.02" value="0.12">
         </div>
+      </div>
+
+      <div class="grid two">
+        <label class="check"><input type="checkbox" id="check-music-ducking" checked>
+          <span><b>Lower the music while the narration speaks</b> <small class="muted">(ducking)</small></span></label>
+        <label class="check"><input type="checkbox" id="check-music-fade" checked>
+          <span><b>Fade the music in and out</b> <small class="muted">(no abrupt start or ending)</small></span></label>
       </div>
 
       <label class="check" style="margin-top:12px;">

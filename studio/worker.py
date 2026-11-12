@@ -46,11 +46,21 @@ def main():
     if recovered:
         print(f'Recovered {recovered} expired worker leases', flush=True)
     print('Telugu Reel Studio worker ready', flush=True)
+    pause = 1.0
     try:
         while True:
-            (DATA / 'worker-heartbeat.txt').write_text(str(time.time()), 'utf-8')
-            store.recover_expired_leases()
-            job = store.claim()
+            try:
+                (DATA / 'worker-heartbeat.txt').write_text(str(time.time()), 'utf-8')
+                store.recover_expired_leases()
+                job = store.claim()
+                pause = 1.0
+            except Exception as exc:  # e.g. PostgreSQL restarted: reconnect and keep serving the queue
+                print(f'Worker could not reach the database ({type(exc).__name__}); retrying in {pause:.0f} s', flush=True)
+                from django.db import connections
+                connections.close_all()
+                time.sleep(pause)
+                pause = min(30.0, pause * 2)
+                continue
             if job:
                 process(job)
             else:

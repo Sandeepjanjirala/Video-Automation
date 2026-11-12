@@ -84,7 +84,7 @@
           });
       });
 
-      // Background music upload
+      // A scene's own narration recording (Story tab "More", or Voice tab "One recording per scene").
       $(document).on('change', '.scene-upload-audio-input', async function(e) {
         const sid = $(this).data('scene-id');
         const file = e.target.files && e.target.files[0];
@@ -93,13 +93,14 @@
         const narration = scene.narration;
         StudioState.setBusy(true);
         try {
-          const bytes = new TextEncoder().encode(JSON.stringify(narration));
-          const hash = await crypto.subtle.digest('SHA-256', bytes);
-          const asset = await Media.uploadFile(file, 'audio');
-          const textHash = Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join('');
-          Scenes.updateSceneField(sid, {audio_asset: asset.id, audio_text_hash: textHash, take_id: '', cues: []});
+          const textHash = await Media.textHash(narration);
+          const asset = await Media.uploadFile(file, 'audio', 'narration');
+          // A new recording starts untrimmed at its own volume; old caption timings do not fit it.
+          Scenes.updateSceneField(sid, {audio_asset: asset.id, audio_text_hash: textHash, take_id: '', cues: [],
+                                        audio_trim_start: 0, audio_trim_end: 0, audio_gain_db: 0});
           Scenes.renderScriptEditor();
-          StudioState.setNotice('Recording attached to this narration. Save and approve before rendering.');
+          if (window.StudioNarration) StudioNarration.render();
+          StudioState.setNotice('Recording attached to this scene. Save and approve before rendering.');
         } catch (err) {
           StudioState.setNotice(err.message, true);
         } finally {
@@ -108,8 +109,10 @@
         }
       });
       $(document).on('click', '.btn-remove-scene-audio', function() {
-        Scenes.updateSceneField($(this).data('scene-id'), {audio_asset: '', audio_text_hash: '', take_id: '', spoken_text: '', cues: []});
+        Scenes.updateSceneField($(this).data('scene-id'), {audio_asset: '', audio_text_hash: '', take_id: '', spoken_text: '', cues: [],
+                                                         audio_trim_start: 0, audio_trim_end: 0, audio_gain_db: 0});
         Scenes.renderScriptEditor();
+        if (window.StudioNarration) StudioNarration.render();
       });
 
       // Background music upload
@@ -166,6 +169,12 @@
         Projects.triggerAutosave();
         Projects.checkPreflight();
       });
+      $(document).on('change', '#check-music-ducking, #check-music-fade', function() {
+        if (!StudioState.current || !StudioState.current.project) return;
+        StudioState.current.project[this.id === 'check-music-ducking' ? 'music_ducking' : 'music_fade'] = $(this).is(':checked');
+        StudioState.markDirty(true);
+        Projects.triggerAutosave();
+      });
 
       // Pixabay stock search
       $(document).on('click', '.btn-find-stock, #btn-stock-search', function() {
@@ -221,15 +230,25 @@
       });
     },
 
-    uploadFile: function(file, kind) {
+    /** `purpose` 'narration': the server checks the recording strictly (sound, decodes to the end, length). */
+    uploadFile: function(file, kind, purpose) {
       const fd = new FormData();
       fd.append('file', file);
+      if (purpose) fd.append('purpose', purpose);
       return StudioApi.upload('/assets', fd).then(function(asset) {
         if (kind && (kind === 'visual' ? !['video', 'image'].includes(asset.kind) : asset.kind !== kind)) {
-          throw new Error('Please select a ' + kind + ' file.');
+          throw new Error(kind === 'visual' ? 'Please choose a video or picture file.'
+            : kind === 'audio' ? 'Please choose an audio file (MP3, M4A, WAV, AAC, OGG, OPUS or FLAC).' : 'Please choose a ' + kind + ' file.');
         }
         return asset;
       });
+    },
+
+    /** SHA-256 of the narration text as the server's store.digest computes it (JSON of the string). */
+    textHash: function(text) {
+      const bytes = new TextEncoder().encode(JSON.stringify(String(text || '')));
+      return crypto.subtle.digest('SHA-256', bytes)
+        .then(hash => Array.from(new Uint8Array(hash), b => b.toString(16).padStart(2, '0')).join(''));
     },
 
     openLibrary: function(targetSceneId) {
@@ -333,6 +352,8 @@
       $('#range-music-gain').val(p.music_gain !== undefined ? p.music_gain : 0.12);
       $('#music-gain-label').text('Music level: ' + Math.round((p.music_gain !== undefined ? p.music_gain : 0.12) * 100) + '%');
       $('#check-music-rights').prop('checked', !!p.music_rights_reviewed);
+      $('#check-music-ducking').prop('checked', p.music_ducking !== false);
+      $('#check-music-fade').prop('checked', p.music_fade !== false);
     }
   };
 

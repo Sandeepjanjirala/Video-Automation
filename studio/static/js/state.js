@@ -44,7 +44,12 @@
       cues: [],
       extra_shots: [],
       shot_weights: [],
-      emphasis: []
+      emphasis: [],
+      track_start: null,
+      audio_trim_start: 0,
+      audio_trim_end: 0,
+      audio_gain_db: 0,
+      clip_volume: 0
     };
   }
 
@@ -94,6 +99,10 @@
       music_asset: '',
       music_gain: 0.12,
       music_rights_reviewed: false,
+      music_ducking: true,
+      music_fade: true,
+      narration_mode: 'voice',
+      narration_track: {asset: '', end: 0, gain_db: 0},
       caption_size: 56,
       caption_bottom: 300,
       caption_style: 'classic',

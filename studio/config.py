@@ -1,8 +1,13 @@
 import json
+import logging
 import os
 import shutil
 import uuid
 from pathlib import Path
+
+# httpx logs every request URL at INFO, and Pixabay's API key travels in the URL: keep it to warnings.
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('httpcore').setLevel(logging.WARNING)
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.environ.get('REEL_DATA_DIR', str(ROOT / 'data'))).resolve()
@@ -82,6 +87,18 @@ def save_settings(values):
         cfg['daily_ai_calls'] = max(1, min(100, int(cfg['daily_ai_calls'])))
     except (TypeError, ValueError):
         raise ValueError('Daily AI calls must be an integer') from None
+    for name in ('ffmpeg', 'ffprobe'):
+        # The studio runs this program, so it must be the real tool on this computer (not a network share).
+        if cfg[name] and (Path(cfg[name]).name.lower() not in (name, name + '.exe') or cfg[name].startswith(('\\', '//'))
+                          or not Path(cfg[name]).is_file()):
+            raise ValueError(f'{name} must be the full path of {name}.exe on this computer')
+    # Keys that come from .env stay there: they are not copied into settings.json, so removing one from
+    # .env removes it (a key typed in Settings in the same save is stored as typed).
+    path = DATA / 'settings.json'
+    on_disk = json.loads(path.read_text('utf-8')) if path.exists() else {}
+    for key, name in ENV_KEYS.items():
+        if os.environ.get(name) and not values.get(key):
+            cfg[key] = on_disk.get(key, '')
     tmp = DATA / f'settings.{uuid.uuid4().hex}.tmp'
     tmp.write_text(json.dumps(cfg, indent=2), 'utf-8')
     try:

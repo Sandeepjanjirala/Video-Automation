@@ -30,7 +30,7 @@ from rest_framework.views import APIView
 
 from studio.config import public_settings, save_settings, executable, DATA
 from studio.media import probe, run as media_run
-from studio import captions, formats, framing, store
+from studio import captions, formats, framing, narration, store
 from studio.models import Project as PydanticProject, Scene as PydanticScene
 import pydantic
 from core import services
@@ -450,9 +450,14 @@ class ProjectDraftView(APIView):
 
     def get(self, request, pid: str, *args, **kwargs):
         draft = Draft.objects.filter(project_id=pid).first()
-        if draft and draft.body:
-            return Response(draft.body)
-        return Response({})
+        if not draft or not draft.body:
+            return Response({})
+        stored = draft.body
+        # Autosave sends {body, base_revision}; drafts saved before that are the bare project.
+        wrapped = isinstance(stored.get('body'), dict) and 'scenes' in stored['body']
+        return Response({'body': stored['body'] if wrapped else stored,
+                         'base_revision': stored.get('base_revision') if wrapped else None,
+                         'updated': draft.updated_at.isoformat() if draft.updated_at else None})
 
     def put(self, request, pid: str, *args, **kwargs):
         data = request.data
@@ -831,6 +836,12 @@ class JobRetryView(APIView):
                 return Response({'detail': 'Job not found'}, status=status.HTTP_400_BAD_REQUEST)
             if j.state != 'failed':
                 return Response({'detail': 'Only failed jobs can be retried'}, status=status.HTTP_400_BAD_REQUEST)
+            # The same rule as queueing a new job: one job of a kind per project at a time.
+            store.lock_enqueue(j.project_id, None, 'job_writer')
+            if Job.objects.using('job_writer').filter(project_id=j.project_id, kind=j.kind,
+                                                      state__in=['queued', 'running']).exclude(id=jid).exists():
+                return Response({'detail': f'A {j.kind} job for this project is already in progress; wait for it or cancel it first'},
+                                status=status.HTTP_400_BAD_REQUEST)
 
             now_dt = datetime.now(timezone.utc)
             if mode == 'current':
@@ -1042,11 +1053,17 @@ class AssetListCreateView(APIView):
             return Response({'detail': 'No file uploaded'}, status=status.HTTP_400_BAD_REQUEST)
 
         extension = Path(file.name or '').suffix.lower()
-        if extension not in ('.mp4', '.mov', '.mkv', '.webm', '.mp3', '.wav', '.m4a', '.ogg', '.aac', '.jpg', '.jpeg', '.png', '.webp'):
+        # 'narration': a voice recording, checked strictly (sound present, decodes to the end, length).
+        purpose = request.data.get('purpose', '')
+        if extension not in ('.mp4', '.mov', '.mkv', '.webm', '.mp3', '.wav', '.m4a', '.ogg', '.opus', '.flac', '.aac',
+                             '.jpg', '.jpeg', '.png', '.webp'):
             return Response(
-                {'detail': 'Upload MP4/MOV/MKV/WEBM video, JPEG/PNG/WebP image, or MP3/WAV/M4A/OGG/AAC audio'},
+                {'detail': 'Upload MP4/MOV/MKV/WEBM video, JPEG/PNG/WebP image, or MP3/WAV/M4A/OGG/OPUS/FLAC/AAC audio'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        if purpose == 'narration' and extension in ('.jpg', '.jpeg', '.png', '.webp'):
+            return Response({'detail': f'This is a picture. Upload a voice recording ({narration.FORMATS}).'},
+                            status=status.HTTP_400_BAD_REQUEST)
 
         aid = uuid.uuid4().hex
         assets_dir = (DATA / 'assets').resolve()
@@ -1065,11 +1082,22 @@ class AssetListCreateView(APIView):
                     hasher.update(chunk)
             file_hash = hasher.hexdigest()
 
+            if purpose == 'narration':
+                checked = narration.check_recording(path)
+                if any(s.get('codec_type') == 'video' and not s.get('disposition', {}).get('attached_pic')
+                       for s in probe(path).get('streams', [])):
+                    raise ValueError('This is a video file. Save the voice as an audio file (M4A, MP3 or WAV) and upload that; '
+                                     "to keep a clip's own sound, use Clip sound on its scene instead.")
+                seconds = float(checked.get('duration') or probe(path)['format'].get('duration') or 0)
+                if seconds < 0.5:
+                    raise ValueError('The recording is shorter than half a second.')
+                if seconds > narration.MAX_SECONDS:
+                    raise ValueError('Recordings can be up to 60 minutes long.')
+
             # Deduplication: reuse existing asset if identical content hash exists
             existing = Asset.objects.filter(sha256=file_hash).first()
             if existing:
-                path.unlink(missing_ok=True)
-                return Response(serialize_asset_dict(existing))
+                return Response(serialize_asset_dict(reuse_upload(existing, path)))
 
             # Media stream validation via FFprobe
             is_image = extension in ('.jpg', '.jpeg', '.png', '.webp')
@@ -1102,8 +1130,7 @@ class AssetListCreateView(APIView):
                 # Safe concurrency double-check
                 existing_race = Asset.objects.using('media_writer').filter(sha256=file_hash).first()
                 if existing_race:
-                    path.unlink(missing_ok=True)
-                    return Response(serialize_asset_dict(existing_race))
+                    return Response(serialize_asset_dict(reuse_upload(existing_race, path)))
 
                 new_asset = Asset.objects.using('media_writer').create(
                     id=aid,
@@ -1124,7 +1151,70 @@ class AssetListCreateView(APIView):
 
         except Exception as exc:
             path.unlink(missing_ok=True)
+            message = str(exc) if isinstance(exc, ValueError) else 'The file could not be saved'
+            if message.startswith('Media processing failed'):  # FFprobe's own words name a server path
+                message = 'This file could not be read as video, image or audio. It may be damaged or in an unsupported format.'
+            return Response({'detail': message}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def reuse_upload(existing, path):
+    """An identical file is already in the library, so it is reused. If its file went missing from the data
+    folder, this upload puts it back: uploading the same file again repairs "missing on disk"."""
+    assets_dir = (DATA / 'assets').resolve()
+    target = (assets_dir / existing.filename).resolve()
+    if target.parent == assets_dir and not target.is_file():
+        os.replace(path, target)
+    else:
+        path.unlink(missing_ok=True)
+    return existing
+
+
+class NarrationAnalysisView(APIView):
+    """GET /api/assets/{aid}/narration - waveform, pauses, loudness and warnings of a voice recording.
+    POST with {"action": "place", "texts": [...], "end": seconds?} - scene start times shared out by text;
+    {"action": "split", "target": seconds?, "end": seconds?} - start times at pauses, for a recording without
+    a script. Results are estimates for the user to check on the Voice tab."""
+
+    def get(self, request, aid: str, *args, **kwargs):
+        try:
+            return Response(narration.analyze(aid))
+        except ValueError as exc:
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+    def post(self, request, aid: str, *args, **kwargs):
+        data = request.data if isinstance(request.data, dict) else {}
+        try:
+            found = narration.analyze(aid)
+            end = data.get('end')
+            end = float(end) if end not in (None, '', 0) else None
+            if end is not None and not 0.5 <= end <= found['duration'] + 0.001:
+                raise ValueError('The narration end must be inside the recording')
+            if data.get('action') == 'place':
+                texts = data.get('texts')
+                if not isinstance(texts, list) or not 1 <= len(texts) <= 400 or not all(isinstance(t, str) for t in texts):
+                    raise ValueError('Send the text of every scene')
+                starts = narration.place_scenes(texts, found, end=end)
+            elif data.get('action') == 'split':
+                target = float(data.get('target') or 4.0)
+                if not 2 <= target <= 15:
+                    raise ValueError('Scene length must be 2 to 15 seconds')
+                starts = narration.split_at_pauses(found, target=target, longest=target * 2, end=end)
+            else:
+                raise ValueError('Unknown action')
+        except (TypeError, ValueError) as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({'starts': starts, 'duration': found['duration']})
+
+
+class NarrationAudioView(APIView):
+    """GET /api/narration/audio/{key} - a prepared narration cut (scene slice or trimmed recording)."""
+
+    def get(self, request, key: str, *args, **kwargs):
+        try:
+            path = narration.cut_path(key)
+        except ValueError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_404_NOT_FOUND)
+        return ranged_file_response(request, path, 'audio/wav')
 
 
 class AssetDetailView(APIView):
