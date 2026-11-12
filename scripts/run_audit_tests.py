@@ -40,9 +40,9 @@ def main():
     env['REEL_DATA_DIR'] = str(output / 'data')
     # Never the developer's real keys from .env: tests use fixtures only.
     env['STUDIO_ENV_FILE'] = ''
-    for name in ('STUDIO_GEMINI_KEY', 'STUDIO_PIXABAY_KEY', 'STUDIO_PEXELS_KEY', 'STUDIO_AZURE_KEY', 'STUDIO_SARVAM_KEY',
-                 'STUDIO_ONLINE', 'SARVAM_API_KEY'):
-        env.pop(name, None)
+    for secret in ('STUDIO_GEMINI_KEY', 'STUDIO_PIXABAY_KEY', 'STUDIO_PEXELS_KEY', 'STUDIO_AZURE_KEY', 'STUDIO_SARVAM_KEY',
+                   'STUDIO_ONLINE', 'SARVAM_API_KEY'):
+        env.pop(secret, None)
     env['PYTHONIOENCODING'] = 'utf-8'
     try:
         subprocess.run([sys.executable, 'manage.py', 'migrate', '--noinput'], cwd=ROOT, env=env, check=True)

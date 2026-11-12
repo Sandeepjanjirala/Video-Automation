@@ -53,6 +53,9 @@ class Scene(StrictModel):
     cues: list[Cue] = Field(default_factory=list, max_length=200)
     # More stock clips of the same subject; a long scene cuts to the next one about every 4 seconds.
     extra_shots: list[str] = Field(default_factory=list, max_length=4)
+    # Share of the line each clip covers (its own, then the extra shots) when the footage search planned
+    # one clip per part of the line; empty means equal parts.
+    shot_weights: list[float] = Field(default_factory=list, max_length=5)
     # The line's key words, shown in the highlight colour when the project's caption_emphasis is on.
     emphasis: list[str] = Field(default_factory=list, max_length=6)
 
@@ -62,6 +65,8 @@ class Scene(StrictModel):
             raise ValueError('Roman caption field must use English letters, not Telugu script')
         if any(not re.fullmatch(r'[a-f0-9]{32}', a) for a in self.extra_shots):
             raise ValueError('Extra shots must be media library clip IDs')
+        if any(not 0 <= w <= 1 for w in self.shot_weights):
+            raise ValueError('Shot weights must be shares between 0 and 1')
         if any(not isinstance(w, str) or not w.strip() or len(w) > 40 for w in self.emphasis):
             raise ValueError('Key words must be single words of at most 40 characters')
         if self.trim_end and self.trim_end <= self.trim_start:

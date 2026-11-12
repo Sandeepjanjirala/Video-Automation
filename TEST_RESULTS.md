@@ -1,3 +1,40 @@
+# Footage that follows the script — 12 November 2026
+
+Branch `feature/better-footage-match`. No new dependencies. New optional scene field `shot_weights` (defaults to
+empty; no database migration, older projects and their cached renders are unchanged).
+
+- `studio/footage.py` is a plan → search → check → search-again loop (the shape of a LangGraph agent, written
+  directly so it needs no new framework and keeps the Gemini backup models and the daily limit):
+  - Plan per part of the line: a scene needing N clips (`shots_needed`) is split by Gemini into N consecutive parts
+    in spoken order, each with its words, an intended shot and 3 search phrases (older one-shot answers still work).
+  - Every part is searched and checked on its own (`Scene i shot k of N: said while "…"`); a part shows 6
+    candidates, later parts search their specific and broad phrase only.
+  - Search again: shots with no accepted clip or a best score below 7 go back to Gemini with the phrases tried and
+    the clips seen; the new phrases are searched (clips already seen are skipped) and checked; the better clip wins.
+  - Clips are assigned in spoken order, one per part, never reused across scenes; the selection carries
+    `shot_weights` (each part's share of the line, from the length of its words).
+- `framing.planned_parts`/`shot_lengths`: the render shows each clip for its part's share (a part under 1.2 s joins
+  the clip before it); equal parts as before without weights. Applying a footage search stores the weights; a
+  manual clip (upload, library, single stock result, **Use only the main clip**) clears them.
+- `scripts/run_audit_tests.py`: the loop removing key variables reused the name of the temporary database, so the
+  runner could not drop it after the run (fixed; 8 earlier test databases, 72 MB, are left for you to remove).
+
+Real check (Gemini + Pixabay, downloads skipped, projects not changed), last footage result → new loop:
+
+| Project | Scenes with no clip | AI-matched scenes, mean score |
+|---|---|---|
+| Lake Natron ("My next story", 10 scenes) | 5 → 0 | 5, 7.2 → 10, 7.5 (4 found by the second search) |
+| Human body (6 scenes) | 0 → 0 | 6, 8.8 → 6, 8.7 |
+
+Long lines now get one clip per part in spoken order (e.g. the Lake Natron scene about birds and bats: three clips
+for 23 %, 14 % and 62 % of the line). gemini-2.5-flash was over quota, so the backup gemini-3-flash-preview
+answered; the runs then reached the app's daily Gemini limit (56), after which the keyword ranking was used as
+designed (every scene still got a clip).
+
+Verification: **124 passed** (121 previous + 3 new: a second search keeps the better clip, one clip per part of a
+long line in spoken order with its share, render timing of planned parts; the AI-pick, extra-shot apply and real
+render tests now also cover the second search, stored/cleared shares and per-part cut times).
+
 # API keys from .env and the first Sarvam video — 12 November 2026
 
 Same branch. No database changes.

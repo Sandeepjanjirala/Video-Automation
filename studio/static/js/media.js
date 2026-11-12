@@ -69,7 +69,8 @@
               rights_reviewed: true,
               trim_start: 0,
               trim_end: 0,
-              extra_shots: []
+              extra_shots: [],
+              shot_weights: []
             });
             Scenes.renderSceneVisuals();
             StudioState.setNotice('Uploaded visual assigned to scene. Save project to keep selection.');
@@ -302,7 +303,8 @@
           rights_reviewed: true,
           trim_start: 0,
           trim_end: 0,
-          extra_shots: []
+          extra_shots: [],
+          shot_weights: []
         });
         $('#media-library-modal, #modal-media-library').hide();
         Scenes.renderSceneVisuals();
