@@ -231,6 +231,7 @@ def apply_job_result(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
                     curr_s['trim_start'] = 0
                     curr_s['trim_end'] = 0
                     curr_s['extra_shots'] = []
+                    curr_s['shot_weights'] = []
                     modified = True
 
         elif kind == 'stock_all':
@@ -259,6 +260,8 @@ def apply_job_result(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
                     curr_s['trim_start'] = 0
                     curr_s['trim_end'] = 0
                     curr_s['extra_shots'] = [a['id'] for a in sel.get('extra_assets') or []][:4]
+                    weights = sel.get('shot_weights') or []
+                    curr_s['shot_weights'] = weights if len(weights) == 1 + len(curr_s['extra_shots']) else []
                     modified = True
 
         elif kind == 'research':
@@ -351,6 +354,7 @@ def assign_media_to_scenes(pid: str, asset_id: str, scene_ids: List[str]) -> Pro
                     s['video_asset'] = asset_id
                     s['visual'] = 'image' if asset_obj.kind == 'image' else 'upload'
                     s['extra_shots'] = []
+                    s['shot_weights'] = []
                     s['trim_start'] = 0
                     s['trim_end'] = 0
                     s['rights_reviewed'] = True

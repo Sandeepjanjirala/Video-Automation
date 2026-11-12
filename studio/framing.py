@@ -189,10 +189,44 @@ def scene_shots(scene, length, shot_seconds=SHOT_SECONDS):
     extras = scene.get('extra_shots') or []
     if scene.get('visual') not in ('upload', 'stock') or not extras:
         return [scene]
-    count = min(1 + len(extras), max(1, math.ceil(length / shot_seconds - 0.05)))
+    parts = planned_parts(scene, length)
+    if parts:  # one clip per part of the line, in spoken order
+        chosen = [extras[k - 1] for k, _ in parts[1:]]
+    else:
+        chosen = extras[:min(1 + len(extras), max(1, math.ceil(length / shot_seconds - 0.05))) - 1]
     return [scene] + [{**scene, 'video_asset': aid, 'visual': 'stock', 'trim_start': 0, 'trim_end': 0, 'fit': 'crop',
                        'frame_aspect': 'full', 'zoom': 1.0, 'crop_x': 0.5, 'crop_y': 0.5, 'short_clip_mode': 'loop'}
-                      for aid in extras[:count - 1]]
+                      for aid in chosen]
+
+
+MIN_PLANNED_SHOT = 1.2  # seconds; a planned part shorter than this is shown on the clip before it
+
+
+def planned_parts(scene, length):
+    """[(clip number, share of the line)] when the footage search planned one clip per part of the line
+    (shot_weights: its own clip, then each extra shot, in spoken order), else None. A part too short to
+    register is shown on the previous clip instead."""
+    weights, extras = scene.get('shot_weights') or [], scene.get('extra_shots') or []
+    if len(weights) < 2 or len(weights) != 1 + len(extras) or sum(weights) <= 0:
+        return None
+    total, parts = sum(weights), []
+    for k, weight in enumerate(weights):
+        if parts and weight / total * length < MIN_PLANNED_SHOT:
+            parts[-1] = (parts[-1][0], parts[-1][1] + weight / total)
+        else:
+            parts.append((k, weight / total))
+    if len(parts) > 1 and parts[0][1] * length < MIN_PLANNED_SHOT:  # a short opening part joins the next clip
+        parts = [(0, parts[0][1] + parts[1][1])] + parts[2:]
+    return parts
+
+
+def shot_lengths(scene, length, count):
+    """Seconds each of the scene's `count` clips (scene_shots) is shown: the share of the line its
+    words cover when the shots were planned, else equal parts."""
+    parts = planned_parts(scene, length)
+    if parts and len(parts) == count:
+        return [share * length for _, share in parts]
+    return [length / count] * count
 
 
 def visual_inputs(scene, path, source, length, width, height, work, run, job_id=None):

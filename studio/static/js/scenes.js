@@ -30,7 +30,7 @@
       });
 
       $(document).on('click', '.btn-clear-extra-shots', function() {
-        Scenes.updateSceneField($(this).data('scene-id'), {extra_shots: []});
+        Scenes.updateSceneField($(this).data('scene-id'), {extra_shots: [], shot_weights: []});
         Scenes.renderSceneVisuals();
       });
 
@@ -320,8 +320,9 @@
           <div id="stock-results-${s.id}"></div>
           ${s.video_asset ? StudioFraming.controlsHtml(s) : '<small class="muted">Choose footage or an image to adjust its framing and trim.</small>'}
           ${(s.extra_shots || []).length && ['stock', 'upload'].includes(s.visual) ? `
-          <p class="extrashots"><b>+${s.extra_shots.length} more shot(s)</b> of the same subject: a long scene cuts to the
-            next clip about every ${StudioState.format().width > StudioState.format().height ? 6 : 4} seconds (from its start, cropped to fill the frame).
+          <p class="extrashots"><b>+${s.extra_shots.length} more shot(s)</b> ${(s.shot_weights || []).length ? `in the order of the
+            words: each clip shows while the part of the line it was chosen for is spoken` : `of the same subject: a long scene cuts to the
+            next clip about every ${StudioState.format().width > StudioState.format().height ? 6 : 4} seconds`} (from its start, cropped to fill the frame).
             <button type="button" class="ghost btn-clear-extra-shots" data-scene-id="${s.id}">Use only the main clip</button></p>` : ''}
           <small class="muted">Clip audio is muted. Scene length follows the selected narration.</small>
         `;

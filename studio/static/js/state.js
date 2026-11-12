@@ -43,6 +43,7 @@
       delivery_preset: 'conversational',
       cues: [],
       extra_shots: [],
+      shot_weights: [],
       emphasis: []
     };
   }

@@ -209,28 +209,37 @@ export**. The steps below describe the same workflow done by hand.
    a source selector. Provider errors are shown; choose the other source explicitly
    if credentials or quota fail. Review relevance and usage rights.
 
-   **How footage is matched** (**Find footage for all scenes** and the one-click draft):
-   Gemini first reads the whole script and plans what the viewer should see in each
-   scene (the octopus itself for "Octopus ki moodu hearts untayi", the reel's subject or
-   a human reaction for hooks and "comment cheyyandi"), with three search phrases from
-   specific to broad. Every phrase is searched; candidates are ranked by tag match (the
-   subject counts most), the provider's own order, real film over animation, resolution,
-   vertical shape and popularity, and green-screen or "subscribe" overlays are pushed down.
-   Gemini then looks at a preview frame of six candidates for every scene (including the
-   best clip of each phrase) and scores the ones that show the planned shot out of 10; each
-   scene gets its best clip not already used by another scene, and a scene with nothing
+   **How footage is matched** (**Find footage for all scenes** and the one-click draft) is a
+   plan → search → check → search-again loop:
+   1. *Plan.* Gemini reads the whole script and plans what the viewer should see while each
+      part of a line is spoken (the octopus itself for "Octopus ki moodu hearts untayi", the
+      video's subject or a human reaction for hooks and "comment cheyyandi"). A long line is
+      split into consecutive parts in spoken order, one shot per part, e.g. "Honey … paadavadu |
+      ani scientists cheptunnaru | Egypt pyramids lo kuda dorikindhi" → honey jar, scientist,
+      pyramids. Each shot gets three search phrases from specific to broad.
+   2. *Search.* Every phrase is searched; candidates are ranked by tag match (the subject
+      counts most), the provider's own order, real film over animation, resolution, a shape
+      that suits the format and popularity; green-screen or "subscribe" overlays are pushed down.
+   3. *Check.* Gemini looks at a preview frame of the best candidates for every shot (with the
+      words it is spoken over) and scores the ones that show it out of 10.
+   4. *Search again.* Shots with no clip, or only one scoring below 7, are planned again from
+      what was rejected (a findable view of the same idea: the subject itself, a wider view, a
+      related place or a reaction), searched with new words and checked again; the better clip
+      wins. The match then says **after a second search**.
+   Each scene gets its best clips not already used by another scene; a scene with nothing
    scoring 5 gets no clip (a title card in the one-click draft). The score and planned shot
    appear under **Footage search results** in Production jobs.
    Downloads use 4K files when they stay under 60 MB, so a 9:16 crop of landscape footage
-   stays sharp. This costs two Gemini requests per run; without Gemini, the scene keywords
-   and the ranking are used.
+   stays sharp. A short reel uses about three or four Gemini requests per run (the daily
+   limit in Settings counts them); without Gemini, the scene keywords and the ranking are used.
 
-   **A new shot about every 4 seconds:** a scene whose narration is longer than about
-   4 seconds gets extra AI-checked clips of the same subject (up to three, estimated from its
-   length at about two Roman Telugu words a second). The render cuts between them in equal
-   parts, so a 7-second line shows two clips and a 10-second line three, while the narration
-   stays one continuous take. Extra shots play from their start, cropped to fill the frame;
-   the scene's framing and trim apply to its main clip. The scene card shows
+   **A new shot about every 4 seconds, in step with the words:** a scene whose narration is
+   longer than about 4 seconds gets more clips (up to four, estimated from its length at about
+   two Roman Telugu words a second). When the shots were planned per part of the line, each
+   clip is shown while its own words are spoken, for that part's share of the line (a part
+   shorter than 1.2 s stays on the clip before it); otherwise the render cuts between them in
+   equal parts. The narration stays one continuous take. Extra shots play from their start,
+   cropped to fill the frame; the scene's framing and trim apply to its main clip. The scene card shows
    **+N more shot(s)** with **Use only the main clip**; choosing a clip yourself (upload,
    library or a single stock result) also replaces them.
 5. Each scene has a **Prompt** button. Edit, save and copy its 5–10 second prompt

@@ -283,7 +283,7 @@ def task_render_pipeline(self, job_id: str):
                 lease.check_ownership()
                 store.progress(job_id, f"Preparing narration {i + 1}/{len(p['scenes'])}", stage_name='narration')
                 from .media import CAPTION_FILTER, voice_for, duration, captions, write_ass, probe, run
-                from .framing import COLOUR_TAGS, scene_shots, source_info, visual_inputs
+                from .framing import COLOUR_TAGS, scene_shots, shot_lengths, source_info, visual_inputs
                 vpath, boundaries = voice_for(scene, p, provider)
                 sec = duration(vpath)
 
@@ -323,7 +323,8 @@ def task_render_pipeline(self, job_id: str):
                 shots = scene_shots(scene, length, format_of(p)['shot_seconds'])
                 cache_key = store.digest({
                     'renderer': 6,
-                    'scene': scene,
+                    # Scenes without planned shot shares keep their key, so older renders stay cached.
+                    'scene': {k: v for k, v in scene.items() if k != 'shot_weights' or v},
                     'audio': Path(voice['audio_path']).name,
                     'audio_mtime_ns': Path(voice['audio_path']).stat().st_mtime_ns,
                     'audio_size': Path(voice['audio_path']).stat().st_size,
@@ -364,13 +365,14 @@ def task_render_pipeline(self, job_id: str):
                                                    width, height, work, run, job_id)
                         args += inputs
                     else:
-                        # Several clips share the scene: each is framed and cut to its part, then joined.
-                        part = length / len(shots)
+                        # Several clips share the scene: each is framed and cut to its part (the words it
+                        # was chosen for, or an equal share), then joined.
+                        parts = shot_lengths(scene, length, len(shots))
                         for k, shot in enumerate(shots):
                             shot_work = work / f'shot{k}'
                             shot_work.mkdir(exist_ok=True)
                             shot_path = store.asset_path(shot['video_asset'], 'video')
-                            seconds = part + (0.1 if k == len(shots) - 1 else 0)
+                            seconds = parts[k] + (0.1 if k == len(shots) - 1 else 0)
                             shot_inputs, shot_vf = visual_inputs(shot, shot_path, source_info(shot_path), seconds,
                                                                  width, height, shot_work, run, job_id)
                             run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-filter_threads', '1',

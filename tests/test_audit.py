@@ -1395,6 +1395,7 @@ def footage_fixture(monkeypatch, gemini):
         'octopus': [pixabay_hit(2, 'octopus, tentacles, ocean'), pixabay_hit(3, 'octopus, aquarium', 1080, 1920)],
         'honey jar': [pixabay_hit(4, 'honey, jar, kitchen'), pixabay_hit(5, 'honey, green screen, subscribe')],
         'random facts': [pixabay_hit(6, 'particles, abstract', kind='animation', low=True), pixabay_hit(7, 'question mark, facts')],
+        'woman surprised phone': [pixabay_hit(8, 'woman, phone, surprised')],
     }
     searched, downloaded = [], []
 
@@ -1419,12 +1420,20 @@ def test_footage_plans_from_the_script_and_lets_ai_pick_from_previews(monkeypatc
 
     def gemini(prompt, grounded=False, images=(), **options):
         prompts.append((prompt, list(images)))
+        if 'found no good stock clip' in prompt:  # the second search, for the shots without a good clip
+            shots = json.loads(prompt[prompt.index('SHOTS: ') + 7:])
+            assert [(s['index'], s['shot'], s['tried'], s['seen']) for s in shots] == [(0, 1, ['random facts'], ['question mark, facts', 'particles, abstract'])]
+            return json.dumps({'scenes': [{'index': 0, 'shot': 1, 'description': 'A surprised woman looking at her phone',
+                                           'queries': ['random facts', 'woman surprised phone']}]}), {}
         if not images:  # planning
             assert 'Octopus ki moodu hearts untayi!' in prompt and 'NEED: [0, 1, 2, 3]' in prompt
             return json.dumps({'scenes': [{'index': 1, 'shot': 'An octopus moving its tentacles on the sea floor',
                                            'queries': ['**octopus tentacles**', 'octopus']},
                                           {'index': 2, 'shot': 'Golden honey dripping into a jar', 'queries': ['honey jar']}]}), {}
-        return json.dumps({'scenes': [{'index': 0, 'picks': [{'candidate': 1, 'score': 3}]},   # nothing fits: title card later
+        if 'clip pixabay-8' in images[0][0]:
+            assert 'intended shot: A surprised woman looking at her phone' in images[0][0]
+            return json.dumps({'scenes': [{'index': 0, 'picks': [{'candidate': 1, 'score': 8}]}]}), {}
+        return json.dumps({'scenes': [{'index': 0, 'picks': [{'candidate': 1, 'score': 3}]},   # nothing fits: searched again
                                       {'index': 1, 'picks': [{'candidate': 2, 'score': 9}]},
                                       {'index': 2, 'picks': [{'candidate': 1, 'score': 8}]},
                                       {'index': 3, 'picks': [{'candidate': 1, 'score': 9}, {'candidate': 2, 'score': 6}]}]}), {}
@@ -1432,8 +1441,8 @@ def test_footage_plans_from_the_script_and_lets_ai_pick_from_previews(monkeypatc
     body['scenes'].append({**body['scenes'][2], 'id': 'honey2'})       # wants the same clip: gets its next pick
     steps = []
     selected = {s['scene_id']: s for s in footage.find(body, body['scenes'], steps.append)}
-    assert len(prompts) == 2
-    assert set(searched) == {'random facts', 'octopus tentacles', 'octopus', 'honey jar'}   # searched in parallel
+    assert len(prompts) == 4                                          # plan, check, plan again, check again
+    assert set(searched) == {'random facts', 'octopus tentacles', 'octopus', 'honey jar', 'woman surprised phone'}
     # Gemini saw each scene's line and intended shot, then the phrases' best frames in turn: the octopus
     # (first phrase), the octopus aquarium clip (second phrase), then the heart.
     labels = [label for label, _, _ in prompts[1][1]]
@@ -1442,10 +1451,71 @@ def test_footage_plans_from_the_script_and_lets_ai_pick_from_previews(monkeypatc
     assert [data for _, _, data in prompts[1][1][2:5]] == [b'frame 2', b'frame 3', b'frame 1']
     assert selected['octo']['asset']['id'] == f'{3:032x}' and 'AI-checked match (9/10): An octopus' in selected['octo']['match']
     assert selected['honey']['asset']['id'] == f'{4:032x}'           # green screen ranked last
-    assert 'No stock clip matched this scene well' in selected['title']['error']
+    # The title found nothing fitting, so it was planned again from what was rejected and found a reaction shot.
+    assert selected['title']['asset']['id'] == f'{8:032x}'
+    assert selected['title']['match'] == 'AI-checked match (8/10) after a second search: A surprised woman looking at her phone'
     assert selected['honey2']['asset']['id'] == f'{5:032x}' and selected['honey2']['match'].startswith('AI-checked match (6/10)')
-    assert sorted(downloaded) == [3, 4, 5]                       # downloaded in parallel
+    assert sorted(downloaded) == [3, 4, 5, 8]                    # downloaded in parallel
     assert steps[0] == 'Reading the script and planning shots' and 'Checking candidate clips with AI' in steps
+    assert 'Looking again for better clips (1 shot(s))' in steps
+
+
+def test_footage_keeps_the_first_clip_when_the_second_search_finds_nothing_better(monkeypatch):
+    def gemini(prompt, grounded=False, images=(), **options):
+        if 'found no good stock clip' in prompt:
+            return json.dumps({'scenes': [{'index': 2, 'shot': 1, 'description': 'Honey', 'queries': ['woman surprised phone']}]}), {}
+        if not images:
+            return json.dumps({'scenes': [{'index': 2, 'shot': 'Honey in a jar', 'queries': ['honey jar']}]}), {}
+        if 'clip pixabay-8' in images[0][0]:
+            return json.dumps({'scenes': [{'index': 2, 'picks': [{'candidate': 1, 'score': 5}]}]}), {}
+        return json.dumps({'scenes': [{'index': 2, 'picks': [{'candidate': 1, 'score': 6}]}]}), {}
+    footage, body, searched, downloaded = footage_fixture(monkeypatch, gemini)
+    selected = footage.find(body, [body['scenes'][2]])
+    assert selected[0]['asset']['id'] == f'{4:032x}' and selected[0]['match'] == 'AI-checked match (6/10): Honey in a jar'
+    assert 'woman surprised phone' in searched and downloaded == [4]
+
+
+def test_footage_plans_one_clip_per_part_of_a_long_line_in_spoken_order(monkeypatch):
+    def gemini(prompt, grounded=False, images=(), **options):
+        if 'found no good stock clip' in prompt:
+            raise AssertionError('every shot found a good clip')
+        if not images:
+            assert 'SHOTS PER SCENE: {"2": 3}' in prompt
+            return json.dumps({'scenes': [{'index': 2, 'shots': [
+                {'words': 'Honey ni sarigga store chesthe vela samvatsaralu aina paadavakunda undagaladhu', 'shot': 'Honey in a jar',
+                 'queries': ['honey jar']},
+                {'words': 'ani scientists cheptunnaru,', 'shot': 'A scientist in a lab', 'queries': ['scientist lab']},
+                {'words': 'Egypt pyramids lo kuda dorikindhi ani antunnaru', 'shot': 'The pyramids of Giza', 'queries': ['pyramids egypt']}]}]}), {}
+        labels = [label for label, _, _ in images]
+        assert any('Scene 2 shot 2 of 3: said while "ani scientists cheptunnaru,"' in label and 'intended shot: A scientist in a lab' in label
+                   for label in labels)
+        return json.dumps({'scenes': [{'index': 2, 'shot': 1, 'picks': [{'candidate': 1, 'score': 9}]},
+                                      {'index': 2, 'shot': 2, 'picks': [{'candidate': 1, 'score': 8}]},
+                                      {'index': 2, 'shot': 3, 'picks': [{'candidate': 1, 'score': 9}]}]}), {}
+    footage, body, searched, downloaded = footage_fixture(monkeypatch, gemini)
+    footage_library = {'scientist lab': [pixabay_hit(10, 'scientist, laboratory')], 'pyramids egypt': [pixabay_hit(11, 'pyramids, egypt, desert')]}
+    search = providers.stock_search
+    monkeypatch.setattr(providers, 'stock_search', lambda query, provider='auto': copy.deepcopy(footage_library.get(query)) or search(query, provider))
+    body['scenes'][2]['roman'] = ('Honey ni sarigga store chesthe vela samvatsaralu aina paadavakunda undagaladhu ani '
+                                  'scientists cheptunnaru, Egypt pyramids lo kuda dorikindhi ani antunnaru')
+    honey = footage.find(body, [body['scenes'][2]])[0]
+    # The clips follow the words: honey, then the scientist, then the pyramids, each for its part of the line.
+    assert [honey['asset']['id']] + [a['id'] for a in honey['extra_assets']] == [f'{4:032x}', f'{10:032x}', f'{11:032x}']
+    assert honey['shot_weights'] == [0.5132, 0.1776, 0.3092]   # 78, 27 and 47 characters
+    assert honey['match'].startswith('AI-checked match (9/10) + 2 more shot(s)')
+
+
+def test_planned_shots_follow_the_words_of_the_line():
+    from studio.framing import planned_parts, scene_shots, shot_lengths
+    scene = {'visual': 'stock', 'video_asset': 'a' * 32, 'extra_shots': ['b' * 32, 'c' * 32], 'shot_weights': [0.55, 0.19, 0.26]}
+    assert [s['video_asset'] for s in scene_shots(scene, 10.0)] == ['a' * 32, 'b' * 32, 'c' * 32]
+    assert [round(x, 2) for x in shot_lengths(scene, 10.0, 3)] == [5.5, 1.9, 2.6]
+    # A part too short to register stays on the clip before it.
+    assert [s['video_asset'] for s in scene_shots(scene, 5.0)] == ['a' * 32, 'c' * 32]
+    assert [round(x, 2) for x in shot_lengths(scene, 5.0, 2)] == [3.7, 1.3]
+    # Unplanned or mismatched shares: equal parts, one clip about every 4 seconds as before.
+    assert planned_parts({**scene, 'shot_weights': [0.5, 0.5]}, 10.0) is None
+    assert shot_lengths({**scene, 'shot_weights': []}, 9.0, 3) == [3.0, 3.0, 3.0]
 
 
 def test_footage_without_gemini_uses_keywords_and_ranking(monkeypatch):
@@ -1619,6 +1689,11 @@ def test_long_scene_cuts_between_its_extra_shots_about_every_four_seconds(tmp_pa
     assert [centre_colour(reel, at) for at in (1.5, 4.5, 7.5)] == ['r', 'g', 'b']
     report = json.loads((directory / 'source-report.json').read_text('utf-8'))
     assert [a['id'] for a in report['scenes'][0]['extra_shots']] == [green, blue]
+    # Shots planned for the words: each clip shows for its part of the line (here 6 s, 1.5 s and 1.5 s).
+    pid, _ = framing_project([{'id': 'planned', **shots, 'extra_shots': [green, blue], 'shot_weights': [0.6667, 0.1667, 0.1667]}],
+                             tmp_path, tone_seconds=9.0)
+    directory, _ = render_over_http(pid, 'draft')
+    assert [centre_colour(directory / 'reel.mp4', at) for at in (1.0, 5.5, 6.7, 8.2)] == ['r', 'r', 'g', 'b']
     # 2 s of narration: the scene's own clip only.
     pid, _ = framing_project([{'id': 'short', **shots}], tmp_path, tone_seconds=2.0)
     directory, _ = render_over_http(pid, 'draft')
@@ -1642,17 +1717,18 @@ def test_extra_shots_are_applied_from_footage_search_and_cleared_by_a_manual_cho
     row = store.save_project(body)
     job = store.enqueue(row['id'], 1, 'stock_all')
     store.progress(job['id'], 'Complete', 'succeeded', {'selections': [
-        {'scene_id': 'scene1', 'asset': store.asset(red), 'extra_assets': [store.asset(green), store.asset(blue)]}]})
+        {'scene_id': 'scene1', 'asset': store.asset(red), 'extra_assets': [store.asset(green), store.asset(blue)],
+         'shot_weights': [0.5, 0.2, 0.3]}]})
     c = client()
     applied = c.post(f"/api/projects/{row['id']}/apply-job/{job['id']}", {}, content_type='application/json')
     assert applied.status_code == 200, applied.content
     scene = applied.json()['project']['project']['scenes'][0]
-    assert (scene['video_asset'], scene['extra_shots'], scene['visual']) == (red, [green, blue], 'stock')
+    assert (scene['video_asset'], scene['extra_shots'], scene['visual'], scene['shot_weights']) == (red, [green, blue], 'stock', [0.5, 0.2, 0.3])
     assert store.preflight({**applied.json()['project']['project'], 'scenes': [{**scene, 'rights_reviewed': True}]})['ready']
     assigned = c.post(f"/api/projects/{row['id']}/assign-media", {'asset_id': blue, 'scene_ids': ['scene1']}, content_type='application/json')
     assert assigned.status_code == 200, assigned.content
     scene = assigned.json()['project']['scenes'][0]
-    assert (scene['video_asset'], scene['extra_shots'], scene['visual']) == (blue, [], 'upload')
+    assert (scene['video_asset'], scene['extra_shots'], scene['visual'], scene['shot_weights']) == (blue, [], 'upload', [])
     # A missing extra shot blocks rendering with a clear message.
     broken = {**assigned.json()['project'], 'scenes': [{**scene, 'extra_shots': ['f' * 32]}]}
     assert any('extra shot is unavailable' in e['message'] for e in store.preflight(broken)['errors'])
