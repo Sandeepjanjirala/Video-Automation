@@ -50,13 +50,17 @@ services:
     build: .
     container_name: studio-api
     restart: unless-stopped
+    env_file:
+      # API keys (STUDIO_GEMINI_KEY, STUDIO_PIXABAY_KEY, ...) from .env; values under environment: win.
+      - path: .env
+        required: false
     ports:
       - "127.0.0.1:8788:8788"
     environment:
       - STUDIO_DISTRIBUTED=1
       - STUDIO_DOCKER=1
       # Every browser reaches the container through Docker's network, so all of them sign in with this password.
-      - STUDIO_PASSWORD=${STUDIO_PASSWORD:-}
+      - STUDIO_PASSWORD=${STUDIO_PASSWORD:?Set STUDIO_PASSWORD in the .env file next to docker-compose.yml (the password every browser signs in with)}
       - STUDIO_DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-studio}
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/1
@@ -80,6 +84,10 @@ services:
     build: .
     container_name: studio-dispatcher
     restart: unless-stopped
+    env_file:
+      # API keys (STUDIO_GEMINI_KEY, STUDIO_PIXABAY_KEY, ...) from .env; values under environment: win.
+      - path: .env
+        required: false
     command: ["python", "-m", "studio.dispatcher"]
     environment:
       - STUDIO_DISTRIBUTED=1
@@ -106,6 +114,10 @@ services:
     build: .
     container_name: studio-worker-network
     restart: unless-stopped
+    env_file:
+      # API keys (STUDIO_GEMINI_KEY, STUDIO_PIXABAY_KEY, ...) from .env; values under environment: win.
+      - path: .env
+        required: false
     # 2 network-task slots
     command: ["celery", "-A", "studio.celery_app", "worker", "-Q", "network", "-c", "2", "--loglevel=info", "-n", "worker_network@%h"]
     environment:
@@ -133,6 +145,10 @@ services:
     build: .
     container_name: studio-worker-render
     restart: unless-stopped
+    env_file:
+      # API keys (STUDIO_GEMINI_KEY, STUDIO_PIXABAY_KEY, ...) from .env; values under environment: win.
+      - path: .env
+        required: false
     # 1 render slot
     command: ["celery", "-A", "studio.celery_app", "worker", "-Q", "render", "-c", "1", "--loglevel=info", "-n", "worker_render@%h"]
     environment:

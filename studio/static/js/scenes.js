@@ -29,6 +29,11 @@
         });
       });
 
+      $(document).on('input change', '.scene-clip-volume', function(e) {
+        $(this).closest('.clipsound').find('.clip-volume-label').text(Math.round(this.value * 100) + '%');
+        if (e.type === 'change') Scenes.updateSceneField($(this).data('scene-id'), {clip_volume: Number(this.value)});
+      });
+
       $(document).on('click', '.btn-clear-extra-shots', function() {
         Scenes.updateSceneField($(this).data('scene-id'), {extra_shots: [], shot_weights: []});
         Scenes.renderSceneVisuals();
@@ -189,6 +194,10 @@
 
     moveSceneUp: function(sid) {
       if (!StudioState.current || !StudioState.current.project) return;
+      if (StudioState.current.project.narration_mode === 'track') {
+        return StudioState.setNotice('With one recording for the whole video, scenes follow the order of the recording. '
+          + 'Move where a scene starts on the Voice tab instead.', true);
+      }
       const scenes = StudioState.current.project.scenes;
       const idx = scenes.findIndex(x => x.id === sid);
       if (idx <= 0) return;
@@ -212,7 +221,12 @@
         return;
       }
 
+      const index = scenes.findIndex(x => x.id === sid);
       StudioState.current.project.scenes = scenes.filter(x => x.id !== sid);
+      if (StudioState.current.project.narration_mode === 'track' && index > 0) {
+        StudioState.setNotice(`Scene removed. Its part of your recording now plays during scene ${index}; `
+          + 'adjust where scenes start on the Voice tab if needed.');
+      }
       StudioState.markDirty(true);
       Scenes.renderScriptEditor();
       Scenes.renderSceneVisuals();
@@ -324,7 +338,12 @@
             words: each clip shows while the part of the line it was chosen for is spoken` : `of the same subject: a long scene cuts to the
             next clip about every ${StudioState.format().width > StudioState.format().height ? 6 : 4} seconds`} (from its start, cropped to fill the frame).
             <button type="button" class="ghost btn-clear-extra-shots" data-scene-id="${s.id}">Use only the main clip</button></p>` : ''}
-          <small class="muted">Clip audio is muted. Scene length follows the selected narration.</small>
+          ${['upload', 'stock'].includes(s.visual) && s.video_asset ? `
+          <label class="field clipsound"><span>Clip sound: <b class="clip-volume-label">${Math.round((s.clip_volume || 0) * 100)}%</b></span>
+            <input type="range" class="scene-clip-volume" data-scene-id="${s.id}" min="0" max="1" step="0.05" value="${s.clip_volume || 0}"></label>
+          <small class="muted">0% keeps the clip silent (the default). Raise it to hear the clip's own sound under the narration;
+            it loops or stops with the picture. Scene length follows the narration.</small>`
+          : '<small class="muted">Scene length follows the narration.</small>'}
         `;
 
         const cardHtml = `

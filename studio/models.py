@@ -8,8 +8,9 @@ class StrictModel(BaseModel):
 
 
 class Cue(StrictModel):
-    start: float = Field(ge=0, le=180)
-    end: float = Field(gt=0, le=180)
+    # Seconds from the start of the scene's narration (a long YouTube scene may run past three minutes).
+    start: float = Field(ge=0, le=900)
+    end: float = Field(gt=0, le=900)
     text: str = Field(min_length=1, max_length=160)
 
     @model_validator(mode='after')
@@ -58,6 +59,15 @@ class Scene(StrictModel):
     shot_weights: list[float] = Field(default_factory=list, max_length=5)
     # The line's key words, shown in the highlight colour when the project's caption_emphasis is on.
     emphasis: list[str] = Field(default_factory=list, max_length=6)
+    # One recording for the whole video (project narration_mode 'track'): where this scene's words start
+    # in it, in seconds; None until placed. The scene ends where the next one starts (studio/narration.py).
+    track_start: float | None = Field(default=None, ge=0, le=3600)
+    # The scene's own recording (audio_asset): the part used (trim end 0 = its end) and a volume change.
+    audio_trim_start: float = Field(default=0, ge=0, le=3600)
+    audio_trim_end: float = Field(default=0, ge=0, le=3600)
+    audio_gain_db: float = Field(default=0, ge=-12, le=12)
+    # The sound of the scene's own video clip under the narration: 0 (muted, the default) to 1.
+    clip_volume: float = Field(default=0, ge=0, le=1)
 
     @model_validator(mode='after')
     def check(self):
@@ -71,12 +81,21 @@ class Scene(StrictModel):
             raise ValueError('Key words must be single words of at most 40 characters')
         if self.trim_end and self.trim_end <= self.trim_start:
             raise ValueError('Trim end must be after trim start')
+        if self.audio_trim_end and self.audio_trim_end < self.audio_trim_start + 0.3:
+            raise ValueError('The recording trim must keep at least 0.3 seconds')
         last = 0.0
         for cue in self.cues:
             if cue.start < last:
                 raise ValueError('Caption cues must be ordered and must not overlap')
             last = cue.end
         return self
+
+
+class NarrationTrack(StrictModel):
+    """One recording for the whole video (project narration_mode 'track')."""
+    asset: str = Field(default='', pattern=r'^[a-f0-9]{0,32}$')
+    end: float = Field(default=0, ge=0, le=3600)  # where the narration ends in the recording; 0 = its end
+    gain_db: float = Field(default=0, ge=-12, le=12)
 
 
 class Project(StrictModel):
@@ -103,6 +122,12 @@ class Project(StrictModel):
     music_asset: str = Field(default='', pattern=r'^[a-f0-9]{0,32}$')
     music_gain: float = Field(default=0.12, ge=0, le=0.5)
     music_rights_reviewed: bool = False
+    music_ducking: bool = True   # the music dips while the narration speaks
+    music_fade: bool = True      # the music fades in at the start and out at the end
+    # 'voice': each scene is read by the voice engine or has its own recording (audio_asset); 'track': one
+    # recording for the whole video, cut at each scene's track_start (studio/narration.py).
+    narration_mode: Literal['voice', 'track'] = 'voice'
+    narration_track: NarrationTrack = Field(default_factory=NarrationTrack)
     caption_size: int = Field(default=56, ge=30, le=90)
     caption_bottom: int = Field(default=300, ge=180, le=600)
     # Projects saved before caption styles keep the original outlined captions.

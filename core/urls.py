@@ -29,6 +29,8 @@ from .views import (
     AssetMediaView,
     AssetThumbnailView,
     AssetFramingView,
+    NarrationAnalysisView,
+    NarrationAudioView,
     StockSearchView,
     SettingsView,
     VoiceNormalizeView,
@@ -95,5 +97,7 @@ urlpatterns = [
     path('assets/<str:aid>/file', AssetMediaView.as_view(), name='asset_file'),
     path('assets/<str:aid>/thumbnail', AssetThumbnailView.as_view(), name='asset_thumbnail'),
     path('assets/<str:aid>/framing', AssetFramingView.as_view(), name='asset_framing'),
+    path('assets/<str:aid>/narration', NarrationAnalysisView.as_view(), name='asset_narration'),
+    path('narration/audio/<str:key>', NarrationAudioView.as_view(), name='narration_audio'),
 ]
 

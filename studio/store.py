@@ -67,14 +67,35 @@ def compute_script_hash(project_dict: Dict[str, Any]) -> str:
     return digest(content)
 
 
+def track_parts(data):
+    """{scene id: (recording, start, end setting)} of one recording for the whole video, else {}: what
+    decides each scene's slice of it (a scene ends where the next starts)."""
+    if data.get('narration_mode') != 'track':
+        return {}
+    track = data.get('narration_track') or {}
+    scenes = data.get('scenes', [])
+    return {s['id']: (track.get('asset'), s.get('track_start'),
+                      scenes[k + 1].get('track_start') if k + 1 < len(scenes) else ('end', track.get('end')))
+            for k, s in enumerate(scenes)}
+
+
 def invalidate_stale_scene_fields(old_data, new_data):
     old_scenes = {s['id']: s for s in old_data.get('scenes', [])}
     voice_changed = any(old_data.get(f) != new_data.get(f) for f in
                         ('tts_provider', 'voice', 'speech_rate', 'delivery_preset', 'pronunciation_dict'))
+    old_parts, new_parts = track_parts(old_data), track_parts(new_data)
     for scene in new_data.get('scenes', []):
         old = old_scenes.get(scene['id'])
         if not old:
             continue
+        # Caption cues are timed against the scene's own narration audio; any change to that audio
+        # (a new or trimmed recording, a moved slice of the whole-video recording, a switch between
+        # recording and voice engine) leaves them out of step.
+        audio_changed = (old_parts.get(scene['id']) != new_parts.get(scene['id'])
+                         or (not new_parts and any(old.get(f) != scene.get(f) for f in
+                                                   ('audio_asset', 'audio_trim_start', 'audio_trim_end'))))
+        if audio_changed and scene.get('cues') == old.get('cues'):
+            scene['cues'] = []
         speech_changed = voice_changed or any(old.get(f) != scene.get(f) for f in
                                               ('narration', 'spoken_text', 'delivery_preset'))
         # Accepted synthetic takes are attachments too. Never keep an old engine's
@@ -212,6 +233,19 @@ def delete_draft(pid: str) -> None:
     Draft.objects.using(PROJECT_DB).filter(project_id=pid).delete()
 
 
+def approvable(model) -> None:
+    """Every scene needs something to say and, with captions on, Roman Telugu captions. A scene narrated by a
+    recording needs no Telugu text: the recording is what is said (the same rules as preflight)."""
+    if not model.scenes:
+        raise ValueError('Add at least one scene before approval')
+    for k, s in enumerate(model.scenes, 1):
+        recorded = model.narration_mode == 'track' or bool(s.audio_asset)
+        if not s.narration.strip() and not recorded:
+            raise ValueError(f'Scene {k} needs Telugu narration text, or a recording on the Voice tab')
+        if model.captions_enabled and not s.roman.strip():
+            raise ValueError(f'Scene {k} needs Roman Telugu captions (or turn captions off on the Captions tab)')
+
+
 def approve(pid: str, revision: int) -> Dict[str, Any]:
     with transaction.atomic(using=PROJECT_DB):
         p = Project.objects.using(PROJECT_DB).select_for_update().filter(id=pid).first()
@@ -219,8 +253,7 @@ def approve(pid: str, revision: int) -> Dict[str, Any]:
             raise ValueError('Save and reload the current revision before approving')
 
         model = PydanticProject.model_validate(p.body)
-        if not model.scenes or any(not s.narration.strip() or not s.roman.strip() for s in model.scenes):
-            raise ValueError('Every scene needs Telugu narration text and Roman Telugu captions')
+        approvable(model)
         if not model.evidence_notes.strip():
             raise ValueError('Add your factual review notes, or label fictional content, before approval')
 
@@ -339,11 +372,24 @@ def preflight(project_data: Any) -> Dict[str, Any]:
     if not scenes:
         errors.append({'scene_index': 0, 'scene_id': '', 'field': 'scenes', 'message': 'Add at least one scene before rendering'})
 
+    track = project_data.get('narration_mode') == 'track'
+    errors_before = len(errors)
+    if track and scenes:
+        narration_track_check(project_data, errors, warnings)
+    track_ok = len(errors) == errors_before
+    estimated = []
     for i, s in enumerate(scenes):
         idx = i + 1
         sid = s.get('id', f'scene_{idx}')
-        if not s.get('narration', '').strip():
+        recording = track or bool(s.get('audio_asset'))
+        # A recording is read from its audio, so its Telugu text is only a transcript (captions use Roman text).
+        if not s.get('narration', '').strip() and not recording:
             errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'narration', 'message': f'Scene {idx}: narration is empty'})
+        if recording and not s.get('cues') and project_data.get('captions_enabled', True) and s.get('roman', '').strip():
+            estimated.append(idx)
+        if track and s.get('audio_asset'):
+            warnings.append({'scene_index': idx, 'scene_id': sid, 'field': 'audio_asset',
+                             'message': f"Scene {idx}: its own recording is not used while one recording narrates the whole video"})
         if not s.get('roman', '').strip() and project_data.get('captions_enabled', True):
             errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'roman', 'message': f'Scene {idx}: Roman caption text is empty'})
         if s.get('narration_source_roman') and s['narration_source_roman'] != s.get('roman'):
@@ -354,12 +400,14 @@ def preflight(project_data: Any) -> Dict[str, Any]:
         if not s.get('rights_reviewed', False):
             errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'rights_reviewed', 'message': f'Scene {idx}: review rights before rendering'})
         for field, kind in (('video_asset', 'video'), ('audio_asset', 'audio')):
-            if not s.get(field) or (field == 'video_asset' and vis == 'graphic'):
+            if not s.get(field) or (field == 'video_asset' and vis == 'graphic') or (field == 'audio_asset' and track):
                 continue
             try:
-                asset_path(s[field], 'image' if field == 'video_asset' and vis == 'image' else kind)
-                if field == 'audio_asset' and s.get('audio_text_hash') != digest(s.get('narration', '')):
-                    raise ValueError('Narration recording no longer matches the script; re-attach it or generate a new take')
+                path = asset_path(s[field], 'image' if field == 'video_asset' and vis == 'image' else kind)
+                if field == 'audio_asset':
+                    recording_check(s, idx, sid, warnings)
+                if field == 'video_asset':
+                    resolution_check(project_data, s, path, idx, sid, warnings)
                 if field == 'video_asset' and vis != 'image':
                     clip_seconds = asset(s[field]).get('duration', 0)
                     segment(s, clip_seconds)
@@ -376,6 +424,12 @@ def preflight(project_data: Any) -> Dict[str, Any]:
                     errors.append({'scene_index': idx, 'scene_id': sid, 'field': 'extra_shots',
                                    'message': f'Scene {idx}: an extra shot is unavailable ({exc}); remove the extra shots'})
 
+        caption_length_check(project_data, s, idx, sid, warnings)
+
+    if estimated and (track_ok or not track):
+        listed = ', '.join(map(str, estimated[:8])) + ('…' if len(estimated) > 8 else '')
+        warnings.append({'field': 'cues', 'message': f'Caption timing for scene(s) {listed} is estimated from the recording '
+                                                    '(not word by word). Check it on the Captions tab before the final export.'})
     if project_data.get('music_asset'):
         if not project_data.get('music_rights_reviewed'):
             errors.append({'field': 'music_rights_reviewed', 'message': 'Review music usage rights before rendering'})
@@ -385,6 +439,78 @@ def preflight(project_data: Any) -> Dict[str, Any]:
             errors.append({'field': 'music_asset', 'message': str(exc)})
 
     return {'ready': len(errors) == 0, 'errors': errors, 'warnings': warnings}
+
+
+def narration_track_check(project_data, errors, warnings):
+    """One recording for the whole video: it must exist and every scene must have its place in it."""
+    from . import narration
+    aid = (project_data.get('narration_track') or {}).get('asset')
+    if not aid:
+        errors.append({'field': 'narration_track', 'message': 'Upload your narration recording on the Voice tab, or choose the voice engine'})
+        return
+    try:
+        found = narration.analyze(aid)
+        narration.scene_ranges(project_data, found['duration'])
+    except ValueError as exc:
+        errors.append({'field': 'narration_track', 'message': str(exc)})
+        return
+    for note in found.get('warnings', []):
+        warnings.append({'field': 'narration_track', 'message': 'Narration recording: ' + note})
+
+
+def recording_check(scene, idx, sid, warnings):
+    """A scene's own recording: warn when its text was edited after it was attached, or its trim ends
+    past the recording."""
+    if scene.get('audio_text_hash') != digest(scene.get('narration', '')):
+        warnings.append({'scene_index': idx, 'scene_id': sid, 'field': 'audio_asset',
+                         'message': f'Scene {idx}: the text was edited after its recording was attached. Check that the '
+                                    'captions match what is said, then confirm the recording on the Voice tab'})
+    trim_end = float(scene.get('audio_trim_end') or 0)
+    if trim_end:
+        from . import narration
+        try:
+            seconds = narration.analyze(scene['audio_asset'])['duration']
+        except ValueError:
+            return
+        if trim_end > seconds + 0.05:
+            warnings.append({'scene_index': idx, 'scene_id': sid, 'field': 'audio_trim_end',
+                             'message': f"Scene {idx}: the recording trim ends past the recording's end ({seconds:.2f} s); its end is used"})
+
+
+def resolution_check(project_data, scene, path, idx, sid, warnings):
+    """Warn when a clip or picture has to be enlarged a lot to fill the final frame: exporting at
+    1080x1920 does not restore detail the source never had."""
+    from .formats import size
+    from .framing import source_info
+    try:
+        info = source_info(path)
+    except (ValueError, OSError):
+        return
+    if not info.get('width') or not info.get('height'):
+        return
+    if info.get('hdr'):
+        warnings.append({'scene_index': idx, 'scene_id': sid, 'field': 'video_asset',
+                         'message': f'Scene {idx}: this is an HDR clip; its colours may look washed out in the video. '
+                                    'Record or export it as SDR (on iPhone: Settings > Camera > Formats, HDR Video off)'})
+    out_w, out_h = size(project_data, 'final')
+    fit = max if scene.get('fit', 'crop') == 'crop' else min
+    enlarge = fit(out_w / info['width'], out_h / info['height']) * float(scene.get('zoom') or 1)
+    if enlarge > 1.5:
+        warnings.append({'scene_index': idx, 'scene_id': sid, 'field': 'video_asset',
+                         'message': f"Scene {idx}: the {'picture' if scene.get('visual') == 'image' else 'clip'} is "
+                                    f"{info['width']}x{info['height']} and is enlarged {enlarge:.1f}x in the "
+                                    f'{out_w}x{out_h} export, so it may look soft. Use a sharper source if you have one'})
+
+
+def caption_length_check(project_data, scene, idx, sid, warnings):
+    """A caption that wraps onto more than two lines covers too much of the picture."""
+    if not project_data.get('captions_enabled', True):
+        return
+    from .formats import of
+    limit = 2 * of(project_data)['caption_chars']
+    if any(len(c.get('text', '')) > limit for c in scene.get('cues') or []):
+        warnings.append({'scene_index': idx, 'scene_id': sid, 'field': 'cues',
+                         'message': f'Scene {idx}: a caption is longer than two lines; split it on the Captions tab'})
 
 
 def get_database_url() -> str:
@@ -711,6 +837,11 @@ def register_subprocess(jid: str, pid: int) -> None:
         check_execution(j)
         j.subprocess_pid = pid
         j.save(using=DB_ALIAS, update_fields=['subprocess_pid'])
+
+
+def job_cancelled(jid: str) -> bool:
+    row = Job.objects.using(DB_ALIAS).filter(id=jid).values_list('cancelled', 'state').first()
+    return bool(row) and (bool(row[0]) or row[1] == 'cancelled')
 
 
 def unregister_subprocess(jid: str, pid: Optional[int] = None) -> None:

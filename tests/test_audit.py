@@ -316,7 +316,8 @@ def test_failed_render_cleans_work_directory(monkeypatch, tmp_path):
     source = tmp_path / 'fixture.wav'
     source.write_bytes(b'fixture')
     monkeypatch.setattr(media, 'voice_for', lambda *a: (source, []))
-    monkeypatch.setattr(media, 'duration', lambda *a: 1.0)
+    monkeypatch.setattr(media, 'audio_seconds', lambda *a: 1.0)
+    monkeypatch.setattr(media, 'speech_for', lambda *a, **k: None)
     def fail(*a, **k):
         raise ValueError('Intentional render failure')
     monkeypatch.setattr(media, 'write_ass', fail)
@@ -735,7 +736,7 @@ def test_caption_timing_uses_measured_prepared_narration_and_detects_stale_speec
     assert first['duration'] == pytest.approx(2.0, abs=0.1)
     assert first['audio_url'] == f"/api/jobs/{job['id']}/audio/scene1"
     roman = first['automatic']['roman']
-    assert roman['alignment'].startswith('word-index mapping')
+    assert roman['alignment'] == media.WORD_TIMING            # Edge's measured word times, mapped in word order
     assert roman['cues'] == [{'start': 0, 'end': pytest.approx(1.95), 'text': 'Idi oka chinna pariksha'}]
     assert first['automatic']['telugu']['cues'][0]['text'] == TELUGU_LINE
 
@@ -772,9 +773,12 @@ def test_caption_timing_measures_attached_recording_and_flags_mismatch(tmp_path)
     assert timing['duration'] == pytest.approx(1.7, abs=0.05)
     assert timing['audio_url'] == f"/api/assets/{asset['id']}/media"
     assert timing['automatic']['roman']['alignment'].startswith('estimated')
+    # Editing the text keeps the recording (it is what was said) and asks for a check instead.
     edited = copy.deepcopy(row['project'])
     edited['scenes'][0]['audio_text_hash'] = 'stale'
-    assert caption_timing(row['id'], edited)['scene1']['status'] == 'stale'
+    after = caption_timing(row['id'], edited)['scene1']
+    assert after['status'] == 'measured' and 'edited after this recording was attached' in after['warning']
+    assert 'warning' not in timing
 
 
 def test_telugu_caption_style_and_roman_style_are_both_written(tmp_path):
@@ -831,7 +835,7 @@ def test_caption_editor_workflow_exports_edited_captions(monkeypatch, quality, d
     assert first['raw_voice_duration'] == pytest.approx(measured)
     assert [cue['text'] for cue in first['cues']] == ['ఇది ఒక', 'చిన్న పరీక్ష']
     assert first['cues'][1]['end'] == pytest.approx(round(measured, 3))
-    assert second['alignment'].startswith('word-index mapping')
+    assert second['alignment'] == media.WORD_TIMING
     assert [(cue['start'], cue['end'], cue['text']) for cue in second['cues']] == [
         (pytest.approx(cue['start']), pytest.approx(cue['end']), cue['text'])
         for cue in timing['scene2']['automatic']['roman']['cues']]
@@ -2271,20 +2275,437 @@ def test_free_voice_is_recorded_while_footage_is_found(monkeypatch):
         assert recorded == expected                                                # paid voices are never recorded early
 
 
+def forget_saved_keys():
+    """Earlier tests save keys in Settings, which replace .env defaults; start without any."""
+    from studio import config
+    path = DATA / 'settings.json'
+    if path.exists():
+        stored = json.loads(path.read_text('utf-8'))
+        path.write_text(json.dumps({k: v for k, v in stored.items() if k not in config.SECRETS}), 'utf-8')
+
+
 def test_keys_from_the_env_file_are_used_and_never_shown(tmp_path):
     import os
     from studio import config
+    forget_saved_keys()
     # The test runner never loads the developer's real .env.
     assert not any(os.environ.get(name) for name in config.ENV_KEYS.values())
     env = tmp_path / '.env'
     env.write_text('# keys\nSTUDIO_GEMINI_KEY="from-the-file"\nSTUDIO_SARVAM_KEY=\nNOT_A_KEY\n', 'utf-8')
-    save_settings({'gemini_key': 'typed-in-settings'})
     config.load_env_file(str(env))
     try:
-        assert config.settings()['gemini_key'] == 'from-the-file'            # .env wins over Settings
+        assert config.settings()['gemini_key'] == 'from-the-file'            # the .env key is the default
         public = config.public_settings()
-        assert public['gemini_key_from_env'] is True and public['sarvam_key_from_env'] is False
+        assert (public['gemini_key_source'], public['gemini_key_from_env'], public['gemini_key_env_default']) == ('env', True, True)
+        assert (public['sarvam_key_source'], public['sarvam_key_env_default']) == ('', False)
+        # A key typed in Settings replaces the default; "use the default" goes back to it.
+        save_settings({'gemini_key': 'typed-in-settings'})
+        assert config.settings()['gemini_key'] == 'typed-in-settings'
+        public = config.public_settings()
+        assert (public['gemini_key_source'], public['gemini_key_env_default']) == ('settings', True)
         assert 'from-the-file' not in json.dumps(public) and 'typed-in-settings' not in json.dumps(public)
+        save_settings({'voice': 'te-IN-MohanNeural'})                       # other changes keep the typed key
+        assert config.settings()['gemini_key'] == 'typed-in-settings'
+        save_settings({'use_default_keys': ['gemini_key']})
+        assert config.settings()['gemini_key'] == 'from-the-file'
+        assert config.public_settings()['gemini_key_source'] == 'env'
+        with pytest.raises(ValueError):
+            save_settings({'use_default_keys': ['access_password_hash']})
     finally:
         os.environ.pop('STUDIO_GEMINI_KEY', None)
-    assert config.settings()['gemini_key'] == 'typed-in-settings'
+    assert config.settings()['gemini_key'] == ''                              # nothing typed is left behind
+
+
+# Uploaded narration: one recording for the whole video, or one per scene -------------------------
+
+import array
+
+
+def tone_track(tmp_path, parts, name='voice.m4a', codec=('-c:a', 'aac', '-b:a', '128k')):
+    """A recording of (frequency, seconds) parts, 0 Hz being a pause: speech with pauses, in miniature."""
+    expr, t = [], 0.0
+    for freq, seconds in parts:
+        if freq:
+            expr.append(f'0.4*sin(2*PI*{freq}*t)*between(t,{t:.3f},{t + seconds:.3f})')
+        t += seconds
+    path = tmp_path / name
+    ffmpeg('-f', 'lavfi', '-i', "aevalsrc='" + '+'.join(expr) + f"':s=44100:d={t:.3f}", *codec, path)
+    return path
+
+
+def upload_narration(path):
+    return client().post('/api/assets', {'file': SimpleUploadedFile(path.name, path.read_bytes()), 'purpose': 'narration'})
+
+
+def pcm(path, at=None, seconds=None, rate=16000):
+    args = [executable('ffmpeg'), '-v', 'error'] + (['-ss', f'{at:.3f}'] if at is not None else []) + ['-i', str(path)]
+    args += (['-t', f'{seconds:.3f}'] if seconds else []) + ['-map', '0:a:0', '-ac', '1', '-ar', str(rate), '-f', 's16le', '-']
+    samples = array.array('h')
+    samples.frombytes(subprocess.run(args, capture_output=True, check=True).stdout)
+    return samples
+
+
+def pitch(path, at, seconds=0.25):
+    """The tone's frequency around `at` seconds, from zero crossings."""
+    s = pcm(path, at, seconds)
+    return sum(1 for a, b in zip(s, s[1:]) if (a < 0) != (b < 0)) / 2 / seconds
+
+
+SPEECH = [(300, 1.0), (0, 0.5), (500, 2.0), (0, 0.8), (700, 1.5)]   # pauses at 1.0-1.5 and 3.5-4.3
+
+
+def test_narration_upload_is_checked_and_analysed(tmp_path):
+    res = upload_narration(tone_track(tmp_path, SPEECH))
+    assert res.status_code == 200, res.content
+    aid = res.json()['id']
+    assert res.json()['kind'] == 'audio'
+    found = client().get(f'/api/assets/{aid}/narration').json()
+    assert found['duration'] == pytest.approx(5.8, abs=0.03)          # measured from the decoded sound
+    assert [[round(a, 1), round(b, 1)] for a, b in found['pauses'][:2]] == [[1.0, 1.5], [3.5, 4.3]]
+    assert len(found['peaks']) == pytest.approx(5.8 * found['peaks_per_second'], abs=3)
+    assert (found['sample_rate'], found['warnings']) == (44100, [])
+    # A video, a picture, a file without sound and a damaged recording are refused with plain reasons.
+    video = tmp_path / 'clip.mp4'
+    ffmpeg('-f', 'lavfi', '-i', 'testsrc2=size=160x120:rate=30:duration=1', '-f', 'lavfi', '-i', 'sine=duration=1',
+           '-shortest', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', video)
+    assert 'video file' in upload_narration(video).json()['detail']
+    silent = tmp_path / 'silent.mp4'
+    ffmpeg('-f', 'lavfi', '-i', 'testsrc2=size=160x120:rate=30:duration=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', silent)
+    assert 'no sound' in upload_narration(silent).json()['detail']
+    whole = tone_track(tmp_path, SPEECH, 'take.m4a').read_bytes()
+    broken = tmp_path / 'broken.m4a'
+    broken.write_bytes(whole[:len(whole) // 3])                       # half copied from the phone
+    detail = upload_narration(broken).json()['detail']
+    assert 'could not be read' in detail and str(DATA) not in detail
+    picture = tmp_path / 'p.png'
+    ffmpeg('-f', 'lavfi', '-i', 'color=c=red:s=16x16', '-frames:v', '1', picture)
+    assert 'picture' in upload_narration(picture).json()['detail']
+
+
+def test_narration_scenes_are_placed_at_pauses_and_slices_join_back_exactly(tmp_path):
+    from studio import narration
+    aid = upload_narration(tone_track(tmp_path, SPEECH)).json()['id']
+    c = client()
+    placed = c.post(f'/api/assets/{aid}/narration', {'action': 'place', 'texts': ['aaaa', 'aaaaaaaa', 'aaaaaa']},
+                    content_type='application/json').json()['starts']
+    assert placed[0] == 0 and placed[1:] == [pytest.approx(1.25, abs=0.03), pytest.approx(3.9, abs=0.03)]
+    split = c.post(f'/api/assets/{aid}/narration', {'action': 'split', 'target': 2}, content_type='application/json').json()
+    found = narration.analyze(aid)
+    mids = [(a + b) / 2 for a, b in found['pauses']]
+    assert split['starts'][0] == 0 and all(any(abs(s - m) < 0.03 for m in mids) for s in split['starts'][1:])
+    assert c.post(f'/api/assets/{aid}/narration', {'action': 'nope'}, content_type='application/json').status_code == 400
+    # Slices cut at any times meet exactly: joined in order they are the recording, sample for sample.
+    cuts = [0, 0.7333, 2.12345, 4.9, None]
+    whole = pcm(narration.cut(aid, 0, None), rate=48000)
+    parts = array.array('h')
+    for start, end in zip(cuts, cuts[1:]):
+        parts.extend(pcm(narration.cut(aid, start, end), rate=48000))
+    assert parts == whole
+    assert narration.cut(aid, 0.5, 1.5) == narration.cut(aid, 0.5, 1.5)   # cached, not cut again
+
+
+def recorded_project(aid, starts, visuals, **changes):
+    body = project()
+    base = body['scenes'][0]
+    body.update(narration_mode='track', narration_track={'asset': aid, 'end': 0, 'gain_db': 0}, **changes)
+    body['scenes'] = [{**base, 'id': f's{k}', 'narration': '', 'roman': f'Scene {k} words here', 'visual': 'stock',
+                       'video_asset': v, 'rights_reviewed': True, 'track_start': start}
+                      for k, (start, v) in enumerate(zip(starts, visuals))]
+    return body
+
+
+def test_whole_recording_plays_continuously_with_each_cut_in_sync(tmp_path):
+    track = tone_track(tmp_path, [(300, 2.0), (0, 0.4), (600, 2.0), (0, 0.4), (900, 2.0)])
+    aid = upload_narration(track).json()['id']
+    red, green, blue = (colour_clip(tmp_path, c) for c in ('red', 'green', 'blue'))
+    res = client().post('/api/projects', recorded_project(aid, [0, 2.2, 4.6], [red, green, blue]), content_type='application/json')
+    assert res.status_code == 200, res.content
+    pid = res.json()['id']
+    report = store.preflight(res.json()['project'])
+    assert report['ready'], report['errors']
+    assert any('estimated from the recording' in w['message'] for w in report['warnings'])   # no Telugu text needed
+    directory, manifest = render_over_http(pid, 'draft')
+    reel = directory / 'reel.mp4'
+    assert manifest['total_frames'] == 204                              # ceil(6.8 s x 30): nothing cut off
+    assert [s['audio_offset'] for s in manifest['scenes']] == [0, pytest.approx(2.2, abs=1e-4), pytest.approx(4.6, abs=1e-4)]
+    assert [s['start_frame'] for s in manifest['scenes']] == [0, 66, 138]
+    assert [s['raw_voice_duration'] for s in manifest['scenes']] == [pytest.approx(d, abs=1e-4) for d in (2.2, 2.4, 2.2)]
+    # Picture and sound change together at each cut, and the sound is the recording itself, uninterrupted.
+    assert [centre_colour(reel, t) for t in (1.0, 2.15, 2.3, 3.4, 4.55, 4.7, 6.5)] == ['r', 'r', 'g', 'g', 'g', 'b', 'b']
+    assert [round(pitch(reel, t), -2) for t in (0.8, 1.7, 2.5, 4.0, 5.0, 6.3)] == [300, 300, 600, 600, 900, 900]
+    info = media.probe(reel)
+    video, audio = (next(s for s in info['streams'] if s['codec_type'] == k) for k in ('video', 'audio'))
+    assert (video['codec_name'], video['pix_fmt'], video['r_frame_rate'], audio['codec_name'], audio['sample_rate']) == \
+        ('h264', 'yuv420p', '30/1', 'aac', '48000')
+    assert abs(float(audio['duration']) - float(video['duration'])) < 0.05
+    from studio import soundtrack
+    assert soundtrack.moov_first(reel)
+    source = json.loads((directory / 'source-report.json').read_text('utf-8'))
+    assert (source['narration_mode'], source['speech_provider'], source['quality']['notes']) == ('track', 'recording', [])
+    assert manifest['scenes'][0]['alignment'].startswith('estimated')
+
+
+def test_scene_recording_trim_volume_and_text_edits(tmp_path):
+    aid = upload_narration(tone_track(tmp_path, SPEECH, 'scene.wav', ('-c:a', 'pcm_s16le'))).json()['id']
+    body = caption_project()
+    body['scenes'][0].update(audio_asset=aid, audio_text_hash=store.digest(TELUGU_LINE), audio_trim_start=1.5,
+                             audio_trim_end=3.5, audio_gain_db=-3)
+    row = store.save_project(body)
+    timing = caption_timing(row['id'])['scene1']
+    assert timing['duration'] == pytest.approx(2.0, abs=1e-6)          # exactly the part used
+    assert timing['audio_url'].startswith('/api/narration/audio/') and timing['speech'][0][0] == pytest.approx(0, abs=0.03)
+    audio = client().get(timing['audio_url'], HTTP_RANGE='bytes=0-43')
+    assert audio.status_code == 206
+    audio.close()
+    assert client().get('/api/narration/audio/' + 'f' * 40).status_code == 404
+    assert client().get('/api/narration/audio/..%2F..%2Fsecret').status_code == 404
+    # Editing the text keeps the recording and asks for a check; it never blocks the render.
+    edited = copy.deepcopy(row['project'])
+    edited['scenes'][0]['narration'] = 'వేరే మాటలు'
+    report = store.preflight(edited)
+    assert not any(e['field'] == 'audio_asset' for e in report['errors'])
+    assert any('edited after its recording was attached' in w['message'] for w in report['warnings'])
+    with pytest.raises(ValueError, match='0.3 seconds'):
+        Scene.model_validate({'id': 's', 'audio_trim_start': 2, 'audio_trim_end': 2.1})
+
+
+def test_recording_preflight_names_the_scene_to_fix(tmp_path):
+    aid = upload_narration(tone_track(tmp_path, SPEECH)).json()['id']
+    clip = colour_clip(tmp_path, 'red')
+    body = recorded_project(aid, [0, None, 3.9], [clip] * 3)
+    assert 'Scene 2 has no place in the recording' in store.preflight(body)['errors'][0]['message']
+    body = recorded_project(aid, [0, 3.9, 1.25], [clip] * 3)
+    assert 'Scene 3 must start' in store.preflight(body)['errors'][0]['message']
+    body = recorded_project('', [0, 1.25, 3.9], [clip] * 3)
+    assert 'Upload your narration recording' in store.preflight(body)['errors'][0]['message']
+    body = recorded_project(aid, [0, 1.25, 3.9], [clip] * 3)
+    body['scenes'][1]['audio_asset'] = aid
+    report = store.preflight(body)
+    assert report['ready'] and any('own recording is not used' in w['message'] for w in report['warnings'])
+
+
+def test_changing_the_narration_audio_resets_only_the_captions_it_affects():
+    cues = [{'start': 0.1, 'end': 0.9, 'text': 'Manual'}]
+    old = {'narration_mode': 'track', 'narration_track': {'asset': 'a' * 32, 'end': 0, 'gain_db': 0},
+           'scenes': [{'id': f's{k}', 'track_start': start, 'cues': list(cues)} for k, start in enumerate((0, 2, 4))]}
+    moved = copy.deepcopy(old)
+    moved['scenes'][1]['track_start'] = 2.5           # scene 1 now ends later, scene 2 starts later
+    store.invalidate_stale_scene_fields(old, moved)
+    assert [bool(s['cues']) for s in moved['scenes']] == [False, False, True]
+    louder = copy.deepcopy(old)
+    louder['narration_track']['gain_db'] = 3          # volume does not move any words
+    store.invalidate_stale_scene_fields(old, louder)
+    assert all(s['cues'] for s in louder['scenes'])
+    replaced = copy.deepcopy(old)
+    replaced['narration_track']['asset'] = 'b' * 32
+    store.invalidate_stale_scene_fields(old, replaced)
+    assert not any(s['cues'] for s in replaced['scenes'])
+    trimmed = {'scenes': [{'id': 's', 'audio_asset': 'c' * 32, 'audio_trim_start': 0, 'cues': list(cues)}]}
+    retrimmed = copy.deepcopy(trimmed)
+    retrimmed['scenes'][0]['audio_trim_start'] = 0.4
+    store.invalidate_stale_scene_fields(trimmed, retrimmed)
+    assert retrimmed['scenes'][0]['cues'] == []
+
+
+def test_continuous_narration_timeline_never_drifts():
+    from studio.timeline import compute_timeline
+    scenes = [{'id': f's{k}', 'hold_seconds': 0} for k in range(50)]
+    voices = [{'scene_id': f's{k}', 'duration': 1.01, 'cues': [{'start': 0.0, 'end': 1.0, 'text': 'x'}]} for k in range(50)]
+    timeline = compute_timeline({'scenes': scenes, 'narration_mode': 'track', 'format': 'youtube'}, voices)
+    assert timeline.total_frames == 1515                          # ceil(50.5 s x 30), not 50 x ceil(30.3)
+    for k, scene in enumerate(timeline.scenes):
+        assert scene.audio_offset == pytest.approx(k * 1.01)
+        assert abs(scene.start_frame / 30 - scene.audio_offset) <= 1 / 60 + 1e-9
+        cue = timeline.all_cues[k]
+        # A caption follows its sound, except that it cannot show before its scene's first frame (half a frame at most).
+        assert scene.audio_offset - 1e-9 <= cue['start'] <= scene.audio_offset + 1 / 60 + 1e-9
+    padded = compute_timeline({'scenes': scenes, 'format': 'youtube'}, voices)
+    assert padded.total_frames == 50 * 31                         # scenes with their own audio: whole frames each
+
+
+def test_clip_sound_is_mixed_only_when_turned_up(tmp_path):
+    clip = tmp_path / 'beep.mp4'
+    ffmpeg('-f', 'lavfi', '-i', 'color=c=blue:s=320x240:r=30:d=3', '-f', 'lavfi', '-i', 'sine=frequency=1000:duration=3',
+           '-shortest', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', clip)
+    vid = upload_file(clip)['id']
+    hush = tmp_path / 'hush.wav'                                      # a near-silent narration, so the clip is all you hear
+    ffmpeg('-f', 'lavfi', '-i', 'anoisesrc=d=2:a=0.0005', hush)
+    voice = upload_file(hush)['id']
+    for volume, expect in ((0, False), (1, True)):
+        body = project()
+        body['scenes'][0].update(visual='upload', video_asset=vid, rights_reviewed=True, clip_volume=volume,
+                                 audio_asset=voice, audio_text_hash=store.digest(body['scenes'][0]['narration']))
+        pid = client().post('/api/projects', body, content_type='application/json').json()['id']
+        directory, _ = render_over_http(pid, 'draft')
+        loudest = max(map(abs, pcm(directory / 'reel.mp4', 0.5, 1.0)))
+        assert (loudest > 3000) is expect
+        if expect:
+            assert round(pitch(directory / 'reel.mp4', 1.0), -2) == 1000
+        source = json.loads((directory / 'source-report.json').read_text('utf-8'))
+        assert source['scenes'][0]['clip_volume'] == volume and source['scenes'][0]['source_audio_muted'] is (volume == 0)
+
+
+def test_music_mix_options():
+    from studio import soundtrack
+    p = {'music_gain': 0.1, 'music_ducking': True, 'music_fade': True}
+    graph = soundtrack.mix_graph(p, {'music': True}, 30.0)
+    assert 'sidechaincompress' in graph and 'afade=t=in' in graph and 'afade=t=out:st=28.000' in graph
+    assert 'alimiter=limit=0.84' in graph and 'level=disabled' in graph
+    plain = soundtrack.mix_graph({**p, 'music_ducking': False, 'music_fade': False}, {'music': True}, 30.0)
+    assert 'sidechaincompress' not in plain and 'afade' not in plain and 'amix=inputs=2' in plain
+    assert soundtrack.mix_graph(p, {}, 30.0) == '[1:a]alimiter=limit=0.84:attack=5:release=50:level=disabled:latency=1[a]'
+
+
+def test_one_recording_cannot_be_spread_over_scenes(tmp_path):
+    aid = upload_narration(tone_track(tmp_path, SPEECH)).json()['id']
+    body = project()
+    body['scenes'].append({**body['scenes'][0], 'id': 'scene2'})
+    pid = client().post('/api/projects', body, content_type='application/json').json()['id']
+    res = client().post(f'/api/projects/{pid}/assign-media', {'asset_id': aid, 'scene_ids': ['all']}, content_type='application/json')
+    assert res.status_code == 400 and 'My recording, one file' in res.json()['detail']
+
+
+def test_only_word_times_measured_by_the_voice_engine_are_used():
+    words = [{'start': 0, 'end': 0.5, 'text': 'a'}]
+    assert providers.measured_timings('edge', words) == words
+    assert providers.measured_timings('sarvam', words) == []
+    assert providers.measured_timings('azure', [{**words[0], 'estimated': True}]) == []
+    cues, label = media.auto_captions('one two three four five six', 4.0, [], [[0, 1.0], [2.0, 4.0]])
+    assert label == media.PAUSE_TIMING
+    assert cues[1]['start'] >= 2.0                                     # the second cue waits for the speech after the pause
+    assert media.auto_captions('one two', 2.0, [])[1] == media.LENGTH_TIMING
+
+
+def test_narration_panel_dom_behaviour():
+    page = DATA.parent / 'narration.html'
+    page.write_bytes(client().get('/').content)
+    subprocess.run(['node', 'tests/audit_narration_ui.cjs', str(page)], check=True, timeout=60)
+
+
+def test_cancelling_a_job_stops_every_ffmpeg_it_runs():
+    """A render encodes several scenes at once and the job records one process; each run stops itself."""
+    import threading
+    j = saved_job('render')
+    results = []
+
+    def encode():
+        started = time.monotonic()
+        try:
+            media.run([executable('ffmpeg'), '-v', 'error', '-re', '-f', 'lavfi', '-i', 'testsrc=duration=30', '-f', 'null', '-'],
+                      job_id=j['id'])
+            results.append(('finished', time.monotonic() - started))
+        except ValueError as exc:
+            results.append((str(exc), time.monotonic() - started))
+        finally:
+            connections.close_all()
+    threads = [threading.Thread(target=encode) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    time.sleep(1.5)
+    Job.objects.filter(id=j['id']).update(cancelled=True, state='cancelled')
+    for thread in threads:
+        thread.join(timeout=15)
+    assert [r[0] for r in results] == ['The job was cancelled'] * 2
+    assert all(seconds < 6 for _, seconds in results)          # not the 30 s the encodes would take
+
+
+def test_media_errors_name_files_not_server_paths():
+    message = media.short_paths('moov atom not found\nC:\\Users\\A B\\Studio\\data\\assets\\abc.mp4: Invalid data found')
+    assert message == 'moov atom not found\nabc.mp4: Invalid data found'
+    with pytest.raises(ValueError) as caught:
+        media.run([executable('ffprobe'), '-v', 'error', str(DATA / 'assets' / 'missing-file.mp4')])
+    assert 'missing-file.mp4' in str(caught.value) and str(DATA) not in str(caught.value)
+
+
+# Reliability: unsaved edits, job results, retries and settings ------------------------------------
+
+def test_autosaved_edits_come_back_with_the_revision_they_were_made_on():
+    c = client()
+    row = c.post('/api/projects', project(), content_type='application/json').json()
+    edited = copy.deepcopy(row['project'])
+    edited['scenes'][0]['roman'] = 'Unsaved words'
+    assert c.put(f"/api/projects/{row['id']}/draft", {'body': edited, 'base_revision': row['revision']},
+                 content_type='application/json').status_code == 200
+    draft = c.get(f"/api/projects/{row['id']}/draft").json()
+    assert draft['body']['scenes'][0]['roman'] == 'Unsaved words' and draft['base_revision'] == row['revision']
+    assert draft['updated']
+    # Drafts saved by earlier versions (the bare project) are still offered.
+    c.put(f"/api/projects/{row['id']}/draft", edited, content_type='application/json')
+    legacy = c.get(f"/api/projects/{row['id']}/draft").json()
+    assert legacy['body']['scenes'][0]['roman'] == 'Unsaved words' and legacy['base_revision'] is None
+
+
+def test_ai_fill_result_keeps_edits_saved_while_it_ran():
+    body = project()
+    body['scenes'][0].update(narration='', roman='Mana katha', keywords='')
+    body['scenes'].append({**body['scenes'][0], 'id': 'scene2', 'roman': 'Rendo katha'})
+    row = store.save_project(body)
+    job = store.enqueue(row['id'], row['revision'], 'draft', {'fill': True})
+    filled = copy.deepcopy(row['project']['scenes'])
+    for scene in filled:
+        scene.update(narration='తెలుగు ' + scene['roman'], keywords='story')
+    filled[1]['roman'] = 'Rendo katha (AI)'
+    store.progress(job['id'], 'Complete', 'succeeded', {'scenes': filled})
+    # Meanwhile the user saves: a caption fix on scene 2, a trim on scene 1, and the scenes swapped.
+    current = copy.deepcopy(row['project'])
+    current['scenes'][1]['roman'] = 'Rendava katha'
+    current['scenes'][0]['hold_seconds'] = 1.5
+    current['scenes'].reverse()
+    saved, _ = services.save_project_mutation(current, row['id'], row['revision'])
+    result = services.apply_job_result(row['id'], job['id'])
+    scenes = {s['id']: s for s in result['project']['project']['scenes']}
+    assert [s['id'] for s in result['project']['project']['scenes']] == ['scene2', 'scene1']   # the order you saved
+    assert scenes['scene1']['narration'] == 'తెలుగు Mana katha' and scenes['scene1']['hold_seconds'] == 1.5
+    assert scenes['scene2']['roman'] == 'Rendava katha' and scenes['scene2']['keywords'] == 'story'
+    assert [c['field'] for c in result['conflicts']] == ['roman']
+    assert store.job(job['id'])['applied']
+
+
+def test_footage_result_keeps_a_scene_you_made_a_title_card():
+    body = project()
+    body['scenes'][0].update(visual='upload', graphic_title='')
+    row = store.save_project(body)
+    job = store.enqueue(row['id'], row['revision'], 'stock_all')
+    store.progress(job['id'], 'Complete', 'succeeded', {'selections': [{'scene_id': 'scene1', 'asset': {'id': 'c' * 32}}]})
+    current = copy.deepcopy(row['project'])
+    current['scenes'][0].update(visual='graphic', graphic_title='Title', video_asset='')
+    services.save_project_mutation(current, row['id'], row['revision'])
+    result = services.apply_job_result(row['id'], job['id'])
+    assert result['project']['project']['scenes'][0]['visual'] == 'graphic'
+    assert 'title card' in result['conflicts'][0]['reason']
+    assert result['applied'] is False and not store.job(job['id'])['applied']   # it can still be applied on purpose
+    forced = services.apply_job_result(row['id'], job['id'], force=True)
+    assert forced['applied'] and forced['project']['project']['scenes'][0]['visual'] == 'stock'
+
+
+def test_retry_respects_one_job_of_a_kind_at_a_time():
+    failed = saved_job('research')
+    store.progress(failed['id'], 'Gemini failed', 'failed')
+    store.enqueue(failed['project_id'], 1, 'research')
+    res = client().post(f"/api/jobs/{failed['id']}/retry", {'mode': 'original'}, content_type='application/json')
+    assert res.status_code == 400 and 'already in progress' in res.json()['detail']
+
+
+def test_settings_keep_env_keys_out_of_the_settings_file_and_need_real_ffmpeg(tmp_path):
+    import os
+    from studio import config
+    forget_saved_keys()
+    os.environ['STUDIO_GEMINI_KEY'] = 'from-the-env-file'
+    try:
+        save_settings({'voice': 'te-IN-MohanNeural'})
+        stored = json.loads((DATA / 'settings.json').read_text('utf-8'))
+        assert stored['gemini_key'] != 'from-the-env-file'
+        assert config.settings()['gemini_key'] == 'from-the-env-file'
+    finally:
+        os.environ.pop('STUDIO_GEMINI_KEY', None)
+    fake = tmp_path / 'evil.exe'
+    fake.write_bytes(b'x')
+    for path in (str(fake), '\\\\server\\share\\ffmpeg.exe', str(tmp_path / 'ffmpeg.exe')):
+        with pytest.raises(ValueError, match='full path of ffmpeg'):
+            save_settings({'ffmpeg': path})
+
+
+def test_settings_key_defaults_dom_behaviour():
+    page = DATA.parent / 'settings.html'
+    page.write_bytes(client().get('/').content)
+    subprocess.run(['node', 'tests/audit_settings_ui.cjs', str(page)], check=True, timeout=45)

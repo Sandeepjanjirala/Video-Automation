@@ -24,6 +24,7 @@ class SceneTimeline:
     scene_duration: float
     cues: list
     alignment: str
+    audio_offset: float = 0.0  # where this scene's narration starts in the export's sound
 
 
 @dataclass(frozen=True)
@@ -85,10 +86,20 @@ def compute_timeline(project, prepared_voices):
                          'Shorten the script or increase speech rate'
                          + (', or choose YouTube video.' if limits is not of({'format': 'youtube'}) else '.'))
 
-    result, global_cues, cursor = [], [], 0
-    for scene, duration, hold in zip(scenes, durations, holds):
+    # One recording for the whole video plays without a gap or pad between scenes, so each picture cut
+    # goes on the frame nearest its sound cut (the last one rounded up): never a drift, at most half a
+    # frame off. Scenes with their own audio are each padded to whole frames, as before.
+    continuous = project.get('narration_mode') == 'track'
+    result, global_cues, cursor, audio = [], [], 0, 0.0
+    for k, (scene, duration, hold) in enumerate(zip(scenes, durations, holds)):
         voice = voices[scene['id']]
-        frames = math.ceil((duration / speed + hold) * FPS)
+        if continuous:
+            sound_end = audio + duration / speed + hold
+            frames = max(1, (math.ceil(sound_end * FPS - 1e-9) if k == len(scenes) - 1 else round(sound_end * FPS)) - cursor)
+        else:
+            frames = math.ceil((duration / speed + hold) * FPS)
+            audio = cursor / FPS
+        shift = audio - cursor / FPS  # the narration starts this much after the scene's first frame
         cues, last = [], 0.0
         for cue in voice.get('cues', []):
             start = _number(cue['start'], 'Caption start')
@@ -97,7 +108,7 @@ def compute_timeline(project, prepared_voices):
             # replace invalid manual edits with automatically estimated cues.
             if start < last or end <= start or end > duration + 0.1:
                 raise ValueError('Caption cues must be ordered, non-overlapping, and within narration duration')
-            adjusted = {**cue, 'start': start / speed, 'end': end / speed}
+            adjusted = {**cue, 'start': max(0.0, start / speed + shift), 'end': min(frames / FPS, end / speed + shift)}
             cues.append(adjusted)
             global_cues.append({**adjusted, 'scene_id': scene['id'],
                                 'start': cursor / FPS + adjusted['start'],
@@ -106,8 +117,9 @@ def compute_timeline(project, prepared_voices):
         result.append(SceneTimeline(scene['id'], duration, duration / speed, hold,
                                     frames, cursor, cursor + frames, cursor / FPS,
                                     (cursor + frames) / FPS, frames / FPS, cues,
-                                    voice.get('alignment', 'unknown')))
+                                    voice.get('alignment', 'unknown'), audio_offset=audio))
         cursor += frames
+        audio = sound_end if continuous else cursor / FPS
     return ProjectTimeline(mode, target, speed, cursor, cursor / FPS, result, global_cues)
 
 

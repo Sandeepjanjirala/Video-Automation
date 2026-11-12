@@ -54,8 +54,8 @@ const path = require('node:path');
     {scene_id: 'a', status: 'measured', source: 'Prepared narration (job 12345678)', duration: 2.0,
      audio_url: '/api/jobs/j1/audio/a', automatic: {
        roman: {cues: [{start: 0, end: 0.95, text: 'Idi oka'}, {start: 0.95, end: 1.95, text: 'chinna pariksha'}],
-               alignment: 'word-index mapping; review required'},
-       telugu: {cues: [{start: 0, end: 1.95, text: 'ఇది ఒక చిన్న పరీక్ష'}], alignment: 'word-index mapping; review required'}}},
+               alignment: 'voice engine word timings, matched in word order; review required'},
+       telugu: {cues: [{start: 0, end: 1.95, text: 'ఇది ఒక చిన్న పరీక్ష'}], alignment: 'voice engine word timings, matched in word order; review required'}}},
     {scene_id: 'b', status: 'unmeasured', message: 'Narration has not been prepared for the current text and voice.'}
   ]};
   const calls = [];

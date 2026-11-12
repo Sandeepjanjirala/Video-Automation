@@ -294,7 +294,9 @@
       if (!StudioState.current || !StudioState.current.project) return;
       const p = StudioState.current.project;
       const caps = StudioState.capabilities || [];
-      const billing = p.tts_provider === 'edge'
+      const billing = p.narration_mode === 'track'
+        ? 'Your own recording narrates this video; no voice engine is used.'
+        : p.tts_provider === 'edge'
         ? 'Free online voice: Mohan or Shruti. No API key. The community service may be unavailable; upload narration if needed.'
         : p.tts_provider === 'sarvam' ? 'Sarvam voice selected. Preparing narration or rendering can use metered API credits. Repeated identical audio is cached.'
         : 'Your selected voice provider applies its own quota or billing.';

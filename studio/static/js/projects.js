@@ -29,7 +29,10 @@
     setConflicts: function(conflicts) {
       StudioState.conflicts = conflicts || [];
       if (conflicts && conflicts.length) {
-        $('#alert-conflict-content').html(`<b>Revision Conflict:</b> ${conflicts.length} manual edit(s) preserved.`);
+        const esc = v => $('<div>').text(v == null ? '' : String(v)).html();
+        $('#alert-conflict-content').html(`<b>Your newer edits were kept</b> where the job's result would have replaced them
+          (${conflicts.length}):<ul>${conflicts.slice(0, 12).map(c => `<li>${esc(c.reason)}</li>`).join('')}</ul>
+          <small>To use the job's result instead, apply it again from Production jobs and confirm.</small>`);
         $('#alert-conflict').show();
       } else {
         $('#alert-conflict').hide();
@@ -275,8 +278,18 @@
       return true;
     },
 
+    // The one-click draft works on the open project step by step; another project must not take its place.
+    autopilotBusy: function() {
+      if (window.StudioAutopilot && StudioAutopilot.isRunning()) {
+        StudioState.setNotice('Wait for "Create draft video automatically" to finish before opening another project.', true);
+        return true;
+      }
+      return false;
+    },
+
     switchProject: function(pid) {
       if (StudioState.current && StudioState.current.id === pid) return;
+      if (Projects.autopilotBusy()) return;
       if (StudioState.isDirty) {
         if (!confirm('Discard unsaved edits and switch project?')) return;
       } else if (!Projects.captionsAllow('Discard them and switch project?')) {
@@ -286,6 +299,7 @@
     },
 
     loadProject: function(pid) {
+      try { localStorage.setItem('studio.lastProject', pid); } catch (e) { /* storage unavailable */ }
       StudioState.setBusy(true);
       return StudioApi.request('/projects/' + pid)
         .then(function(row) {
@@ -295,11 +309,11 @@
         })
         .then(function(draft) {
           const r = StudioState.current;
-          if (draft && draft.updated && (!r.updated || new Date(draft.updated).getTime() > new Date(r.updated).getTime())) {
-            StudioState.draftRecoverable = draft;
-          } else {
-            StudioState.draftRecoverable = null;
-          }
+          // Unsaved edits autosaved on top of a revision are offered back, unless they are what is saved.
+          const edits = draft && draft.body && Array.isArray(draft.body.scenes) && JSON.stringify(draft.body) !== JSON.stringify(r.project);
+          const newer = draft && draft.base_revision != null ? draft.base_revision <= r.revision
+            : draft && draft.updated && (!r.updated || new Date(draft.updated).getTime() > new Date(r.updated).getTime());
+          StudioState.draftRecoverable = edits && newer ? draft : null;
           Projects.renderDraftBanner();
           // Load voice takes
           return StudioApi.request('/projects/' + pid + '/takes');
@@ -347,6 +361,7 @@
     },
 
     createProject: function() {
+      if (Projects.autopilotBusy()) return Promise.resolve(null);
       if (StudioState.isDirty && !confirm('Discard unsaved edits and create a new project?')) return Promise.resolve(null);
       if (!StudioState.isDirty && !Projects.captionsAllow('Discard them and create a new project?')) return Promise.resolve(null);
       StudioState.setBusy(true);
@@ -354,6 +369,7 @@
       return StudioApi.request('/projects', 'POST', emptyBody)
         .then(function(row) {
           StudioState.setNotice('Project created.');
+          try { localStorage.setItem('studio.lastProject', row.id); } catch (e) { /* storage unavailable */ }
           Projects.sync(row);
         })
         .catch(function(err) {
@@ -429,7 +445,8 @@
       autosaveTimer = setTimeout(function() {
         if (!StudioState.isDirty || !StudioState.current) return;
         const pid = StudioState.current.id;
-        StudioApi.request('/projects/' + pid + '/draft', 'PUT', StudioState.current.project)
+        StudioApi.request('/projects/' + pid + '/draft', 'PUT',
+                          {body: StudioState.current.project, base_revision: StudioState.current.revision})
           .catch(function() {
             // Background autosave failure is non-blocking
           });
@@ -561,24 +578,17 @@
       $('#btn-save-project').prop('disabled', StudioState.isBusy || !StudioState.isDirty);
     },
 
+    // The recovery alert (partials/alerts.html) with when the edits were made, and a warning when the
+    // project was saved again since: restoring would replace those newer saved changes.
     renderDraftBanner: function() {
       $('#alert-draft-recovery').toggle(!!StudioState.draftRecoverable);
-      const $box = $('#draft-banner').empty();
       if (!StudioState.draftRecoverable) return;
-
-      const dateStr = new Date(StudioState.draftRecoverable.updated).toLocaleString();
-      const html = `
-        <div class="notice" role="alert" style="background:#fef3c7;border-color:#fde68a;color:#92400e;">
-          <div>
-            <b>Unsaved draft found</b> from ${dateStr}. Would you like to recover it?
-          </div>
-          <div class="actions" style="margin:0;">
-            <button type="button" class="primary" id="btn-restore-draft">Restore draft</button>
-            <button type="button" id="btn-discard-draft">Discard</button>
-          </div>
-        </div>
-      `;
-      $box.html(html);
+      const draft = StudioState.draftRecoverable;
+      const dateStr = draft.updated ? new Date(draft.updated).toLocaleString() : 'an earlier session';
+      const older = draft.base_revision != null && StudioState.current && draft.base_revision < StudioState.current.revision;
+      $('#alert-draft-recovery .draft-recovery-text').html(`&#9888; <b>Unsaved edits found</b> from ${$('<div>').text(dateStr).html()}.`
+        + (older ? ` <small>They were made on version ${Number(draft.base_revision)}; the project was saved again since (version `
+          + `${Number(StudioState.current.revision)}). Restoring replaces those newer saved changes.</small>` : ''));
     },
 
     renderConflictsBanner: function() {
@@ -649,13 +659,17 @@
         return;
       }
 
+      const warnings = (pf.warnings || []).map(warn =>
+        `<div class="checkitem warn"><span>⚠</span> ${$('<div>').text(warn.message).html()}</div>`).join('');
       if (pf.ready) {
-        $badge.attr('class', 'badge approved').text('All checks passed');
+        // Warnings never block a render, but they are the quality check: shown even when ready.
+        $badge.attr('class', warnings ? 'badge amber' : 'badge approved')
+          .text(warnings ? `Ready · ${pf.warnings.length} thing(s) to check` : 'All checks passed');
         $box.html(`
           <div class="checkitem ok">
             <span>✓</span> Storyboard, footage, narration, and rights reviews are verified. Ready for rendering.
           </div>
-        `);
+        ` + warnings);
       } else {
         const errCount = (pf.errors && pf.errors.length) || 0;
         $badge.attr('class', 'badge red').text(errCount + ' blocking issue(s)');
@@ -727,9 +741,6 @@
 
   Projects.save = Projects.saveProject;
   Projects.updatePreflight = Projects.checkPreflight;
-  Projects.setConflicts = function(c) {
-    StudioState.conflicts = c || [];
-  };
 
   window.Projects = Projects;
   window.StudioProjects = Projects;

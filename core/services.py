@@ -105,8 +105,8 @@ def approve_project(pid: str, revision: int) -> Project:
             raise ValueError('Save and reload the current revision before approving')
 
         model = PydanticProject.model_validate(p.body)
-        if not model.scenes or any(not s.narration.strip() or not s.roman.strip() for s in model.scenes):
-            raise ValueError('Every scene needs Telugu narration text and Roman Telugu captions')
+        from studio.store import approvable
+        approvable(model)
         if not model.evidence_notes.strip():
             raise ValueError('Add your factual review notes, or label fictional content, before approval')
 
@@ -173,6 +173,11 @@ def delete_draft_data(pid: str) -> None:
         Draft.objects.using('project_writer').filter(project_id=pid).delete()
 
 
+def titled(current: Dict[str, Any], base: Dict[str, Any]) -> bool:
+    """The user turned this scene into a title card after a footage search started."""
+    return current.get('visual') == 'graphic' and base.get('visual') != 'graphic'
+
+
 def apply_job_result(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
     """Apply completed background job results to project with field/scene conflict detection."""
     with transaction.atomic(using='project_writer'):
@@ -187,8 +192,8 @@ def apply_job_result(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
         current_project = copy.deepcopy(p.body)
         current_rev = p.revision
 
-        # Idempotent apply: return previous result if already applied
-        if j.applied:
+        # Idempotent apply: return previous result if already applied (unless the user asks to apply it again)
+        if j.applied and not force:
             return {
                 'project': serialize_project_dict(p),
                 'applied': True,
@@ -219,7 +224,9 @@ def apply_job_result(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
                 base_s = base_scenes.get(target_scene_id, {})
                 base_asset = base_s.get('video_asset', '')
                 current_asset = curr_s.get('video_asset', '')
-                if current_asset and current_asset != base_asset and current_asset != asset_info['id'] and not force:
+                if titled(curr_s, base_s) and not force:
+                    conflicts.append({'scene_id': target_scene_id, 'reason': 'Scene was made a title card after the search; kept'})
+                elif current_asset and current_asset != base_asset and current_asset != asset_info['id'] and not force:
                     conflicts.append({
                         'scene_id': target_scene_id,
                         'reason': 'Scene has a newer manual video assignment; edit was preserved'
@@ -248,7 +255,9 @@ def apply_job_result(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
                 base_s = base_scenes.get(sid, {})
                 base_asset = base_s.get('video_asset', '')
                 current_asset = curr_s.get('video_asset', '')
-                if current_asset and current_asset != base_asset and current_asset != asset_info['id'] and not force:
+                if titled(curr_s, base_s) and not force:
+                    conflicts.append({'scene_id': sid, 'reason': f'Scene {sid} was made a title card after the search; kept'})
+                elif current_asset and current_asset != base_asset and current_asset != asset_info['id'] and not force:
                     conflicts.append({
                         'scene_id': sid,
                         'reason': f'Scene {sid} has a newer manual video selection; edit was preserved'
@@ -269,6 +278,28 @@ def apply_job_result(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
             current_project['research_sources'] = j.result.get('sources', [])
             current_project['research_grounding'] = j.result.get('grounding', {})
             modified = True
+
+        elif kind == 'draft' and j.snapshot.get('options', {}).get('fill'):
+            # "Prepare my script with AI" returns the scenes as they were when it started, with the missing
+            # Telugu, captions and search words filled in. Merge it field by field: what the AI wrote goes in
+            # only where that field is unchanged since the job started, so edits saved meanwhile (captions,
+            # footage, trims, scene order, deleted scenes) are kept.
+            filled = {s['id']: s for s in j.result.get('scenes', []) if isinstance(s, dict) and s.get('id')}
+            if not filled:
+                raise ValueError('Draft result contains no scenes')
+            for sid, scene in curr_scenes.items():
+                new, old = filled.get(sid), base_scenes.get(sid)
+                if not new or not old:
+                    continue
+                for field, value in new.items():
+                    if field == 'id' or value == old.get(field) or scene.get(field) == value:
+                        continue
+                    if scene.get(field) == old.get(field) or force:
+                        scene[field] = value
+                        modified = True
+                    else:
+                        conflicts.append({'scene_id': sid, 'field': field,
+                                          'reason': f"Your newer edit to this scene's {field.replace('_', ' ')} was kept"})
 
         elif kind == 'draft':
             draft_scenes = j.result.get('scenes', [])
@@ -309,12 +340,14 @@ def apply_job_result(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
                 body=validated_project,
                 created_at=now_dt
             )
-            Draft.objects.using('project_writer').filter(project_id=pid).delete()
+            # The autosaved draft is kept: it may hold edits typed while the job ran (the editor offers it).
 
-        # Update job applied status
-        j.applied = True
-        j.applied_at = now_dt
-        j.save(using='project_writer', update_fields=['applied', 'applied_at'])
+        # A result that changed nothing because every part conflicted stays unapplied, so it can still be
+        # applied over the newer edits on purpose.
+        if modified or not conflicts:
+            j.applied = True
+            j.applied_at = now_dt
+            j.save(using='project_writer', update_fields=['applied', 'applied_at'])
 
         # Record receipt
         ApplicationReceipt.objects.using('project_writer').create(
@@ -327,7 +360,7 @@ def apply_job_result(pid: str, jid: str, force: bool = False) -> Dict[str, Any]:
 
         return {
             'project': serialize_project_dict(p),
-            'applied': True,
+            'applied': bool(j.applied),   # False: nothing applied, every part conflicted with newer edits
             'conflicts': conflicts,
             'revision': new_rev
         }
@@ -347,6 +380,10 @@ def assign_media_to_scenes(pid: str, asset_id: str, scene_ids: List[str]) -> Pro
         p_data = copy.deepcopy(p.body)
         scene_id_set = set(scene_ids)
         all_scenes = 'all' in scene_id_set
+        if asset_obj.kind == 'audio' and (all_scenes or len(scene_id_set) > 1):
+            # Every scene would play the whole recording from its start.
+            raise ValueError('A recording can narrate one scene. For one recording across the whole video, choose '
+                             '"My recording, one file" under Narration on the Voice tab')
 
         for s in p_data.get('scenes', []):
             if all_scenes or s['id'] in scene_id_set:
@@ -361,6 +398,7 @@ def assign_media_to_scenes(pid: str, asset_id: str, scene_ids: List[str]) -> Pro
                 elif asset_obj.kind == 'audio':
                     s['audio_asset'] = asset_id
                     s['audio_text_hash'] = digest(s.get('narration', ''))
+                    s.update(audio_trim_start=0, audio_trim_end=0, audio_gain_db=0)  # a new recording starts untrimmed
 
         updated_p, _ = save_project_mutation(p_data, pid=pid, expected_revision=p.revision)
         return updated_p

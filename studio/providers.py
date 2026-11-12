@@ -3,6 +3,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import re
 import time
 import uuid
@@ -354,9 +355,9 @@ def download_stock(video_id, provider='pixabay', landscape=False):
     from .stock import safe_stock_url
     if provider not in ('pixabay', 'pexels'):
         raise ValueError('Choose a stock provider before downloading.')
-    # Deduplicate: Check if this Pixabay clip was already downloaded
+    # Deduplicate: Check if this Pixabay clip was already downloaded (and its file is still there)
     existing = store.find_asset(provider=provider, external_id=str(video_id))
-    if existing:
+    if existing and (not existing.get('filename') or (DATA / 'assets' / existing['filename']).is_file()):
         return existing
 
     hits = stock_search(video_id=video_id, provider=provider)
@@ -364,7 +365,8 @@ def download_stock(video_id, provider='pixabay', landscape=False):
     if not hit:
         raise ValueError('Stock clip no longer available')
     aid = uuid.uuid4().hex
-    path = DATA / 'assets' / (aid + '.mp4')
+    final = DATA / 'assets' / (aid + '.mp4')
+    path = DATA / 'assets' / (aid + '.part')  # renamed when complete: a stopped download leaves no clip-like file
     try:
         # Redirects are followed only after validating each destination.
         from .stock import best_file
@@ -393,9 +395,12 @@ def download_stock(video_id, provider='pixabay', landscape=False):
             else:
                 raise ValueError('Too many stock download redirects')
         file_hash = hasher.hexdigest()
-        # Check if identical content hash already exists
-        existing_by_hash = store.find_asset(sha256=file_hash)
+        # Check if identical content hash already exists; a record whose file went missing gets this one.
+        existing_by_hash = store.find_asset(sha256=file_hash) or existing
         if existing_by_hash:
+            target = DATA / 'assets' / existing_by_hash['filename']
+            if not target.is_file():
+                os.replace(path, target)
             path.unlink(missing_ok=True)
             return existing_by_hash
 
@@ -403,6 +408,8 @@ def download_stock(video_id, provider='pixabay', landscape=False):
         info = probe(path)
         if not any(s['codec_type'] == 'video' for s in info['streams']):
             raise ValueError('Downloaded file contains no video')
+        os.replace(path, final)
+        path = final
         return store.add_asset({'id': aid, 'filename': path.name, 'name': f"{provider.title()} {video_id}", 'kind': 'video',
                                 'provider': provider, 'external_id': str(video_id), 'sha256': file_hash,
                                 'source_url': hit['source_url'], 'creator': hit['creator'],
@@ -412,6 +419,15 @@ def download_stock(video_id, provider='pixabay', landscape=False):
         if isinstance(exc, httpx.HTTPError):
             raise ValueError('Stock download connection failed') from None
         raise
+
+
+def measured_timings(provider, boundaries):
+    """Word timings only when the voice engine measured them (Edge and Azure word-boundary events).
+    Sarvam's and the Azure fallback's are the duration shared out by word length, which captions
+    estimate better from the audio's pauses (media.auto_captions)."""
+    if provider not in ('edge', 'azure') or any(b.get('estimated') for b in boundaries or []):
+        return []
+    return boundaries
 
 
 def synthesize(text, voice, rate, provider, pitch=0, delivery_preset='conversational', pronunciation_dict=None):
@@ -452,7 +468,7 @@ def synthesize(text, voice, rate, provider, pitch=0, delivery_preset='conversati
     cached = get_cached_synthesis(contract_key, audio_format=audio_format)
     if cached:
         audio, boundaries, _ = cached
-        return audio, boundaries
+        return audio, measured_timings(cap.provider, boundaries)
 
     # 4. Check online connectivity and acquire rate slot
     if cap.provider != 'upload':
@@ -478,8 +494,11 @@ def synthesize(text, voice, rate, provider, pitch=0, delivery_preset='conversati
             target_meta=temp_meta
         )
         audio, _ = store_cached_synthesis(contract_key, audio, boundaries, metadata, audio_format=audio_format)
+        for leftover in (temp_audio, temp_meta):  # the cache holds its own copy now
+            if Path(leftover).resolve() != Path(audio).resolve():
+                Path(leftover).unlink(missing_ok=True)
         record_usage(cap.provider, estimated_units=len(final_text), actual_units=len(final_text))
-        return audio, boundaries
+        return audio, measured_timings(cap.provider, boundaries)
     except Exception as exc:
         import logging
         logging.getLogger('studio.providers').warning(f"synthesize failed with {type(exc).__name__}: {exc}")

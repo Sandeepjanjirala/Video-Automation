@@ -18,6 +18,7 @@ const StudioApp = (() => {
         StudioProjects.renderProject();
         StudioScenes.renderScenes();
         StudioVoice.renderVoiceControls();
+        if (window.StudioNarration) StudioNarration.render();
         StudioProjects.updatePreflight();
       } else if (key === 'jobs') {
         StudioJobs.renderJobs(val);
@@ -46,6 +47,7 @@ const StudioApp = (() => {
     // If switching to voice, refresh capabilities if needed
     if (tab === 'voice') {
       StudioVoice.loadCapabilities();
+      if (window.StudioNarration) StudioNarration.render();  // the waveform needs the visible box's width
     }
     // If switching to export, refresh preflight
     if (tab === 'export') {
@@ -95,9 +97,11 @@ const StudioApp = (() => {
       $('#app-loading-state').hide();
       $('#app-main-layout').show();
 
-      // Select first project or show welcome
+      // Reopen the project this browser had open (its unsaved edits are offered back), else the latest one.
+      let last = null;
+      try { last = localStorage.getItem('studio.lastProject'); } catch (e) { /* storage unavailable */ }
       if (projects.length > 0) {
-        await StudioProjects.load(projects[0].id);
+        await StudioProjects.load((projects.find(p => p.id === last) || projects[0]).id);
       } else {
         StudioProjects.renderWelcome();
       }
@@ -142,6 +146,7 @@ $(document).ready(() => {
   StudioFraming.init();
   StudioCaptionStyle.init();
   StudioAutopilot.init();
+  if (window.StudioNarration) StudioNarration.init();
   StudioFold.init();
   StudioGuide.init();
   StudioSettings.init();

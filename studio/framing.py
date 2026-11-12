@@ -154,6 +154,8 @@ def _source_info(path, mtime_ns, size):
         duration = 0.0
     return {'width': w, 'height': h, 'rotation': rotation, 'normalize': normalize,
             'matrix': MATRICES.get(frame.get('color_space') or stream.get('color_space'), 'bt709'),
+            # HLG or PQ: HDR video (iPhone default) that this renderer does not tone-map.
+            'hdr': (frame.get('color_transfer') or stream.get('color_transfer')) in ('arib-std-b67', 'smpte2084'),
             'duration': duration if math.isfinite(duration) else 0.0}
 
 

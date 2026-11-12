@@ -1,8 +1,13 @@
 import json
+import logging
 import os
 import shutil
 import uuid
 from pathlib import Path
+
+# httpx logs every request URL at INFO, and Pixabay's API key travels in the URL: keep it to warnings.
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('httpcore').setLevel(logging.WARNING)
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = Path(os.environ.get('REEL_DATA_DIR', str(ROOT / 'data'))).resolve()
@@ -17,8 +22,8 @@ DEFAULTS = {
     'access_password_hash': '',
 }
 SECRETS = {'gemini_key', 'pixabay_key', 'pexels_key', 'azure_key', 'sarvam_key'}
-# Keys in the .env file next to the project (git-ignored, so pulls and pushes never touch it) are used
-# instead of keys typed in Settings. .env.example lists the names.
+# Keys in the .env file next to the project (git-ignored, so pulls and pushes never touch it) are the
+# defaults; a key typed in Settings replaces one, and "use the default" goes back. .env.example lists the names.
 ENV_KEYS = {'gemini_key': 'STUDIO_GEMINI_KEY', 'pixabay_key': 'STUDIO_PIXABAY_KEY', 'pexels_key': 'STUDIO_PEXELS_KEY',
             'azure_key': 'STUDIO_AZURE_KEY', 'sarvam_key': 'STUDIO_SARVAM_KEY'}
 
@@ -47,20 +52,38 @@ def setup():
         (DATA / name).mkdir(parents=True, exist_ok=True)
 
 
+def stored_settings():
+    path = DATA / 'settings.json'
+    return json.loads(path.read_text('utf-8')) if path.exists() else {}
+
+
+def key_source(stored, key, name):
+    """Where the key in use comes from: 'settings' (typed in Settings), 'env' (the .env default) or ''.
+    A stored key identical to the .env one counts as the default (older versions copied it there)."""
+    env, own = os.environ.get(name, ''), stored.get(key) or ''
+    if own and own != env:
+        return 'settings'
+    return 'env' if env else ''
+
+
 def settings():
     setup()
-    path = DATA / 'settings.json'
-    cfg = DEFAULTS | (json.loads(path.read_text('utf-8')) if path.exists() else {})
+    stored = stored_settings()
+    cfg = DEFAULTS | stored
     for key, name in ENV_KEYS.items():
-        if os.environ.get(name):
+        if os.environ.get(name) and key_source(stored, key, name) != 'settings':
             cfg[key] = os.environ[name]
     # With keys in .env, online services start on (Settings can still turn them off).
-    if 'online_enabled' not in (json.loads(path.read_text('utf-8')) if path.exists() else {}) and os.environ.get('STUDIO_ONLINE') == '1':
+    if 'online_enabled' not in stored and os.environ.get('STUDIO_ONLINE') == '1':
         cfg['online_enabled'] = True
     return cfg
 
 
 def save_settings(values):
+    values = dict(values)
+    use_default = values.pop('use_default_keys', None) or []
+    if not isinstance(use_default, list) or any(k not in ENV_KEYS for k in use_default):
+        raise ValueError('Unknown setting')
     cfg = settings()
     for key, value in values.items():
         if key not in DEFAULTS:
@@ -82,6 +105,18 @@ def save_settings(values):
         cfg['daily_ai_calls'] = max(1, min(100, int(cfg['daily_ai_calls'])))
     except (TypeError, ValueError):
         raise ValueError('Daily AI calls must be an integer') from None
+    for name in ('ffmpeg', 'ffprobe'):
+        # The studio runs this program, so it must be the real tool on this computer (not a network share).
+        if cfg[name] and (Path(cfg[name]).name.lower() not in (name, name + '.exe') or cfg[name].startswith(('\\', '//'))
+                          or not Path(cfg[name]).is_file()):
+            raise ValueError(f'{name} must be the full path of {name}.exe on this computer')
+    # Only keys typed in Settings are stored: the .env defaults stay in .env (so changing one there still
+    # applies), "use the default" drops a typed key, and a stored copy of the .env key is dropped too.
+    on_disk = stored_settings()
+    for key, name in ENV_KEYS.items():
+        if values.get(key) or not os.environ.get(name):
+            continue
+        cfg[key] = '' if key in use_default or key_source(on_disk, key, name) != 'settings' else on_disk[key]
     tmp = DATA / f'settings.{uuid.uuid4().hex}.tmp'
     tmp.write_text(json.dumps(cfg, indent=2), 'utf-8')
     try:
@@ -93,10 +128,14 @@ def save_settings(values):
 
 
 def public_settings():
-    cfg = settings()
+    cfg, stored = settings(), stored_settings()
+    sources = {key: key_source(stored, key, name) for key, name in ENV_KEYS.items()}
     return {**{k: v for k, v in cfg.items() if k not in SECRETS and k != 'access_password_hash'},
             **{k + '_configured': bool(cfg[k]) for k in SECRETS},
-            **{k + '_from_env': bool(os.environ.get(name)) for k, name in ENV_KEYS.items()},
+            # Where each key in use comes from ('settings', 'env' or ''), and whether .env has a default for it.
+            **{k + '_source': sources[k] for k in ENV_KEYS},
+            **{k + '_from_env': sources[k] == 'env' for k in ENV_KEYS},
+            **{k + '_env_default': bool(os.environ.get(name)) for k, name in ENV_KEYS.items()},
             'access_password_set': bool(cfg.get('access_password_hash')),
             'access_password_from_server': bool(os.environ.get('STUDIO_PASSWORD'))}
 

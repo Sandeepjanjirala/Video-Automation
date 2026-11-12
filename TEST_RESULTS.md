@@ -1,3 +1,103 @@
+# API keys: .env defaults that Settings can change — 12 November 2026
+
+Same branch. Requested change: the keys in `.env` should be the defaults, changeable from Settings (before, a key
+in `.env` locked its Settings field with "Set in the .env file").
+
+- `studio/config.py`: a key typed in Settings (stored in `data/settings.json`) replaces the `.env` default;
+  `use_default_keys` in a Settings save drops it again. Only typed keys are stored; a stored copy identical to the
+  `.env` key (written by earlier versions) counts as the default and is dropped on the next save. Public settings
+  report each key's `_source` (`settings`, `env` or none) and `_env_default`; keys never reach the browser.
+- Settings screen: every key field can be typed in. It says "Default key from .env in use" or "saved here", and
+  **Use the default key from .env instead** appears where a typed key replaces a default.
+
+Verification: the .env key test now covers default → typed key → other settings saved → back to the default; a new
+browser-DOM test covers the Settings fields and what a save sends. Real Chrome against an isolated studio reading a
+test `.env` with fake keys: defaults shown and editable, the fake keys absent from the page, a typed Gemini key
+stored and shown as "saved here" (the untouched Pixabay default not copied), "use the default" cleared it again.
+
+# Uploaded narration, one continuous soundtrack, and a release audit — 12 November 2026
+
+Branch `feature/narration-upload-and-release-audit`. No new dependencies, no database migration (new project and
+scene fields have defaults, so saved projects load unchanged). Scene renders are cached under a new key (renderer 7),
+so the first render of an existing project re-encodes its scenes once.
+
+**Uploaded narration**
+- One recording for the whole video (`narration_mode: track`, scene `track_start`), or one per scene (scene
+  `audio_trim_start/end`, `audio_gain_db`). `studio/narration.py` analyses a recording once (waveform, pauses with a
+  threshold set from its own noise and speech levels, EBU R128 loudness), places scenes by text length at pauses or
+  splits a recording without a script, and cuts 48 kHz PCM slices on exact sample positions. Uploads with
+  `purpose=narration` must contain sound and decode to the end; videos and pictures are refused with a reason.
+- Voice tab: **Narration** panel (narration.js) with the waveform, draggable scene lines (mouse or touch), typed
+  times, "at playhead", per-scene play, narration end, volume, replace / remove / restore boundaries, and the
+  per-scene list with trim and volume. Recordings need no Telugu text; editing a recording's text warns instead of
+  detaching it. One recording cannot be assigned to several scenes (it would play in full in each).
+- Durations come from decoded audio. Caption timing labels say where they come from: word times measured by the
+  voice engine (Edge, Azure), an estimate spread over the speech between pauses (recordings, Sarvam; Sarvam's and
+  Azure-fallback "word timings" were only the length shared out by characters and are no longer used as such), or
+  the user's own. A change of a scene's audio resets only the captions it affects.
+
+**Sound and export**
+- `studio/soundtrack.py` builds the sound once: narration levelled to about -16 LUFS (one gain for a whole
+  recording), joined as PCM, clip sound (new per-scene **Clip sound**, default silent) and music (ducking and
+  fades, both switchable) mixed under it, a -1.5 dBFS limiter, one AAC encode. Scenes render picture only.
+  Before, each scene's sound was loudness-normalised separately and its AAC joined with stream copy: the audit
+  measured 28 irregular timestamp steps in a 10-scene export (gaps and overlaps at joins).
+- Whole-video recordings play without padding; picture cuts go to the nearest frame (no drift).
+- Export validation now checks H.264 yuv420p 30 fps, 48 kHz stereo AAC, equal sound and picture length and fast
+  start, then decodes the file while measuring black picture, long silences and loudness (listed on the video's card).
+- Quality check (preflight) warnings stay visible when a render is allowed: estimated caption timing, edited
+  recording text, enlarged sources (over 1.5x), HDR clips, captions over two lines; recording placement errors name
+  the scene. Telugu titles get a Telugu font; captions wrap only between words (no break inside a conjunct).
+
+**Fixes from the audit** (two read-only audit passes; each finding verified in the code before fixing)
+- Unsaved edits: the draft endpoint returned the bare project while the editor expected `{body, updated}`, so the
+  "Unsaved draft found" banner never appeared; autosave now stores the base revision and the banner works (and
+  reopens the project you had open). Applying a job result saves unsaved edits first and keeps the draft.
+  "Prepare my script with AI" results merge field by field instead of replacing edited scenes; conflicts are
+  listed (an override hid them); a footage result no longer turns a title card back into footage.
+- Jobs: cancelling a render now stops every FFmpeg it runs (the job recorded one process of up to three); retry
+  respects one job of a kind; the local worker survives a database restart and is restarted by the launcher.
+  Unsaved caption timings are set aside when the scene's words or audio change under them.
+- Security: Pixabay's key no longer reaches logs (httpx request lines); `.env` keys are not copied into
+  `settings.json`; phone mode answers only to this computer's addresses (no DNS rebinding); FFmpeg paths in
+  Settings must be real `ffmpeg.exe`/`ffprobe.exe` files; error messages show file names, not server folders.
+- Install: `.env` is read before the database settings (`STUDIO_DATABASE_URL` in `.env` works); Docker requires
+  `STUDIO_PASSWORD` (it locked every browser out without one) and passes `.env` keys to the containers.
+- Files: re-uploading (or re-downloading a stock clip of) a file whose copy went missing repairs it; stock downloads
+  are written to a `.part` file first; synthesis temporary files are removed (208 had accumulated in `data/cache`).
+
+**Verification**
+- Audit suite: **143 passed**, 0 failed (`scripts/run_audit_tests.py`): the 124 from `main` plus 19 new, and several
+  existing ones extended (the caption-timing tests now expect the new labels and the recording warning). New tests: narration upload checks and analysis;
+  placement at pauses; slices joining back sample for sample; a three-tone recording rendered with each picture cut
+  and pitch change at the same moment; continuous timing over 50 scenes; recording trim and volume; preflight
+  messages; caption resets; clip sound; music options; the narration panel in a browser DOM (jsdom).
+- The older test files (`tests/test_django_m1`–`m8`, `test_phase3/4`, `test_workflow`) are not run by the runner
+  and fail at fixture setup against the current schema (for example `NotNullViolation` on `projects.created_at`);
+  unchanged here.
+- Real Chrome (Playwright) against an isolated studio (own PostgreSQL database and data folder; free Edge voice
+  and Pixabay only, no Gemini or Sarvam calls), three projects:
+  - A: one recording for the whole video (22.6 s, Telugu speech with pauses and room noise), six scenes placed
+    automatically: all six starts fell in the pause before their sentence (0.15–0.49 s ahead of the words); a
+    clip with 30 % clip sound, a looping clip, a photo, a freezing clip, a low-resolution clip, a title card; music
+    with ducking; a caption edited and saved; draft 540x960 (9 s) and final 1080x1920 (14 s); then a new take
+    (26.4 s) re-placed (all in pauses), cues reset, rendered; unsaved edits offered back after a reload.
+  - B: recordings per scene (MP3 trimmed to the speech, WAV +3 dB), the third scene read by the free voice,
+    Pixabay footage found and applied, a half-copied M4A refused; draft and final.
+  - C: free voice; a clip removed from disk blocks the render with its name; a damaged clip makes the render fail,
+    and after repair **Retry** succeeds; a long render cancelled.
+- Exports (FFprobe and a full decode): all H.264 High yuv420p 30 fps, AAC 48 kHz stereo, fast start, picture and
+  sound within 1 ms of each other, no decode errors, no black picture or long silence; loudness -15.0 to -16.2
+  LUFS, true peak -1.5 to -5.4 dBTP. Project A's final export follows the original recording with a constant 10 ms
+  offset (one measuring step) at 0.5, 5.4, 10.9, 16.3 and 18.2 s (correlation 0.993–0.997 with music mixed in): no
+  gaps, no drift. Frames checked by eye for every scene type (captions inside the frame and readable).
+- Not verified: listening by ear (no audio review here: loudness, sync and continuity were measured instead); a
+  real human recording (the "own recordings" were Telugu speech from the free Edge voice with phone-like silence
+  and noise); Gemini, Sarvam and the one-click draft (quota and paid services not used); Docker (compose file only
+  validated with `docker compose config`); a physical phone (390 px browser layout checked); HDR footage (only
+  detected and warned about, not tone-mapped). Cancellation was proven by a unit test (two concurrent FFmpeg runs
+  of one job stop within seconds); in the browser run the cancel landed between encodes.
+
 # Footage that follows the script — 12 November 2026
 
 Branch `feature/better-footage-match`. No new dependencies. New optional scene field `shot_weights` (defaults to

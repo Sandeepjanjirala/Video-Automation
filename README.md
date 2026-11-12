@@ -23,15 +23,17 @@ removed FastAPI, React, SQLite, and Alembic components. They are not current set
 
 ## Start on Windows
 
-Python 3.12 and FFmpeg/FFprobe are required. FFmpeg needs `libx264`, `subtitles`,
-`loudnorm`, and `sidechaincompress`. Node.js 24.15+ (or 22.22.2+) is needed only
+Python 3.12 and FFmpeg/FFprobe are required. FFmpeg needs `libx264`, `libass` (the `ass`
+filter), `ebur128`, `alimiter`, `sidechaincompress`, `silencedetect` and `blackdetect` (any
+FFmpeg 5.1 or newer full build has them; the Docker image's FFmpeg 7.1 does). Node.js 24.15+ (or 22.22.2+) is needed only
 for frontend tests; Node 20 is too old for the pinned jsdom dependency.
 
 1. Run `SETUP_WINDOWS.bat` to install Python dependencies into `.venv`.
 2. Start PostgreSQL. With Docker available, infrastructure can be started using
    `docker compose up -d postgres redis`.
 3. The default local database is `postgresql://postgres:postgres@127.0.0.1:5433/studio`.
-   Override it with `STUDIO_DATABASE_URL` when needed. Percent-encode special
+   Override it with `STUDIO_DATABASE_URL` when needed (as an environment variable or a line in
+   `.env`, which is read before the database settings). Percent-encode special
    characters in URL credentials. `STUDIO_MIGRATION_DATABASE_URL` can supply a
    separate migration identity. Existing scoped identities in `backups/` are
    supported; their grants must cover the application's operations.
@@ -46,8 +48,9 @@ for frontend tests; Node 20 is too old for the pinned jsdom dependency.
 6. Put your API keys in a `.env` file next to the project, once per computer: copy
    `.env.example` to `.env` and fill in `STUDIO_GEMINI_KEY`, `STUDIO_SARVAM_KEY`,
    `STUDIO_PIXABAY_KEY` (and optionally Pexels/Azure). `.env` is ignored by Git, so your keys
-   are never pushed and `git pull` never changes them; keys in `.env` are used instead of keys
-   typed in Settings, and Settings shows "Set in the .env file" for them. Never put real keys in
+   are never pushed and `git pull` never changes them. They are the **defaults**: Settings shows
+   "Default key from .env in use", and typing a key there replaces it for this studio (saved in
+   `data/settings.json`); **Use the default key from .env** goes back. Never put real keys in
    `.env.example` or any other file in the repository. FFmpeg paths stay in Settings.
 
 The launcher checks database migrations before starting. Keep its terminal open
@@ -95,7 +98,10 @@ the password. Each installation generates its own secret key in `data/secret_key
 `DJANGO_SECRET_KEY`); `STUDIO_ALLOWED_HOSTS` adds host names, and `STUDIO_BEHIND_PROXY=1`
 trusts an HTTPS proxy's headers.
 
-To start the entire distributed stack, use `docker compose up --build`.
+To start the entire distributed stack, use `docker compose up --build`. Put
+`STUDIO_PASSWORD=...` in the `.env` file next to `docker-compose.yml` first: in Docker every
+browser signs in with it (no browser counts as "this computer"), and Compose refuses to start
+without one. The API keys in `.env` reach the containers too.
 Compose runs migrations before the API, dispatcher, and workers. The image includes
 templates, static assets, FFmpeg, and fonts. Local and distributed workers must not
 be run against the same job stream simultaneously.
@@ -249,8 +255,9 @@ export**. The steps below describe the same workflow done by hand.
    or **Hold the last frame** for short footage; images hold for the narration.
    Adjust each scene's framing and trim in its preview (see **Framing preview** below).
 6. New projects use **Edge Mohan**, a free online male Telugu narrator. Enable
-   online services for synthesis, or upload recordings for offline work. Voice Lab
-   auditions, accepted takes, caching and revision history remain available.
+   online services for synthesis, or use your own recordings (see **Your own narration**
+   below), which work offline. Voice Lab auditions, accepted takes, caching and revision
+   history remain available.
 7. Save and approve after edits. Prepare narration to review it, then open the
    **Captions** tab (see below) and render a **540×960 draft**. Inspect framing,
    pronunciation, and captions.
@@ -262,23 +269,76 @@ export**. The steps below describe the same workflow done by hand.
 9. Render the **1080×1920 final**, download `reel.mp4`, and upload it manually
    to Instagram or YouTube. Final resolution never changes your voice provider.
 
-Editing narration invalidates old normalized speech and take references. Existing
-recordings must match the current narration; reattach or regenerate them when it
-changes. A stale voice take cannot be accepted against a changed script.
+Editing narration invalidates old normalized speech and generated takes. A recording you
+uploaded stays attached when you edit its text (the text is the transcript of what you said);
+the export check then asks you to confirm that captions and recording still match. A stale
+voice take cannot be accepted against a changed script.
 
 Target duration is 10–180 seconds. Natural mode uses actual narration duration.
 Target-fit mode permits only 0.8–1.25× adjustment; excessive changes require script
-editing. Output is H.264/AAC at 30 fps. Caption timing is approximate unless manually
-edited; automatic word-index alignment still needs review.
+editing. Output is H.264/AAC at 30 fps.
+
+### Your own narration
+
+**Voice & visuals → Narration** chooses who speaks: the **voice engine** (free Mohan, or Sarvam
+as a paid upgrade), **My recording, one file** for the whole video, or **My recordings, one per
+scene**. Recordings can be MP3, M4A, WAV, AAC, OGG, OPUS, FLAC or WebM audio, up to 60 minutes
+and 200 MB. Each upload is checked: it must contain sound and decode to the end (a file only
+partly copied from a phone is refused with that reason), and a picture or video is refused
+with a pointer to the right control. The panel shows the length, sample rate and loudness,
+and warns about clipping, heavy background noise, very quiet audio or long silence at the start.
+
+Your recording is never changed. Trims, volume and scene boundaries are settings: the render
+cuts and levels a copy (48 kHz PCM, cut on exact sample positions), so they can be changed
+again at any time, and the original file stays in the media library.
+
+**One recording for the whole video.** Upload it and the scenes are placed on it by the
+length of their text, with each boundary moved to the nearest pause. The waveform shows the
+recording with pauses shaded and a numbered blue line where each scene starts:
+- click the waveform to listen from there; drag a line (mouse or finger) to move that start;
+  or type a time, or use **at playhead**; ▶ plays one scene;
+- **Narration ends at** cuts the end of the recording (silence, or a retake); **Recording
+  volume** adjusts it relative to the levelling (a boost never makes it clip);
+- **Make scenes from pauses** builds scenes from a recording without a script (about every
+  4 s, 6 s in a YouTube video); then type what is said in each scene's boxes;
+- scenes follow the recording's order, so moving a scene up is refused; removing a scene
+  gives its part of the recording to the scene before it.
+
+The recording plays continuously in the video: it is never padded or cut between scenes. Each
+picture cut lands on the video frame nearest its sound cut (at most half a frame, 17 ms, away)
+and the timing cannot drift however many scenes there are. Scene holds add silence after a scene.
+
+**Replace recording** (a new take) places the scenes again on the new file and resets caption
+timing that no longer fits; **Restore previous boundaries** brings the old ones back when the
+new take has the same timing. Visuals, text and other edits are kept.
+
+**One recording per scene.** Upload a file on each scene that you recorded (also possible
+from the scene's **More** menu on the Story tab); scenes without one are read by the voice
+engine. **Use from / to** cuts silence or a mistake at the start or end, **Volume** evens out a
+quieter recording, and **Text matches the recording** confirms a recording after you edited
+its text.
+
+A scene narrated by a recording needs no Telugu text to be approved or rendered (its captions
+come from the Roman Telugu box). There is no speech recognition in the studio: type or paste
+what is said. Caption timing for a recording is estimated from its pauses (see below).
 
 ### Caption editor
 
 The **Captions** tab edits each scene's caption text (Roman Telugu or Telugu script)
 and start/end times, in seconds from the start of that scene's narration (`1.25` or
 `0:01.25`). Timings are checked against the *measured* length of the audio the render
-will use: an attached recording, or prepared narration whose text and voice settings
-still match. Scenes without such audio show **Not measured**; choose **Prepare
-narration** first. Measuring never synthesizes speech.
+will use (its decoded length, not the file's metadata): a recording (its trimmed part, or
+the scene's part of the whole-video recording, measured straight away), or prepared
+narration whose text and voice settings still match. Scenes without such audio show
+**Not measured**; choose **Prepare narration** first. Measuring never synthesizes speech.
+
+Each scene says how its automatic timing was made:
+- **Automatic timing from the voice engine's word times** (Edge, Azure): measured per word
+  by the voice engine and matched to the caption words in order; usually close.
+- **Estimated timing**: everything else (recordings, Sarvam). The speech between pauses is
+  shared out by word length, so captions wait during pauses, but it is not word by word.
+  The export check lists these scenes until you review and save them.
+- **Your timing**: captions you edited and saved.
 
 - **Play** seeks to a caption and stops at its end; **Start/End = playhead** copy the
   paused audio position. **Split** divides at the playhead (or midpoint), **Merge with
@@ -293,6 +353,31 @@ narration** first. Measuring never synthesizes speech.
 - Saved captions flow unchanged into the shared timeline, SRT and `timing-manifest.json`.
   Telugu-script captions render with Nirmala UI on Windows; the Docker image installs
   `fonts-noto-core` for Noto Sans Telugu.
+
+### Sound and the export check
+
+The whole soundtrack is built once per export: every scene's narration is levelled to about
+-16 LUFS (one recording for the whole video gets one level, keeping its natural rises and
+falls), the scenes' clip sound and the music are mixed under it, a limiter keeps peaks at
+-1.5 dBFS, and the result is encoded to AAC once. (Before, each scene's sound was levelled and
+encoded on its own and joined, which shifted the level from scene to scene and left small
+gaps at the joins.)
+- **Music**: its volume, **Lower the music while the narration speaks** (ducking) and **Fade
+  the music in and out** (0.6 s in, up to 2 s out) are on the Voice tab. Music shorter than
+  the video repeats.
+- **Clip sound**: each video scene has a **Clip sound** slider (0 %, silent, by default). When
+  raised, the clip's own sound plays under the narration and loops or stops with its picture.
+
+**Ready to render?** on Preview & export lists what blocks a render (red) and what is worth
+checking (amber): estimated caption timing, a recording whose text was edited, a clip or
+picture enlarged more than 1.5x for the 1080×1920 frame (exporting larger does not add
+detail), an HDR phone clip (colours may look washed out; record or export it as SDR),
+captions longer than two lines, scenes placed outside the recording.
+
+After rendering, the studio checks the file itself: 1080×1920 (or the draft or YouTube
+size), H.264 yuv420p at 30 fps, 48 kHz stereo AAC, sound and picture of the same length,
+arranged for fast start, and a full decode. The same pass measures black picture, silences
+over 2.5 s and loudness; anything found is listed on the video's card.
 
 ### Captions on or off
 
@@ -379,7 +464,13 @@ and [Pexels API](https://www.pexels.com/api/documentation/) documentation.
 
 Media, caches, settings, and exports live under `data/`, or `REEL_DATA_DIR` when set.
 Projects and job records live in PostgreSQL. Back up **both**, with workers stopped.
-Keys are kept in local settings and masked by the API. Export reports can contain
+Keys are kept in local settings and masked by the API (no key is ever sent to the browser). Keys
+from `.env` are defaults and stay in `.env`: only a key typed in Settings is stored in
+`data/settings.json`, and a copy of the `.env` key written there by an earlier version is
+dropped the next time Settings is saved.
+The FFmpeg and FFprobe paths in Settings must be the real `ffmpeg.exe`/`ffprobe.exe` on this
+computer. With `START_PHONE_ACCESS.bat` the studio answers only to this computer's own network
+addresses and name (no other host names), and in Docker to any name behind the password. Export reports can contain
 editorial notes. A completed render provides `reel.mp4`, `captions.srt`,
 `source-report.json`, and `project.json`.
 
@@ -397,8 +488,25 @@ revision history, autosave, voice takes, production jobs and rendered videos. Cl
 images in the media library stay, because other projects can use them. A project with a
 job in progress cannot be deleted until the job finishes or is cancelled.
 
-Failed jobs can be retried. Retrying current inputs requires approval of the current
-revision; original-input retries retain their original snapshot. Cancelled and
+Failed jobs can be retried (one job of a kind per project at a time). Retrying current inputs
+requires approval of the current revision; original-input retries retain their original
+snapshot. A failed render names the scene, and for a damaged or partly copied clip says to
+upload it again; error messages show file names, never the server's folders. **Cancel** stops
+every FFmpeg the job runs within about a second (a render encodes several scenes at once).
+Uploading a file that is already in the library but missing from `data/assets` puts it back
+(also for a stock clip downloaded again). The background worker reconnects after a database
+restart and is started again by the launcher if it stops.
+
+**Unsaved edits are not lost.** The editor autosaves every few seconds as a draft on top of the
+revision you opened. After a reload, a browser crash or a closed phone tab, **Unsaved edits
+found** offers them back (and says when the project was saved again since, so restoring would
+replace those newer changes). Applying a job result saves your unsaved edits first, and the
+draft is kept. **Prepare my script with AI** fills in only the fields you did not change
+while it ran (and lists the ones it left alone); a footage result never turns a scene you
+made a title card back into footage. **Re-apply result** applies a job's result again over
+newer edits after a confirmation. While **Create draft video automatically** runs, the studio
+stays on its project. Unsaved caption timings are set aside (restorable) when the scene's
+words or narration change under them. Cancelled and
 completed jobs cannot be restarted by duplicate queue delivery. Crashed execution
 leases expire and become retryable failures. Do not delete original assets while
 saved projects still reference them.
