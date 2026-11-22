@@ -29,6 +29,12 @@ try:
 except Exception as exc:
     print('postgresql: ERROR (' + str(exc).splitlines()[0] + ')')
 
+try:
+    from core.models import Workspace, Project, Revision, Asset, Job
+    print(f'django models: verified (Workspace, Project, Revision, Asset, Job)')
+except Exception as exc:
+    print('django models: ERROR (' + str(exc).splitlines()[0] + ')')
+
 if os.environ.get('STUDIO_DISTRIBUTED') == '1' or os.environ.get('STUDIO_WORKER_MODE') == 'celery':
     try:
         from studio.celery_app import app as celery_app
@@ -37,6 +43,18 @@ if os.environ.get('STUDIO_DISTRIBUTED') == '1' or os.environ.get('STUDIO_WORKER_
         info = r.info('memory')
         print('redis: connected (maxmemory=' + str(info.get('maxmemory_human', 'N/A')) + ')')
         print('celery: configured (queues=' + ', '.join(celery_app.conf.task_queues.keys()) + ')')
+        celery_app.loader.import_default_modules()
+        registered = sorted([t for t in celery_app.tasks.keys() if t.startswith('studio.tasks.')])
+        print(f'celery tasks: {len(registered)} registered ({", ".join(t.split(".")[-1] for t in registered)})')
+        try:
+            inspector = celery_app.control.inspect(timeout=2.0)
+            pings = inspector.ping() or {}
+            if pings:
+                print('celery workers responding:', ', '.join(pings.keys()))
+            else:
+                print('celery workers: none responding yet (workers may be idle or starting)')
+        except Exception as ping_err:
+            print('celery workers check: ' + str(ping_err).splitlines()[0])
     except Exception as exc:
         print('redis/celery: ERROR (' + str(exc).splitlines()[0] + ')')
 else:

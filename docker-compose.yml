@@ -16,6 +16,10 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   redis:
     image: redis:7-alpine
@@ -24,7 +28,7 @@ services:
     command: >
       redis-server
       --appendonly yes
-      --maxmemory 512mb
+      --maxmemory 256mb
       --maxmemory-policy noeviction
       --save 60 1
     ports:
@@ -36,11 +40,17 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 256M
 
   migrate:
     build: .
     command: ["python", "manage.py", "migrate", "--noinput"]
     environment:
+      - PYTHONPATH=/app
+      - DJANGO_SETTINGS_MODULE=config.settings
       - STUDIO_DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-studio}
     depends_on:
       postgres:
@@ -57,6 +67,8 @@ services:
     ports:
       - "127.0.0.1:8788:8788"
     environment:
+      - PYTHONPATH=/app
+      - DJANGO_SETTINGS_MODULE=config.settings
       - STUDIO_DISTRIBUTED=1
       - STUDIO_DOCKER=1
       # Every browser reaches the container through Docker's network, so all of them sign in with this password.
@@ -77,8 +89,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2.0'
-          memory: 1024M
+          memory: 512M
 
   dispatcher:
     build: .
@@ -90,6 +101,8 @@ services:
         required: false
     command: ["python", "-m", "studio.dispatcher"]
     environment:
+      - PYTHONPATH=/app
+      - DJANGO_SETTINGS_MODULE=config.settings
       - STUDIO_DISTRIBUTED=1
       - STUDIO_DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-studio}
       - CELERY_BROKER_URL=redis://redis:6379/0
@@ -107,8 +120,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '1.0'
-          memory: 512M
+          memory: 256M
 
   worker_network:
     build: .
@@ -118,9 +130,11 @@ services:
       # API keys (STUDIO_GEMINI_KEY, STUDIO_PIXABAY_KEY, ...) from .env; values under environment: win.
       - path: .env
         required: false
-    # 2 network-task slots
-    command: ["celery", "-A", "studio.celery_app", "worker", "-Q", "network", "-c", "2", "--loglevel=info", "-n", "worker_network@%h"]
+    # 1 network-task slot (conservative for 1-vCPU VPS)
+    command: ["python", "-m", "celery", "-A", "studio.celery_app", "worker", "-Q", "network", "-c", "1", "--loglevel=info", "-n", "worker_network@%h"]
     environment:
+      - PYTHONPATH=/app
+      - DJANGO_SETTINGS_MODULE=config.settings
       - STUDIO_DISTRIBUTED=1
       - STUDIO_DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-studio}
       - CELERY_BROKER_URL=redis://redis:6379/0
@@ -138,8 +152,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2.0'
-          memory: 1536M
+          memory: 512M
 
   worker_render:
     build: .
@@ -150,8 +163,10 @@ services:
       - path: .env
         required: false
     # 1 render slot
-    command: ["celery", "-A", "studio.celery_app", "worker", "-Q", "render", "-c", "1", "--loglevel=info", "-n", "worker_render@%h"]
+    command: ["python", "-m", "celery", "-A", "studio.celery_app", "worker", "-Q", "render", "-c", "1", "--loglevel=info", "-n", "worker_render@%h"]
     environment:
+      - PYTHONPATH=/app
+      - DJANGO_SETTINGS_MODULE=config.settings
       - STUDIO_DISTRIBUTED=1
       - STUDIO_DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-studio}
       - CELERY_BROKER_URL=redis://redis:6379/0
@@ -169,8 +184,7 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '4.0'
-          memory: 2048M
+          memory: 1024M
 
 volumes:
   postgres_data:

@@ -14,6 +14,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Ensure Python unbuffered output and proper module search paths
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app
+ENV DJANGO_SETTINGS_MODULE=config.settings
+
 # Copy dependency requirements and install
 COPY requirements.txt requirements-tested.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
@@ -23,7 +28,7 @@ COPY studio/ studio/
 COPY config/ config/
 COPY core/ core/
 COPY templates/ templates/
-COPY run.py manage.py ./
+COPY run.py manage.py doctor.py ./
 
 # Shared development media storage mount point
 VOLUME ["/app/data"]
