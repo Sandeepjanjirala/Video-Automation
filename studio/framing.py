@@ -78,10 +78,13 @@ def scene_geometry(scene, source, width, height):
 def filter_chain(g, source):
     """FFmpeg filters producing `g` from the display-space source.
 
-    Normally the whole source is scaled to scale_w x scale_h and cropped, which
-    is exactly what the preview shows. When zooming would make that intermediate
-    picture larger than four output frames, only the source rectangle covering
-    the visible area is scaled instead (within half an output pixel of `g`).
+    When the scaled source is at most 1.5 output frames, the whole source is
+    scaled to scale_w x scale_h and cropped, which is exactly what the preview
+    shows. A larger one (a reel's upright slice of a landscape clip is about a
+    third of it, more with zoom) scales only the source rectangle covering the
+    visible area instead (within half an output pixel of `g`), which saves
+    scaling the parts that are cropped away (most of the scaling work of a 4K
+    clip in a reel).
     Output is converted to BT.709 limited range (see MATRICES); untagged sources
     are treated as BT.709, as players treat untagged HD video.
     """
@@ -89,7 +92,7 @@ def filter_chain(g, source):
     colour = f"in_color_matrix={source.get('matrix', 'bt709')}:out_color_matrix=bt709:out_range=tv"
     steps = [f"scale={src_w}:{src_h},setsar=1"] if source.get('normalize') else []
     place = f"pad={g['width']}:{g['height']}:{g['pad_x']}:{g['pad_y']}:color={BACKGROUND},setsar=1"
-    if g['scale_w'] * g['scale_h'] <= 4 * g['width'] * g['height']:
+    if g['scale_w'] * g['scale_h'] <= 1.5 * g['width'] * g['height']:
         steps += [f"scale={g['scale_w']}:{g['scale_h']}:flags=bicubic:{colour}",
                   f"crop=w={g['crop_w']}:h={g['crop_h']}:x={g['crop_x']}:y={g['crop_y']}:exact=1", place]
         return ','.join(steps)
@@ -185,20 +188,22 @@ def scene_shots(scene, length, shot_seconds=SHOT_SECONDS):
     """The clips a video scene shows in turn: its own, then its extra shots, one per ~4 seconds
     in a reel (`shot_seconds`; ~6 in a YouTube video).
 
-    Extra shots play from their start, cropped to fill the frame; the scene's own framing and trim
-    apply to its own clip only.
+    Extra shots play from their start, cropped to fill the frame (centred, or on the subject the
+    footage search found: shot_crop_x); the scene's own framing and trim apply to its own clip only.
     """
     extras = scene.get('extra_shots') or []
     if scene.get('visual') not in ('upload', 'stock') or not extras:
         return [scene]
+    crops = scene.get('shot_crop_x') or []
+    crops = crops if len(crops) == len(extras) else [0.5] * len(extras)
     parts = planned_parts(scene, length)
     if parts:  # one clip per part of the line, in spoken order
-        chosen = [extras[k - 1] for k, _ in parts[1:]]
+        chosen = [k - 1 for k, _ in parts[1:]]
     else:
-        chosen = extras[:min(1 + len(extras), max(1, math.ceil(length / shot_seconds - 0.05))) - 1]
-    return [scene] + [{**scene, 'video_asset': aid, 'visual': 'stock', 'trim_start': 0, 'trim_end': 0, 'fit': 'crop',
-                       'frame_aspect': 'full', 'zoom': 1.0, 'crop_x': 0.5, 'crop_y': 0.5, 'short_clip_mode': 'loop'}
-                      for aid in chosen]
+        chosen = list(range(min(1 + len(extras), max(1, math.ceil(length / shot_seconds - 0.05))) - 1))
+    return [scene] + [{**scene, 'video_asset': extras[n], 'visual': 'stock', 'trim_start': 0, 'trim_end': 0, 'fit': 'crop',
+                       'frame_aspect': 'full', 'zoom': 1.0, 'crop_x': crops[n], 'crop_y': 0.5, 'short_clip_mode': 'loop'}
+                      for n in chosen]
 
 
 MIN_PLANNED_SHOT = 1.2  # seconds; a planned part shorter than this is shown on the clip before it

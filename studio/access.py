@@ -52,6 +52,11 @@ def password_set():
     return _stored() is not None
 
 
+def get_password_for_display():
+    """Plaintext password to show on screen when STUDIO_PASSWORD is set in environment or default."""
+    return os.environ.get('STUDIO_PASSWORD', '')
+
+
 def verify(password):
     stored = _stored()
     if not stored or not isinstance(password, str) or not password:

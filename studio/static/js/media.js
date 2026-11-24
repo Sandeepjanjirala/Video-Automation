@@ -70,7 +70,8 @@
               trim_start: 0,
               trim_end: 0,
               extra_shots: [],
-              shot_weights: []
+              shot_weights: [],
+              shot_crop_x: []
             });
             Scenes.renderSceneVisuals();
             StudioState.setNotice('Uploaded visual assigned to scene. Save project to keep selection.');
@@ -323,7 +324,8 @@
           trim_start: 0,
           trim_end: 0,
           extra_shots: [],
-          shot_weights: []
+          shot_weights: [],
+          shot_crop_x: []
         });
         $('#media-library-modal, #modal-media-library').hide();
         Scenes.renderSceneVisuals();

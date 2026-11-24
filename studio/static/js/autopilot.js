@@ -94,9 +94,11 @@
 
     footage: async function() {
       const missing = () => project().scenes.filter(s => s.visual !== 'graphic' && !s.video_asset);
+      let warnings = [];
       if (missing().length) {
-        const job = await queueJob('stock_all', {prefetch_voice: true});  // the voice is recorded during footage
-        await applyJob(await waitJob('footage', job));
+        const job = await waitJob('footage', await queueJob('stock_all', {prefetch_voice: true}));  // the voice is recorded during footage
+        await applyJob(job);
+        warnings = (job.result && job.result.warnings) || [];
       }
       // Scenes without a usable stock clip become title cards rather than blocking the draft.
       const fallback = missing();
@@ -105,7 +107,8 @@
         s.graphic_title = (s.graphic_title || s.roman || 'Title').slice(0, 150);
       });
       if (fallback.length) StudioState.markDirty(true);
-      return fallback.length ? `${fallback.length} scene(s) without a matching clip use a title card` : 'every scene has footage';
+      return [fallback.length ? `${fallback.length} scene(s) without a matching clip use a title card` : 'every scene has footage',
+              ...warnings].join('. ');
     },
 
     approve: async function() {

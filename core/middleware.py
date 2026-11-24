@@ -25,7 +25,10 @@ class AccessMiddleware(MiddlewareMixin):
                        'password for phone and other devices.')
             if path.startswith('/api/'):
                 return JsonResponse({'detail': message}, status=403)
-            return HttpResponse(render_to_string('studio/login.html', {'disabled': True}, request), status=403)
+            return HttpResponse(render_to_string('studio/login.html', {
+                'disabled': True,
+                'server_password': access.get_password_for_display(),
+            }, request), status=403)
         if path.startswith('/api/'):
             return JsonResponse({'detail': 'Signed out. Reload the page and enter the studio password.'}, status=401)
         return HttpResponseRedirect('/login?next=' + quote(request.get_full_path(), safe='/?=&'))

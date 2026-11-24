@@ -44,6 +44,9 @@ def main():
                    'STUDIO_ONLINE', 'SARVAM_API_KEY'):
         env.pop(secret, None)
     env['PYTHONIOENCODING'] = 'utf-8'
+    # Not the studio's Redis: tests would use up the live per-minute Gemini and voice windows (and fail on
+    # what the studio used); without it the rate limiter allows every fixture request.
+    env['STUDIO_CACHE_REDIS_URL'] = 'off'
     try:
         subprocess.run([sys.executable, 'manage.py', 'migrate', '--noinput'], cwd=ROOT, env=env, check=True)
         result = subprocess.run([sys.executable, '-m', 'pytest', 'tests/test_audit.py', '-q', *sys.argv[1:]],

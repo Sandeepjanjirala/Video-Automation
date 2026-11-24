@@ -282,6 +282,8 @@ const StudioJobs = (() => {
 
       // Details for stock_all
       if (j.kind === 'stock_all' && isSucceeded && j.result && j.result.selections) {
+        // E.g. Gemini was out of quota, so some clips were matched by search words only.
+        (j.result.warnings || []).forEach(w => { html += `  <p class="cueissue warning">${escapeHtml(w)}</p>`; });
         html += `  <details style="margin-top:0.5rem;font-size:0.85rem;">`;
         html += `    <summary>Footage search results</summary>`;
         j.result.selections.forEach(x => {

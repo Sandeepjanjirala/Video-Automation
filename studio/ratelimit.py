@@ -36,6 +36,8 @@ def get_redis_client() -> Optional[redis.Redis]:
     global _redis_client
     if _redis_client is None:
         url = os.environ.get('STUDIO_CACHE_REDIS_URL') or DEFAULT_REDIS_CACHE_URL
+        if url == 'off':  # no shared limits (the test runner)
+            return None
         try:
             client = redis.Redis.from_url(url, socket_timeout=2.0, decode_responses=True)
             client.ping()

@@ -252,6 +252,8 @@
         ? 'Your recording narrates the whole video; the voice engine is not used.'
         : current === 'scenes' ? 'Scenes with a recording use it; scenes without one are read by the voice engine below.'
         : 'The voice engine reads every scene.');
+      $('#recording-cleanup-row').prop('hidden', current === 'voice');
+      $('#check-recording-cleanup').prop('checked', p.recording_cleanup !== false);
       if (current === 'track') renderTrack(p);
       if (current === 'scenes') { renderScenes(p); refreshHashes(p); }
       if (window.StudioVoice && StudioVoice.renderCapabilitiesStrip) StudioVoice.renderCapabilitiesStrip();  // the voice note
@@ -400,6 +402,10 @@
         if (audio) { track(project()).end = round(audio.currentTime); changed(); }
       });
       $(document).on('click', '#btn-track-end-full', function() { track(project()).end = 0; changed(); });
+      $(document).on('change', '#check-recording-cleanup', function() {
+        project().recording_cleanup = this.checked;
+        changed(false);
+      });
       $(document).on('input change', '#range-track-gain', function(e) {
         track(project()).gain_db = Number($(this).val());
         $('#label-track-gain').text((this.value > 0 ? '+' : '') + this.value + ' dB');

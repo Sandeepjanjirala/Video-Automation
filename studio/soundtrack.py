@@ -27,10 +27,12 @@ def narration_gain(scene, project, path):
     """dB that brings a scene's narration to the export loudness. One recording for the whole video gets
     one value for all its scenes, so the speaker's own rises and falls are kept; the recording's volume
     control (already in its cut) comes on top."""
-    if project.get('narration_mode') == 'track':
-        found = narration.analyze(project['narration_track']['asset'])
-    elif scene.get('audio_asset'):
-        found = narration.analyze(scene['audio_asset'])
+    recording = project['narration_track']['asset'] if project.get('narration_mode') == 'track' else scene.get('audio_asset')
+    from .media import cleaned_recording
+    if recording and cleaned_recording(scene, project):
+        found = narration.analyze_file(narration.cleaned(recording))  # the level of what is played
+    elif recording:
+        found = narration.analyze(recording)
     else:
         found = narration.analyze_file(path)
     return narration.normal_gain(found['loudness'], found['peak'])

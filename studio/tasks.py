@@ -5,6 +5,7 @@ Enforces execution leases, periodic heartbeats, fencing, and subprocess cancella
 """
 import copy
 import json
+import logging
 import os
 import shutil
 import threading
@@ -19,9 +20,10 @@ from .config import DATA, executable, settings
 from . import store
 from django.db import connections
 
-# Scenes rendered at the same time; each FFmpeg uses 4 threads, so 3 keep a 12+ core PC busy without
-# starving the rest of the system.
+# Scenes rendered at the same time, and the threads each scene's FFmpeg uses: three scenes keep a 12+ core
+# PC busy; a smaller PC renders one scene at a time on all its cores (a fixed 4 left a 6-core PC partly idle).
 RENDER_WORKERS = max(1, min(3, (os.cpu_count() or 4) // 4))
+RENDER_THREADS = max(1, (os.cpu_count() or 4) // RENDER_WORKERS)
 
 
 FencingError = store.FencingError
@@ -81,6 +83,8 @@ def fail_execution(job_id, exc, lease, stage):
     if not lease.lease_token:
         return
     from .config import SECRETS
+    if not isinstance(exc, ValueError):  # an unexpected error: its traceback goes to the worker's window
+        logging.getLogger('studio.tasks').error('%s job %s failed', stage, job_id, exc_info=exc)
     message = str(exc) if isinstance(exc, ValueError) else f'{type(exc).__name__}: processing failed'
     cfg = settings()
     for key in SECRETS:
@@ -192,10 +196,13 @@ def task_stock_all(self, job_id: str):
                 from .media import prefetch_voices
                 voice = threading.Thread(target=prefetch_voices, args=(p, provider), daemon=True)
                 voice.start()
-            selected = find(p, scenes, progress)
+            notes = []
+            selected = find(p, scenes, progress, notes=notes)
             if voice:
                 voice.join()
-            result = {'selections': selected, 'note': 'Clips chosen from the script by AI where available. Review relevance, framing, and rights before rendering.'}
+            result = {'selections': selected, 'warnings': notes,
+                      'note': ' '.join(['Clips chosen from the script by AI where available. Review relevance, framing, '
+                                        'and rights before rendering.', *notes])}
 
             lease.check_ownership()
             store.progress(job_id, 'Complete', 'succeeded', result, stage_name='footage')
@@ -328,9 +335,11 @@ def task_render_pipeline(self, job_id: str):
                 # fields that change only the sound do not re-render a scene; its length does.
                 sound_only = ('narration', 'spoken_text', 'audio_asset', 'audio_text_hash', 'take_id', 'delivery_preset',
                               'audio_trim_start', 'audio_trim_end', 'audio_gain_db', 'clip_volume', 'track_start')
+                # Empty shot lists stay out of the key, so scenes rendered before those fields stay cached.
                 cache_key = store.digest({
                     'renderer': 7,
-                    'scene': {k: v for k, v in scene.items() if k not in sound_only and (k != 'shot_weights' or v)},
+                    'scene': {k: v for k, v in scene.items()
+                              if k not in sound_only and (k not in ('shot_weights', 'shot_crop_x') or v)},
                     'frames': timing.frame_count,
                     'cues': cues,
                     'width': width,
@@ -357,7 +366,9 @@ def task_render_pipeline(self, job_id: str):
                     write_ass(work / 'captions.ass', cues, p,
                               scene['graphic_title'] if scene['visual'] == 'graphic' else None, length,
                               emphasis_words(scene, p))
-                    args = [executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-filter_threads', '1']
+                    args = [executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-filter_threads', '1',
+                            '-filter_complex_threads', '1']
+                    graph = None
                     if scene['visual'] == 'graphic':
                         args += ['-f', 'lavfi', '-i', f'color=c=0x12251F:s={width}x{height}:r=30:d={length}']
                         vf = f"drawbox=x=0:y={int(height * .24)}:w=iw:h=4:color=0xB9F8CF:t=fill"
@@ -369,8 +380,11 @@ def task_render_pipeline(self, job_id: str):
                         args += inputs
                     else:
                         # Several clips share the scene: each is framed and cut to its part (the words it
-                        # was chosen for, or an equal share), then joined.
+                        # was chosen for, or an equal share) and they are joined in one filter graph, so the
+                        # scene is encoded once. (Encoding every clip first and the joined scene again took
+                        # about twice as long and cost a little sharpness.)
                         parts = shot_lengths(scene, length, len(shots))
+                        graph = []
                         for k, shot in enumerate(shots):
                             shot_work = work / f'shot{k}'
                             shot_work.mkdir(exist_ok=True)
@@ -378,18 +392,18 @@ def task_render_pipeline(self, job_id: str):
                             seconds = parts[k] + (0.1 if k == len(shots) - 1 else 0)
                             shot_inputs, shot_vf = visual_inputs(shot, shot_path, source_info(shot_path), seconds,
                                                                  width, height, shot_work, run, job_id)
-                            run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-filter_threads', '1',
-                                 *shot_inputs, '-map', '0:v:0', '-an', '-vf', shot_vf + ',setsar=1,fps=30',
-                                 '-t', f'{seconds:.3f}', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '16',
-                                 '-pix_fmt', 'yuv420p', '-threads', '4', shot_work / 'shot.mp4'], cwd=shot_work, job_id=job_id)
-                        (work / 'shots.txt').write_text('\n'.join(f"file 'shot{k}/shot.mp4'" for k in range(len(shots))), 'utf-8')
-                        args += ['-f', 'concat', '-safe', '0', '-i', 'shots.txt']
-                        vf = 'null'
+                            # Each clip's decoder gets the scene's threads: all clips are open at once.
+                            args += ['-threads', str(RENDER_THREADS), *shot_inputs]
+                            graph.append(f'[{k}:v]{shot_vf},setsar=1,fps=30,trim=duration={seconds:.3f},setpts=PTS-STARTPTS[s{k}]')
+                        graph.append(''.join(f'[s{k}]' for k in range(len(shots))) + f'concat=n={len(shots)}:v=1:a=0')
                     output = work / 'scene.mp4'
-                    args += ['-map', '0:v:0', '-an',
-                             '-vf', vf + f",setsar=1,fps=30,{CAPTION_FILTER},{COLOUR_TAGS}",
-                             '-frames:v', str(timing.frame_count), '-c:v', 'libx264', '-preset', 'veryfast',
-                             '-crf', '24' if draft else '20', '-pix_fmt', 'yuv420p', '-r', '30', '-threads', '4',
+                    finish = f"setsar=1,fps=30,{CAPTION_FILTER},{COLOUR_TAGS}"
+                    if graph:
+                        args += ['-filter_complex', ';'.join(graph) + f',{finish}[out]', '-map', '[out]', '-an']
+                    else:
+                        args += ['-map', '0:v:0', '-an', '-vf', f'{vf},{finish}']
+                    args += ['-frames:v', str(timing.frame_count), '-c:v', 'libx264', '-preset', 'veryfast',
+                             '-crf', '24' if draft else '20', '-pix_fmt', 'yuv420p', '-r', '30', '-threads', str(RENDER_THREADS),
                              '-movflags', '+faststart', output]
                     run(args, cwd=work, job_id=job_id)
                     probe(output)
@@ -437,15 +451,15 @@ def task_render_pipeline(self, job_id: str):
             scene_files = [cached for cached, _ in results]
             report_scenes = [report for _, report in results]
 
-            # 4. Assembly stage: the scenes' pictures joined without re-encoding.
+            # 4. Assembly stage: the scenes' pictures joined without re-encoding, straight from the scene cache
+            # (copying every scene first cost seconds on a long video).
             lease.check_ownership()
             store.progress(job_id, 'Joining scenes into continuous video', stage_name='assembly')
             listing = temp / 'scenes.txt'
-            for i, source in enumerate(scene_files):
-                shutil.copyfile(source, temp / f'scene-{i}.mp4')
-            listing.write_text('\n'.join(f"file 'scene-{i}.mp4'" for i in range(len(scene_files))), 'utf-8')
+            listing.write_text('\n'.join("file '" + Path(source).resolve().as_posix().replace("'", "'\\''") + "'"
+                                         for source in scene_files), 'utf-8')
             joined = temp / 'joined.mp4'
-            run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '1',
+            run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-f', 'concat', '-safe', '0',
                  '-i', 'scenes.txt', '-map', '0:v:0', '-c', 'copy', '-an', joined], cwd=temp, job_id=job_id)
 
             # 5. Mixing stage: one continuous narration, clip sound and music, encoded once.
