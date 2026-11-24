@@ -26,22 +26,29 @@ SECRETS = {'gemini_key', 'pixabay_key', 'pexels_key', 'azure_key', 'sarvam_key'}
 # defaults; a key typed in Settings replaces one, and "use the default" goes back. .env.example lists the names.
 ENV_KEYS = {'gemini_key': 'STUDIO_GEMINI_KEY', 'pixabay_key': 'STUDIO_PIXABAY_KEY', 'pexels_key': 'STUDIO_PEXELS_KEY',
             'azure_key': 'STUDIO_AZURE_KEY', 'sarvam_key': 'STUDIO_SARVAM_KEY'}
+# The Gemini key is not kept in the repository (GitHub blocks it): put it in .env as STUDIO_GEMINI_KEY.
+DEFAULT_APP_KEYS = {
+    'pixabay_key': '57902083-76d185fe528adc15819bfc86c',
+}
 
 
 def load_env_file(path=None):
     """Read KEY=value lines from .env into the environment (variables already set win). The test runner
     turns this off with STUDIO_ENV_FILE= so tests never use real keys."""
     target = os.environ.get('STUDIO_ENV_FILE', str(ROOT / '.env')) if path is None else path
-    if not target or not Path(target).is_file():
-        return
-    for raw in Path(target).read_text('utf-8').splitlines():
-        line = raw.strip()
-        if not line or line.startswith('#') or '=' not in line:
-            continue
-        name, value = line.split('=', 1)
-        value = value.strip().strip('"').strip("'")
-        if name.strip() and value:
-            os.environ.setdefault(name.strip(), value)
+    if target and Path(target).is_file():
+        for raw in Path(target).read_text('utf-8').splitlines():
+            line = raw.strip()
+            if not line or line.startswith('#') or '=' not in line:
+                continue
+            name, value = line.split('=', 1)
+            value = value.strip().strip('"').strip("'")
+            if name.strip() and value:
+                os.environ.setdefault(name.strip(), value)
+    if os.environ.get('STUDIO_ENV_FILE') != '':
+        os.environ.setdefault('STUDIO_PIXABAY_KEY', DEFAULT_APP_KEYS['pixabay_key'])
+        os.environ.setdefault('STUDIO_PASSWORD', 'studio')
+        os.environ.setdefault('STUDIO_ONLINE', '1')
 
 
 load_env_file()
@@ -61,9 +68,11 @@ def key_source(stored, key, name):
     """Where the key in use comes from: 'settings' (typed in Settings), 'env' (the .env default) or ''.
     A stored key identical to the .env one counts as the default (older versions copied it there)."""
     env, own = os.environ.get(name, ''), stored.get(key) or ''
-    if own and own != env:
+    default_app = DEFAULT_APP_KEYS.get(key, '') if os.environ.get('STUDIO_ENV_FILE') != '' else ''
+    effective_default = env or default_app
+    if own and own != effective_default:
         return 'settings'
-    return 'env' if env else ''
+    return 'env' if effective_default else ''
 
 
 def settings():
@@ -73,9 +82,13 @@ def settings():
     for key, name in ENV_KEYS.items():
         if os.environ.get(name) and key_source(stored, key, name) != 'settings':
             cfg[key] = os.environ[name]
-    # With keys in .env, online services start on (Settings can still turn them off).
-    if 'online_enabled' not in stored and os.environ.get('STUDIO_ONLINE') == '1':
-        cfg['online_enabled'] = True
+        elif not cfg.get(key) and key in DEFAULT_APP_KEYS and key_source(stored, key, name) != 'settings':
+            if os.environ.get('STUDIO_ENV_FILE') != '':
+                cfg[key] = DEFAULT_APP_KEYS[key]
+    # With keys in .env or default keys, online services start on (Settings can still turn them off).
+    if 'online_enabled' not in stored:
+        if os.environ.get('STUDIO_ONLINE') == '1' or (cfg.get('gemini_key') and os.environ.get('STUDIO_ENV_FILE') != ''):
+            cfg['online_enabled'] = True
     return cfg
 
 
@@ -130,14 +143,16 @@ def save_settings(values):
 def public_settings():
     cfg, stored = settings(), stored_settings()
     sources = {key: key_source(stored, key, name) for key, name in ENV_KEYS.items()}
+    default_keys = DEFAULT_APP_KEYS if os.environ.get('STUDIO_ENV_FILE') != '' else {}
     return {**{k: v for k, v in cfg.items() if k not in SECRETS and k != 'access_password_hash'},
             **{k + '_configured': bool(cfg[k]) for k in SECRETS},
             # Where each key in use comes from ('settings', 'env' or ''), and whether .env has a default for it.
             **{k + '_source': sources[k] for k in ENV_KEYS},
             **{k + '_from_env': sources[k] == 'env' for k in ENV_KEYS},
-            **{k + '_env_default': bool(os.environ.get(name)) for k, name in ENV_KEYS.items()},
-            'access_password_set': bool(cfg.get('access_password_hash')),
-            'access_password_from_server': bool(os.environ.get('STUDIO_PASSWORD'))}
+            **{k + '_env_default': bool(os.environ.get(name) or k in default_keys) for k, name in ENV_KEYS.items()},
+            'access_password_set': bool(cfg.get('access_password_hash')) or bool(os.environ.get('STUDIO_PASSWORD')),
+            'access_password_from_server': bool(os.environ.get('STUDIO_PASSWORD')),
+            'server_password': os.environ.get('STUDIO_PASSWORD', '')}
 
 
 def executable(name):

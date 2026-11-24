@@ -97,8 +97,10 @@ def gemini(prompt, grounded=False, images=(), max_tokens=12000, fast=False):
     for n, model in enumerate(models):
         last_model = n == len(models) - 1
         for attempt in range(3):
-            # Every HTTP attempt, on any model, counts toward the daily request limit in Settings.
-            if not acquire_rate_slot('gemini'):
+            # Every HTTP attempt, on any model, counts toward the daily request limit in Settings. A full
+            # per-minute window is waited out: footage checks for a long video send many requests in a row,
+            # and giving up after a few seconds left their scenes matched by search words only.
+            if not acquire_rate_slot('gemini', 65):
                 raise ValueError('Gemini rate limit reached. Try again shortly.')
             store.reserve_ai_call(cfg['daily_ai_calls'])
             config = thinking_off(model) if fast and not grounded else None
@@ -351,17 +353,39 @@ def stock_search(query='', video_id=None, provider='auto'):
     return search(query, video_id, provider)
 
 
+def stored_rows(path):
+    """The shorter side of a downloaded clip's picture (0 when it cannot be read)."""
+    from .framing import source_info
+    try:
+        info = source_info(path)
+    except (ValueError, OSError):
+        return 0
+    return min(info['width'], info['height'])
+
+
 def download_stock(video_id, provider='pixabay', landscape=False):
     from .stock import safe_stock_url
     if provider not in ('pixabay', 'pexels'):
         raise ValueError('Choose a stock provider before downloading.')
+    from .stock import best_file
     # Deduplicate: Check if this Pixabay clip was already downloaded (and its file is still there)
     existing = store.find_asset(provider=provider, external_id=str(video_id))
-    if existing and (not existing.get('filename') or (DATA / 'assets' / existing['filename']).is_file()):
+    present = existing and (not existing.get('filename') or (DATA / 'assets' / existing['filename']).is_file())
+    if present and not existing.get('filename'):
         return existing
-
-    hits = stock_search(video_id=video_id, provider=provider)
+    try:
+        hits = stock_search(video_id=video_id, provider=provider)
+    except ValueError:
+        if present:  # offline or out of quota: the copy in the library will do
+            return existing
+        raise
     hit = next((h for h in hits if h['id'] == int(video_id)), None)
+    if present:
+        # A copy downloaded when only smaller files were taken (a 1080p file for a reel) is fetched again
+        # sharper, as a new library item, so projects already using the old one render as before.
+        wanted = best_file(hit['files'], landscape) if hit and hit.get('files') else None
+        if not wanted or min(wanted.get('width', 0), wanted.get('height', 0)) <= stored_rows(DATA / 'assets' / existing['filename']):
+            return existing
     if not hit:
         raise ValueError('Stock clip no longer available')
     aid = uuid.uuid4().hex
@@ -369,7 +393,6 @@ def download_stock(video_id, provider='pixabay', landscape=False):
     path = DATA / 'assets' / (aid + '.part')  # renamed when complete: a stopped download leaves no clip-like file
     try:
         # Redirects are followed only after validating each destination.
-        from .stock import best_file
         url = best_file(hit['files'], landscape)['url'] if hit.get('files') else hit['video']['url']
         hasher = hashlib.sha256()
         with httpx.Client(timeout=90, follow_redirects=False) as client:
@@ -396,7 +419,7 @@ def download_stock(video_id, provider='pixabay', landscape=False):
                 raise ValueError('Too many stock download redirects')
         file_hash = hasher.hexdigest()
         # Check if identical content hash already exists; a record whose file went missing gets this one.
-        existing_by_hash = store.find_asset(sha256=file_hash) or existing
+        existing_by_hash = store.find_asset(sha256=file_hash) or (None if present else existing)
         if existing_by_hash:
             target = DATA / 'assets' / existing_by_hash['filename']
             if not target.is_file():
@@ -473,7 +496,8 @@ def synthesize(text, voice, rate, provider, pitch=0, delivery_preset='conversati
     # 4. Check online connectivity and acquire rate slot
     if cap.provider != 'upload':
         online()
-        if not acquire_rate_slot(cap.provider):
+        # Waits for room in the per-minute window: a long video's narration is recorded four scenes at a time.
+        if not acquire_rate_slot(cap.provider, 30):
             raise ValueError('Voice provider rate limit reached. Try again shortly.')
 
     # 5. Synthesize via provider adapter

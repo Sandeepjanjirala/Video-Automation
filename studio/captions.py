@@ -25,8 +25,11 @@ def speech_project(body):
     if not isinstance(body, dict) or not isinstance(body.get('scenes'), list):
         raise ValueError('Project body with scenes is required')
     data = {f: body[f] for f in SPEECH_PROJECT_FIELDS if f in body}
-    if 'format' in body:  # a YouTube video may have more scenes than a reel (not part of the speech key)
-        data['format'] = body['format']
+    # Not part of the speech key either: a YouTube video may have more scenes than a reel, and the clean-up
+    # changes only what an uploaded recording sounds like (it is measured afresh, never taken from a voice job).
+    for field in ('format', 'recording_cleanup'):
+        if field in body:
+            data[field] = body[field]
     data['scenes'] =[{**s, 'cues': []} if isinstance(s, dict) else s for s in body['scenes']]
     return Project.model_validate(data).model_dump()
 

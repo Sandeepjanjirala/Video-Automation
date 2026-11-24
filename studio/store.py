@@ -60,6 +60,32 @@ def digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
+def temp_beside(path: Path) -> Path:
+    """A uniquely named temporary file next to `path` (two threads making the same cache file never share one)."""
+    path = Path(path)
+    return path.with_name(f'{path.stem}.{uuid.uuid4().hex[:12]}.part{path.suffix}')
+
+
+def publish_file(temp: Path, target: Path) -> None:
+    """Move a finished temporary file into place, so readers see the old file or the new one, never half
+    of one. Cache files are named by what they hold, so when Windows refuses the move because another
+    thread or process has the same file open or is placing it, that file is already the same and this
+    copy is dropped."""
+    try:
+        Path(temp).replace(target)
+    except PermissionError:
+        Path(temp).unlink(missing_ok=True)
+        if not Path(target).is_file():
+            raise
+
+
+def write_cache(path: Path, text: str) -> None:
+    """Write a cache file whole (publish_file)."""
+    temp = temp_beside(path)
+    temp.write_text(text, 'utf-8')
+    publish_file(temp, path)
+
+
 def compute_script_hash(project_dict: Dict[str, Any]) -> str:
     scenes = project_dict.get('scenes', [])
     content = [{'narration': s.get('narration', ''), 'roman': s.get('roman', '')} for s in scenes]
@@ -335,8 +361,8 @@ def find_asset(sha256: Optional[str] = None, provider: Optional[str] = None, ext
     qs = Asset.objects.using(MEDIA_DB)
     if sha256:
         a = qs.filter(sha256=sha256).first()
-    elif provider and external_id:
-        a = qs.filter(provider=provider, external_id=str(external_id)).first()
+    elif provider and external_id:  # the newest copy: a clip fetched again sharper replaces the old one here
+        a = qs.filter(provider=provider, external_id=str(external_id)).order_by('-created_at').first()
     else:
         return None
     if not a:

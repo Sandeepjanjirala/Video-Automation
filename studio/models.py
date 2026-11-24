@@ -57,6 +57,9 @@ class Scene(StrictModel):
     # Share of the line each clip covers (its own, then the extra shots) when the footage search planned
     # one clip per part of the line; empty means equal parts.
     shot_weights: list[float] = Field(default_factory=list, max_length=5)
+    # Horizontal framing of each extra shot (as crop_x), set by the footage search so a reel's crop of a
+    # landscape clip keeps its subject in view; empty means centred.
+    shot_crop_x: list[float] = Field(default_factory=list, max_length=4)
     # The line's key words, shown in the highlight colour when the project's caption_emphasis is on.
     emphasis: list[str] = Field(default_factory=list, max_length=6)
     # One recording for the whole video (project narration_mode 'track'): where this scene's words start
@@ -77,6 +80,8 @@ class Scene(StrictModel):
             raise ValueError('Extra shots must be media library clip IDs')
         if any(not 0 <= w <= 1 for w in self.shot_weights):
             raise ValueError('Shot weights must be shares between 0 and 1')
+        if any(not 0 <= x <= 1 for x in self.shot_crop_x):
+            raise ValueError('Shot framing positions must be between 0 and 1')
         if any(not isinstance(w, str) or not w.strip() or len(w) > 40 for w in self.emphasis):
             raise ValueError('Key words must be single words of at most 40 characters')
         if self.trim_end and self.trim_end <= self.trim_start:
@@ -128,6 +133,9 @@ class Project(StrictModel):
     # recording for the whole video, cut at each scene's track_start (studio/narration.py).
     narration_mode: Literal['voice', 'track'] = 'voice'
     narration_track: NarrationTrack = Field(default_factory=NarrationTrack)
+    # Recordings (one for the video or per scene) are cleaned for the video: rumble and background noise
+    # reduced, levels evened out (studio/narration.py). The uploaded file itself is never changed.
+    recording_cleanup: bool = True
     caption_size: int = Field(default=56, ge=30, le=90)
     caption_bottom: int = Field(default=300, ge=180, le=600)
     # Projects saved before caption styles keep the original outlined captions.

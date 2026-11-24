@@ -1,7 +1,6 @@
 """Reviewable Roman Telugu -> Telugu conversion, independent of narration billing."""
 import json
 import re
-import uuid
 
 from .config import DATA
 from . import store, providers
@@ -76,6 +75,5 @@ def _validate(text):
 
 
 def _write(path, value):
-    temp = path.with_suffix(f'.{uuid.uuid4().hex}.tmp')
-    temp.write_text(json.dumps(value, ensure_ascii=False), 'utf-8')
-    temp.replace(path)
+    from . import store
+    store.write_cache(path, json.dumps(value, ensure_ascii=False))

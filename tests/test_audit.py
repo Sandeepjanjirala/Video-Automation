@@ -185,6 +185,46 @@ def test_stock_download_deduplication_is_provider_scoped(monkeypatch):
     assert calls == [{'provider': 'pexels', 'external_id': '123'}]
 
 
+def test_a_clip_downloaded_smaller_is_fetched_again_sharper_as_a_new_library_item(monkeypatch, tmp_path):
+    import httpx
+    sizes = {}
+    for name, size in (('small', '320x180'), ('sharp', '640x360')):   # stand-ins for 1080p and 4K files
+        sizes[name] = tmp_path / f'{name}.mp4'
+        ffmpeg('-f', 'lavfi', '-i', f'color=c=blue:s={size}:d=1', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', sizes[name])
+    old_id = uuid.uuid4().hex
+    (DATA / 'assets' / f'{old_id}.mp4').write_bytes(sizes['small'].read_bytes())
+    store.add_asset({'id': old_id, 'filename': f'{old_id}.mp4', 'kind': 'video', 'provider': 'pixabay', 'external_id': '555',
+                     'duration': 1, 'sha256': 'old'})
+    hit = {'id': 555, 'source_url': 'https://pixabay.com/videos/555/', 'creator': 'A', 'license_url': 'https://pixabay.com/l/',
+           'files': [{'url': 'https://cdn.pixabay.com/sharp.mp4', 'width': 640, 'height': 360, 'size': 1000},
+                     {'url': 'https://cdn.pixabay.com/small.mp4', 'width': 320, 'height': 180, 'size': 500}]}
+    monkeypatch.setattr(providers, 'stock_search', lambda **kw: [hit])
+    monkeypatch.setattr('studio.stock.best_file', lambda files, landscape=False: files[0])   # "the sharper file"
+    fetched = []
+
+    class Stream:
+        def __init__(self, url): self.url, self.is_redirect, self.status_code = url, False, 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def iter_bytes(self):
+            fetched.append(self.url)
+            yield sizes[self.url.rsplit('/', 1)[1][:-4]].read_bytes()
+
+    class Client:
+        def __init__(self, **kw): pass
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def stream(self, method, url): return Stream(url)
+    monkeypatch.setattr(httpx, 'Client', Client)
+    new = providers.download_stock(555, 'pixabay')
+    assert new['id'] != old_id and fetched == ['https://cdn.pixabay.com/sharp.mp4']
+    assert store.asset(old_id)['filename'] == f'{old_id}.mp4'                  # projects using the old copy keep it
+    assert store.find_asset(provider='pixabay', external_id='555')['id'] == new['id']
+    assert providers.download_stock(555, 'pixabay')['id'] == new['id'] and len(fetched) == 1   # already the sharpest
+    monkeypatch.setattr(providers, 'stock_search', lambda **kw: (_ for _ in ()).throw(ValueError('offline')))
+    assert providers.download_stock(555, 'pixabay')['id'] == new['id']         # offline: the library copy will do
+
+
 def test_sarvam_upgrade_detaches_generated_takes_and_preserves_uploads(monkeypatch):
     body = project()
     body['scenes'][0].update(audio_asset='a' * 32, take_id='take_free', audio_text_hash=store.digest(body['scenes'][0]['narration']),
@@ -771,7 +811,9 @@ def test_caption_timing_measures_attached_recording_and_flags_mismatch(tmp_path)
     timing = caption_timing(row['id'])['scene1']
     assert timing['status'] == 'measured'
     assert timing['duration'] == pytest.approx(1.7, abs=0.05)
-    assert timing['audio_url'] == f"/api/assets/{asset['id']}/media"
+    assert timing['audio_url'].startswith('/api/narration/audio/')       # the cleaned copy the video plays
+    raw = caption_timing(row['id'], {**row['project'], 'recording_cleanup': False})['scene1']
+    assert raw['audio_url'] == f"/api/assets/{asset['id']}/media" and raw['duration'] == pytest.approx(timing['duration'], abs=1e-3)
     assert timing['automatic']['roman']['alignment'].startswith('estimated')
     # Editing the text keeps the recording (it is what was said) and asks for a check instead.
     edited = copy.deepcopy(row['project'])
@@ -1527,20 +1569,147 @@ def test_footage_without_gemini_uses_keywords_and_ranking(monkeypatch):
         raise ValueError('Gemini rate limit reached. Try again shortly.')
     footage, body, searched, downloaded = footage_fixture(monkeypatch, gemini)
     body['scenes'].append({**body['scenes'][2], 'id': 'honey2'})       # the same words: never the same clip twice
-    selected = {s['scene_id']: s for s in footage.find(body, body['scenes'])}
+    notes = []
+    selected = {s['scene_id']: s for s in footage.find(body, body['scenes'], notes=notes)}
     assert selected['octo']['error'] == 'Add English search keywords'
     assert selected['title']['asset']['id'] == f'{7:032x}'           # real film over a low-quality animation
     assert (selected['honey']['asset']['id'], selected['honey2']['asset']['id']) == (f'{4:032x}', f'{5:032x}')
     assert selected['honey']['match'] == 'Best keyword match'
+    # The result says why the AI did not choose these clips, instead of quietly matching by words.
+    assert notes == ['Gemini was unavailable for part of the footage search (Gemini rate limit reached. Try again shortly); '
+                     '3 scene(s) were matched by search words only. Review them, or run Find footage for all scenes again later.']
+
+
+def test_reel_clips_are_framed_on_their_subject_and_good_picks_download_during_the_second_search(monkeypatch):
+    import threading
+    early, got = threading.Event(), []
+
+    def gemini(prompt, grounded=False, images=(), **options):
+        if 'found no good stock clip' in prompt:
+            assert early.wait(5)                     # the well-scored clips are already downloading
+            return json.dumps({'scenes': [{'index': 0, 'shot': 1, 'description': 'A surprised woman', 'queries': ['woman surprised phone']}]}), {}
+        if not images:
+            return json.dumps({'scenes': [{'index': 1, 'shot': 'An octopus', 'queries': ['octopus']},
+                                          {'index': 2, 'shot': 'Honey in a jar', 'queries': ['honey jar']}]}), {}
+        assert 'upright slice' in prompt             # a reel asks where each landscape clip's subject is
+        if 'clip pixabay-8' in images[0][0]:
+            return json.dumps({'scenes': [{'index': 0, 'picks': [{'candidate': 1, 'score': 8, 'x': 0.5}]}]}), {}
+        return json.dumps({'scenes': [{'index': 0, 'picks': []},
+                                      {'index': 1, 'picks': [{'candidate': 2, 'score': 9, 'x': 0.2}]},    # landscape octopus, left
+                                      {'index': 2, 'picks': [{'candidate': 1, 'score': 8, 'x': 0.9}]}]}), {}  # honey at the right edge
+    footage, body, searched, downloaded = footage_fixture(monkeypatch, gemini)
+
+    def download(id, provider, landscape=False):
+        got.append(id)
+        if {2, 4} <= set(got):
+            early.set()
+        return {'id': f'{id:032x}', 'provider': provider}
+    monkeypatch.setattr(providers, 'download_stock', download)
+    selected = {s['scene_id']: s for s in footage.find(body, body['scenes'])}
+    assert selected['octo']['asset']['id'] == f'{2:032x}' and selected['octo']['crop_x'] == 0.061
+    assert selected['honey']['crop_x'] == 1.0                                     # as far right as the clip allows
+    assert selected['title']['asset']['id'] == f'{8:032x}' and 'crop_x' not in selected['title']   # centred subject
+    assert sorted(got) == [2, 4, 8]
+    # A vertical clip, or a landscape video, is never moved.
+    tall = {**pixabay_hit(3, 'octopus', 1080, 1920), 'subject_x': 0.1}
+    assert footage.crop_for(tall, body) == 0.5 and footage.crop_for({**tall, 'video': {'width': 1920, 'height': 1080}}, {'format': 'youtube'}) == 0.5
+
+
+def test_footage_plan_shots_that_drift_into_the_next_line_move_to_their_own_scene(monkeypatch):
+    # Seen with real Gemini: asked for two shots of a short line, it planned the next scene's line as the second.
+    def gemini(prompt, grounded=False, images=(), **options):
+        if not images:
+            assert 'never\ncontinue into the next scene' in prompt or 'never continue into the next scene' in prompt.replace('\n', ' ')
+            return json.dumps({'scenes': [
+                {'index': 1, 'shots': [{'words': 'Octopus ki moodu hearts untayi!', 'shot': 'An octopus', 'queries': ['octopus']},
+                                       {'words': 'Honey eppatiki paadavadu', 'shot': 'Honey in a jar', 'queries': ['honey jar']}]},
+                {'index': 2, 'shots': [{'words': 'Pizza is tasty', 'shot': 'Pizza', 'queries': ['pizza']}]}]}), {}
+        return json.dumps({'scenes': []}), {}
+    footage, body, searched, downloaded = footage_fixture(monkeypatch, gemini)
+    plans = footage.plan(body, [1, 2])
+    assert [s['shot'] for s in plans[1]['shots']] == ['An octopus']                 # only its own words
+    assert [s['shot'] for s in plans[2]['shots']] == ['Honey in a jar']             # the drifted shot, where it belongs
+    # Words found in no line of the batch ("Pizza is tasty") are dropped.
+    assert all(s['shot'] != 'Pizza' for p in plans.values() for s in p['shots'])
+
+
+def test_footage_check_maps_answers_numbered_by_position_and_looks_again_at_skipped_shots(monkeypatch):
+    asked = []
+
+    def gemini(prompt, grounded=False, images=(), **options):
+        if not images:
+            return json.dumps({'scenes': [{'index': 1, 'shot': 'An octopus', 'queries': ['octopus']},
+                                          {'index': 2, 'shot': 'Honey', 'queries': ['honey jar']}]}), {}
+        shown = sorted({int(label.split('candidate')[0].split('Scene')[-1]) for label, _, _ in images})
+        asked.append(shown)
+        assert 'never its place in this list' in prompt
+        if shown == [2]:      # the only scene shown, answered as "index": 0
+            return json.dumps({'scenes': [{'index': 0, 'picks': [{'candidate': 1, 'score': 8}]}]}), {}
+        return json.dumps({'scenes': [{'index': 1, 'picks': [{'candidate': 1, 'score': 9}]}]}), {}   # Scene 2 left out
+    footage, body, searched, downloaded = footage_fixture(monkeypatch, gemini)
+    honey = footage.find(body, [body['scenes'][2]])[0]
+    assert asked == [[2]] and honey['match'].startswith('AI-checked match (8/10)')    # not "Best keyword match"
+    asked.clear()
+    selected = {s['scene_id']: s for s in footage.find(body, body['scenes'][1:])}
+    assert asked == [[1, 2], [2]]                                                    # one second look, for Scene 2 only
+    assert selected['octo']['match'].startswith('AI-checked match (9/10)')
+    assert selected['honey']['match'].startswith('AI-checked match (8/10)')
+
+
+def test_reel_downloads_prefer_1440_rows_when_4k_is_too_big():
+    from studio.stock import SHARP_DOWNLOAD_LIMIT, best_file
+    files = [{'url': '4k', 'width': 3840, 'height': 2160, 'size': SHARP_DOWNLOAD_LIMIT + 1},
+             {'url': '1440', 'width': 2560, 'height': 1440, 'size': 40_000_000},
+             {'url': '1080', 'width': 1920, 'height': 1080, 'size': 20_000_000}]
+    assert best_file(files)['url'] == '1440' and best_file(files, landscape=True)['url'] == '1080'
+    files[0]['size'] = 90_000_000                                                    # 4K within the limit
+    assert best_file(files)['url'] == '4k'
+    # Among clips Gemini scores alike, the one that downloads sharper for the format goes first.
+    from studio.footage import sharpness
+    assert (sharpness({'files': files}, False), sharpness({'files': files[2:]}, False), sharpness({'files': files}, True)) == (1920, 1080, 1080)
+
+
+def test_second_search_also_asks_pexels_when_both_sources_are_set_up(monkeypatch):
+    def gemini(prompt, grounded=False, images=(), **options):
+        if 'found no good stock clip' in prompt:
+            return json.dumps({'scenes': [{'index': 2, 'shot': 1, 'description': 'A honey pot', 'queries': ['honey pot']}]}), {}
+        if not images:
+            return json.dumps({'scenes': [{'index': 2, 'shot': 'Honey in a jar', 'queries': ['honey jar']}]}), {}
+        if 'clip pexels-40' in images[0][0]:
+            return json.dumps({'scenes': [{'index': 2, 'picks': [{'candidate': 1, 'score': 9}]}]}), {}
+        return json.dumps({'scenes': [{'index': 2, 'picks': [{'candidate': 1, 'score': 6}]}]}), {}
+    footage, body, searched, downloaded = footage_fixture(monkeypatch, gemini)
+    calls, search = [], providers.stock_search
+
+    def both(query, provider='auto'):
+        calls.append((query, provider))
+        return [{**pixabay_hit(40, 'honey, pot'), 'provider': 'pexels'}] if provider == 'pexels' else search(query, provider)
+    monkeypatch.setattr(providers, 'stock_search', both)
+    monkeypatch.setattr(footage, 'second_source', lambda provider: 'pexels' if provider == 'auto' else None)
+    honey = footage.find(body, [body['scenes'][2]])[0]
+    assert ('honey pot', 'pexels') in calls and ('honey jar', 'pexels') not in calls   # only the second search widens
+    assert honey['asset']['id'] == f'{40:032x}' and 'after a second search' in honey['match']
+
+
+def test_extra_shots_are_framed_where_the_footage_search_found_their_subject():
+    from studio.framing import scene_shots
+    scene = {'visual': 'stock', 'video_asset': 'a' * 32, 'extra_shots': ['b' * 32, 'c' * 32], 'shot_crop_x': [0.1, 0.9], 'crop_x': 0.3}
+    assert [s['crop_x'] for s in scene_shots(scene, 12.0)] == [0.3, 0.1, 0.9]
+    assert [s['crop_x'] for s in scene_shots({**scene, 'shot_crop_x': [0.1]}, 12.0)] == [0.3, 0.5, 0.5]   # mismatched: centred
+    # A planned part too short to show is skipped; the next clip keeps its own framing.
+    assert [s['crop_x'] for s in scene_shots({**scene, 'shot_weights': [0.6, 0.05, 0.35]}, 12.0)] == [0.3, 0.9]
+    with pytest.raises(ValueError, match='Shot framing positions'):
+        Project.model_validate({**project(), 'scenes': [{**project()['scenes'][0], 'shot_crop_x': [1.5]}]})
 
 
 def test_stock_all_job_uses_the_footage_matcher(monkeypatch):
     from studio import footage
     seen = {}
 
-    def find(project, scenes, progress):
+    def find(project, scenes, progress, notes=None):
         progress('Searching footage 1/1')
         seen['ids'] = [s['id'] for s in scenes]
+        notes.append('Gemini was unavailable for part of the footage search (quota).')
         return [{'scene_id': 'scene1', 'asset': {'id': 'c' * 32}, 'match': 'AI-checked match (9/10)'}]
     monkeypatch.setattr(footage, 'find', find)
     body = project()
@@ -1550,7 +1719,10 @@ def test_stock_all_job_uses_the_footage_matcher(monkeypatch):
     from studio.tasks import task_stock_all
     assert task_stock_all.run(job['id'])['status'] == 'succeeded'
     assert seen['ids'] == ['scene1']
-    assert store.job(job['id'])['result']['selections'][0]['match'] == 'AI-checked match (9/10)'
+    result = store.job(job['id'])['result']
+    assert result['selections'][0]['match'] == 'AI-checked match (9/10)'
+    assert result['note'].endswith('rendering. Gemini was unavailable for part of the footage search (quota).')
+    assert result['warnings'] == ['Gemini was unavailable for part of the footage search (quota).']   # shown in the job panel
 
 
 def test_gemini_waits_out_a_per_minute_limit_but_not_a_daily_one(monkeypatch):
@@ -1722,17 +1894,19 @@ def test_extra_shots_are_applied_from_footage_search_and_cleared_by_a_manual_cho
     job = store.enqueue(row['id'], 1, 'stock_all')
     store.progress(job['id'], 'Complete', 'succeeded', {'selections': [
         {'scene_id': 'scene1', 'asset': store.asset(red), 'extra_assets': [store.asset(green), store.asset(blue)],
-         'shot_weights': [0.5, 0.2, 0.3]}]})
+         'shot_weights': [0.5, 0.2, 0.3], 'crop_x': 0.25, 'shot_crop_x': [0.1, 0.9]}]})
     c = client()
     applied = c.post(f"/api/projects/{row['id']}/apply-job/{job['id']}", {}, content_type='application/json')
     assert applied.status_code == 200, applied.content
     scene = applied.json()['project']['project']['scenes'][0]
     assert (scene['video_asset'], scene['extra_shots'], scene['visual'], scene['shot_weights']) == (red, [green, blue], 'stock', [0.5, 0.2, 0.3])
+    assert (scene['crop_x'], scene['shot_crop_x']) == (0.25, [0.1, 0.9])     # each clip framed on its subject
     assert store.preflight({**applied.json()['project']['project'], 'scenes': [{**scene, 'rights_reviewed': True}]})['ready']
     assigned = c.post(f"/api/projects/{row['id']}/assign-media", {'asset_id': blue, 'scene_ids': ['scene1']}, content_type='application/json')
     assert assigned.status_code == 200, assigned.content
     scene = assigned.json()['project']['scenes'][0]
     assert (scene['video_asset'], scene['extra_shots'], scene['visual'], scene['shot_weights']) == (blue, [], 'upload', [])
+    assert scene['shot_crop_x'] == []
     # A missing extra shot blocks rendering with a clear message.
     broken = {**assigned.json()['project'], 'scenes': [{**scene, 'extra_shots': ['f' * 32]}]}
     assert any('extra shot is unavailable' in e['message'] for e in store.preflight(broken)['errors'])
@@ -1922,12 +2096,17 @@ def test_fill_scenes_completes_a_long_script_in_batches_with_the_whole_script(mo
     assert all(s['narration'] and s['keywords'] for s in scenes)
 
 
-def test_stock_requests_are_paced_and_wait_out_a_rate_limit(monkeypatch):
+def test_stock_requests_go_out_together_within_the_rate_limit_window(monkeypatch):
     from studio import stock
     slept, clock = [], [100.0]
     monkeypatch.setattr(stock.time, 'monotonic', lambda: clock[0])
     monkeypatch.setattr(stock.time, 'sleep', lambda s: (slept.append(round(s, 2)), clock.__setitem__(0, clock[0] + s)))
-    stock._last_request.clear()
+    monkeypatch.setattr(stock, 'WINDOWS', {'pixabay': (3, 60.0), 'pexels': (2, 3600.0)})
+    stock._sent.clear()
+    # Requests go out at once until the window is full; the next waits for the oldest to leave it.
+    assert [stock.paced('pixabay', lambda n=n: n) for n in range(3)] == [0, 1, 2] and slept == []
+    clock[0] += 10
+    assert stock.paced('pixabay', lambda: 'fourth') == 'fourth' and slept == [50.0]
     answers = iter([ValueError('Provider returned HTTP 429: Too many requests'), 'ok'])
 
     def call():
@@ -1935,11 +2114,14 @@ def test_stock_requests_are_paced_and_wait_out_a_rate_limit(monkeypatch):
         if isinstance(answer, Exception):
             raise answer
         return answer
-    assert stock.paced('pixabay', lambda: 'first') == 'first'
-    assert stock.paced('pixabay', call) == 'ok'
-    assert slept == [0.7, 20]
+    assert stock.paced('pixabay', call) == 'ok' and slept == [50.0, 20]       # a rate-limit answer is waited out
     with pytest.raises(ValueError, match='HTTP 401'):
         stock.paced('pixabay', lambda: (_ for _ in ()).throw(ValueError('Provider returned HTTP 401')))
+    # Pexels allows 200 requests an hour: a full hour is reported, not waited out.
+    assert [stock.paced('pexels', lambda: 'p') for _ in range(2)] == ['p', 'p'] and not stock.room('pexels')
+    with pytest.raises(ValueError, match='Pexels request limit reached for this hour'):
+        stock.paced('pexels', lambda: 'p')
+    assert stock.room('pixabay')
 
 
 def test_youtube_ai_draft_writes_a_long_form_script(monkeypatch):
@@ -2263,7 +2445,7 @@ def test_free_voice_is_recorded_while_footage_is_found(monkeypatch):
     from studio import footage, tasks
     recorded = []
     monkeypatch.setattr(media, 'prefetch_voices', lambda project, provider, workers=4: recorded.append(provider))
-    monkeypatch.setattr(footage, 'find', lambda project, scenes, progress: [])
+    monkeypatch.setattr(footage, 'find', lambda project, scenes, progress, notes=None: [])
     for provider, options, expected in (('edge', {}, ['edge']), ('sarvam', {}, []), ('sarvam', {'prefetch_voice': True}, ['sarvam'])):
         recorded.clear()
         body = project()
@@ -2443,6 +2625,42 @@ def test_whole_recording_plays_continuously_with_each_cut_in_sync(tmp_path):
     source = json.loads((directory / 'source-report.json').read_text('utf-8'))
     assert (source['narration_mode'], source['speech_provider'], source['quality']['notes']) == ('track', 'recording', [])
     assert manifest['scenes'][0]['alignment'].startswith('estimated')
+
+
+def test_recordings_are_cleaned_for_the_video_without_moving_their_timing(tmp_path):
+    import array
+    import hashlib
+    import math
+    from studio import narration
+    noisy = tmp_path / 'phone.wav'
+    # A "voice" (a sweeping tone, 6 dB quieter from 8 s) with 1 s pauses, room hiss and 25 Hz rumble, at 44.1 kHz.
+    voice = "if(gte(mod(t,4),1),0.3*sin(2*PI*(300+900*sin(3*t))*t)*(0.6+0.4*sin(7*t))*if(gte(t,8),0.5,1),0)"
+    ffmpeg('-f', 'lavfi', '-i', f"aevalsrc=exprs='{voice}':s=44100:d=16", '-f', 'lavfi', '-i', 'anoisesrc=c=pink:a=0.006:r=44100:d=16',
+           '-f', 'lavfi', '-i', 'sine=f=25:r=44100:d=16', '-filter_complex', '[2:a]volume=0.03[r];[0:a][1:a][r]amix=inputs=3:normalize=0',
+           '-c:a', 'pcm_s16le', noisy)
+    aid = upload_narration(noisy).json()['id']
+
+    def pcm(path):
+        out = array.array('h')
+        out.frombytes(media.run([executable('ffmpeg'), '-v', 'error', '-i', path, '-ac', '1', '-ar', '48000', '-f', 's16le', '-'], binary=True))
+        return out
+
+    def db(samples, start, end):
+        part = samples[int(start * 48000):int(end * 48000)]
+        return 20 * math.log10(math.sqrt(sum(x * x for x in part) / len(part)) + 1e-9)
+    before, after = pcm(narration.cut(aid)), pcm(narration.cleaned(aid))
+    assert len(before) == len(after)                                    # exactly as long: scene cuts stay where they were
+    match = {d: sum(before[60000 + k] * after[60000 + d + k] for k in range(0, 48000, 2)) for d in range(-6, 7)}
+    assert abs(max(match, key=match.get)) <= 1                          # and not shifted (the noise reducer's delay is taken out)
+    assert (db(after, 1.5, 3.5) - db(after, 0.2, 0.8)) - (db(before, 1.5, 3.5) - db(before, 0.2, 0.8)) > 8   # quieter background
+    assert abs(db(after, 1.5, 3.5) - db(after, 9.5, 11.5)) < abs(db(before, 1.5, 3.5) - db(before, 9.5, 11.5)) - 1.5  # more even
+    # The render plays the cleaned copy unless the project turns it off; the file itself is never changed.
+    body = {**caption_project(), 'recording_cleanup': True}
+    body['scenes'][0].update(audio_asset=aid, audio_text_hash=store.digest(TELUGU_LINE))
+    played, _ = media.voice_for(body['scenes'][0], body, 'edge')
+    assert narration.cut_key(played) and len(pcm(played)) == len(before)
+    assert media.voice_for(body['scenes'][0], {**body, 'recording_cleanup': False}, 'edge')[0] == store.asset_path(aid, 'audio')
+    assert store.asset(aid)['sha256'] == hashlib.sha256(noisy.read_bytes()).hexdigest()
 
 
 def test_scene_recording_trim_volume_and_text_edits(tmp_path):

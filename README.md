@@ -158,20 +158,36 @@ long-form script for a YouTube project (about one scene per 5 seconds of the tar
 
 ### How fast it is
 
-A 7-scene reel goes from pasted script to draft in about a minute (65–90 s measured, from about
-3 minutes 15 seconds before these changes):
+A 9-scene reel (49 s) goes from pasted script to draft in about a minute: 53–63 s measured with
+real Gemini and Pixabay, of which footage takes 33–43 s (50–128 s before the latest changes for 7–10
+scenes, about 3 minutes 15 seconds before the first ones). The 1080×1920 final then takes about
+18 s. With your own recording for the whole video it took 72 s to the draft (Gemini's answer times
+vary) and 19 s for the final:
 
 - Gemini's slow "thinking" is turned off where it adds nothing: writing Telugu and captions,
   planning shots and checking clips (each 2–3 times faster; a model that rejects the setting is
   simply asked again normally). Research and long-form AI storyboards keep full thinking.
-- Footage: every scene is searched at the same time (still spaced to Pixabay's rate limit),
-  long videos' AI checks run two at a time, and clips download four at a time.
-- The free Mohan voice is recorded while footage is being found, so the voice step usually takes
-  a second; paid voices are only recorded in the voice step. Four scenes are recorded at once.
-- Scenes are rendered three at a time (on a computer with 12 or more cores), in scene order.
+- Footage: searches go out together, up to 90 a minute (Pixabay allows 100), instead of one every
+  0.7 s: 30 searches took 4.2 s, where the old spacing alone needed 20 s. Eight scenes are searched
+  at once, long videos' AI checks run two at a time and clips download six at a time.
+- Clips Gemini scores 7 or more download while the weaker shots are searched and checked again,
+  instead of after that second search.
+- The free Mohan voice is recorded and measured (length, pauses, loudness) while footage is being
+  found, so the voice step usually takes a second; paid voices are only recorded in the voice step.
+  Four scenes are recorded at once.
+- A scene with several shots is framed, cut and joined in one FFmpeg pass and encoded once. Before,
+  every shot was encoded and the joined scene encoded again: about twice as long for such a scene
+  (8 s → 4 s for a 7-second, three-shot 1080×1920 scene of 4K clips) and a little less sharp (the
+  single encode measures 1 dB closer to a lossless render).
+- Scenes are rendered three at a time (on a computer with 12 or more cores), in scene order, and each
+  uses its share of the cores (a 6-core PC used to leave two idle). The joined video is made straight
+  from the rendered scenes, without copying them first.
+- A 4K clip cropped for a reel scales only the part that shows (the same picture, less work).
 
 No new software is needed for this. FFmpeg's Intel Quick Sync encoder works on this PC, but
-encoding is a small part of the time, so the tested libx264 encoder is kept.
+encoding is a small part of the time, so the tested libx264 encoder is kept. Hardware decoding of
+4K clips (D3D11VA, DXVA2) was measured slower here, because each frame is copied back for the
+filters, so it is not used.
 
 ### One click to a draft
 
@@ -227,16 +243,28 @@ export**. The steps below describe the same workflow done by hand.
       counts most), the provider's own order, real film over animation, resolution, a shape
       that suits the format and popularity; green-screen or "subscribe" overlays are pushed down.
    3. *Check.* Gemini looks at a preview frame of the best candidates for every shot (with the
-      words it is spoken over) and scores the ones that show it out of 10.
+      words it is spoken over) and scores the ones that show it out of 10. In a reel it also says
+      where the subject is in a landscape clip, and the clip is framed there: a reel shows only an
+      upright third of a landscape clip, so an octopus at the left edge was cropped out by the
+      centred frame. You can still move it in the scene's framing preview.
    4. *Search again.* Shots with no clip, or only one scoring below 7, are planned again from
       what was rejected (a findable view of the same idea: the subject itself, a wider view, a
-      related place or a reaction), searched with new words and checked again; the better clip
-      wins. The match then says **after a second search**.
+      related place or a reaction), searched with new words (on Pexels too, when you have both a
+      Pixabay and a Pexels key) and checked again; the better clip wins. The match then says
+      **after a second search**.
    Each scene gets its best clips not already used by another scene; a scene with nothing
    scoring 5 gets no clip (a title card in the one-click draft). The score and planned shot
-   appear under **Footage search results** in Production jobs.
-   Downloads use 4K files when they stay under 60 MB, so a 9:16 crop of landscape footage
-   stays sharp. A short reel uses about three or four Gemini requests per run (the daily
+   appear under **Footage search results** in Production jobs. When Gemini cannot answer (the
+   daily limit in Settings, or every model busy), the result says so and how many scenes were
+   matched by search words only, instead of quietly using **Best keyword match**. Gemini requests
+   wait for room in the per-minute limit rather than giving up after five seconds.
+   Each planned shot is kept with the scene whose words it covers: asked for more shots than a
+   short line has, Gemini used to continue into the next line, so a scene showed the next scene's
+   pictures. When Gemini numbers a scene by its place in the request instead of its number, or
+   leaves a shot out, the answer is still matched to the right shot or the shot is checked once
+   more, instead of falling back to the search words.
+   Downloads use 4K files when they stay under 120 MB, so a 9:16 crop of landscape footage
+   stays sharp; above that the 2560×1440 file (enlarged 1.33×, not 1.8× like 1080p). A short reel uses about three or four Gemini requests per run (the daily
    limit in Settings counts them); without Gemini, the scene keywords and the ranking are used.
 
    **A new shot about every 4 seconds, in step with the words:** a scene whose narration is
@@ -291,6 +319,18 @@ and warns about clipping, heavy background noise, very quiet audio or long silen
 Your recording is never changed. Trims, volume and scene boundaries are settings: the render
 cuts and levels a copy (48 kHz PCM, cut on exact sample positions), so they can be changed
 again at any time, and the original file stays in the media library.
+
+**Clean up my recording for the video** (Voice tab, on by default) makes that copy sound like a
+studio take: it removes low rumble (below 80 Hz: traffic, fans, handling), reduces steady
+background noise when there is some (room hiss, a fan, an air conditioner) and evens out loud
+and soft words with gentle compression, then levels it to the narration loudness. The whole
+recording is cleaned at once and keeps its exact length and timing, so scene boundaries and
+caption times stay where you set them, and the caption editor plays the cleaned sound. On a
+simulated phone recording, the background in pauses fell by about 14 dB and the gap between a
+loud and a quiet half fell from 6 dB to under 3; in a full export, 9 dB quieter pauses at the same
+-16 LUFS. Untick it to use your recording exactly as recorded. Voice engine takes accepted in
+Voice Lab are already clean and are never processed. It cannot remove echo from a bare room or voices in the background: record close to
+the phone, in a room with soft furnishings.
 
 **One recording for the whole video.** Upload it and the scenes are placed on it by the
 length of their text, with each boundary moved to the nearest pause. The waveform shows the
@@ -534,7 +574,8 @@ Pop-Location
 ```
 
 The audit runner creates and removes a uniquely named PostgreSQL test database,
-uses separate media/settings, disables online services, and retains test artifacts
+uses separate media/settings, disables online services, leaves the studio's Redis rate limits
+alone (`STUDIO_CACHE_REDIS_URL=off`), and retains test artifacts
 under `test-outputs/`. The test database account needs CREATE DATABASE permission.
 It tests real FFmpeg exports, uploads, editor controls, concurrency, cancellation,
 voice selection, quotas, and fresh migrations. Browser-DOM tests use Node.js/jsdom.

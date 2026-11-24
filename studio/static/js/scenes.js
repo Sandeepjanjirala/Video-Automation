@@ -35,7 +35,7 @@
       });
 
       $(document).on('click', '.btn-clear-extra-shots', function() {
-        Scenes.updateSceneField($(this).data('scene-id'), {extra_shots: [], shot_weights: []});
+        Scenes.updateSceneField($(this).data('scene-id'), {extra_shots: [], shot_weights: [], shot_crop_x: []});
         Scenes.renderSceneVisuals();
       });
 

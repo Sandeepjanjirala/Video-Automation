@@ -101,6 +101,21 @@ def recorded(scene, project):
     return project.get('narration_mode') == 'track' or bool(scene.get('audio_asset'))
 
 
+def cleaned_recording(scene, project):
+    """True when this scene's narration is an uploaded recording played cleaned (narration.cleaned): not a
+    voice engine take accepted in Voice Lab, which is attached the same way but is already clean."""
+    from . import narration
+    track = project.get('narration_mode') == 'track'
+    aid = (project.get('narration_track') or {}).get('asset') if track else scene.get('audio_asset')
+    if not aid or not narration.cleans(project, aid):
+        return False
+    if not track and scene.get('take_id'):
+        take = store.get_voice_take(scene['take_id'])
+        if take and take.get('asset_id') == aid and take.get('provider') not in (None, '', 'upload'):
+            return False
+    return True
+
+
 def voice_for(scene, project, provider):
     """(narration audio path, word timings) for a scene. Word timings come only from a voice engine
     that reports them (Edge, Azure); recordings have none."""
@@ -116,10 +131,12 @@ def voice_for(scene, project, provider):
             if take and take.get('asset_id') == scene['audio_asset']:
                 boundaries = take.get('timing_data') or []
         trim_start, trim_end = float(scene.get('audio_trim_start') or 0), float(scene.get('audio_trim_end') or 0)
-        if trim_start or trim_end or scene.get('audio_gain_db'):
+        clean = cleaned_recording(scene, project)
+        if trim_start or trim_end or scene.get('audio_gain_db') or clean:
             result = narration.analyze(scene['audio_asset'])
+            level = narration.analyze_file(narration.cleaned(scene['audio_asset'])) if clean else result
             path = narration.cut(scene['audio_asset'], trim_start, trim_end or None,
-                                 narration.user_gain(result, scene.get('audio_gain_db')))
+                                 narration.user_gain(level, scene.get('audio_gain_db')), clean=clean)
             # Word timings belong to the untrimmed take; shift them and keep the ones inside the trim.
             end = trim_end or result['duration']
             boundaries = [{**b, 'start': b['start'] - trim_start, 'end': b['end'] - trim_start}
@@ -144,9 +161,9 @@ VOICE_WORKERS = 4  # narration requests at the same time (Edge, Sarvam and Azure
 
 
 def prefetch_voices(project, provider, workers=VOICE_WORKERS):
-    """Synthesize every scene's narration in parallel so the scene-by-scene loop that follows finds it
-    in the speech cache (synthesize caches by text and voice settings). Errors are left for that loop
-    to report with its own message."""
+    """Synthesize and measure every scene's narration in parallel so the scene-by-scene loop that follows
+    finds both cached (synthesize caches by text and voice settings, the measurement of length, pauses
+    and loudness by file). Errors are left for that loop to report with its own message."""
     from concurrent.futures import ThreadPoolExecutor
     from django.db import connections
     scenes = [s for s in project.get('scenes', []) if (s.get('narration') or '').strip() and not recorded(s, project)]
@@ -155,7 +172,7 @@ def prefetch_voices(project, provider, workers=VOICE_WORKERS):
 
     def one(scene):
         try:
-            voice_for(scene, project, provider)
+            audio_seconds(voice_for(scene, project, provider)[0])
         except Exception:
             pass
         finally:

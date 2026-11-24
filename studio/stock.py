@@ -1,9 +1,9 @@
 """Stock search contracts. Pixabay is preferred; Pexels is an explicit fallback."""
+import collections
 import json
 import re
 import threading
 import time
-import uuid
 from urllib.parse import urlparse
 
 from .config import DATA
@@ -39,33 +39,62 @@ def safe_preview_url(url, provider):
 
 
 # A 1080x1920 crop of landscape footage needs 1920 source rows to stay sharp; larger files only
-# when that download stays reasonable.
-SHARP_DOWNLOAD_LIMIT = 60 * 1024 * 1024
+# when that download stays reasonable. (At 60 MB many 4K clips fell back to 1080p, enlarged 1.8x in a reel.)
+SHARP_DOWNLOAD_LIMIT = 120 * 1024 * 1024
 
 
 def best_file(choices, landscape=False):
-    """The file to download: for a 16:9 video the one nearest 1920 pixels wide (4K adds nothing)."""
-    sharp = [v for v in choices if v.get('height', 0) >= 1920 and 0 < v.get('size', 0) <= SHARP_DOWNLOAD_LIMIT]
-    if sharp and not landscape:
-        return min(sharp, key=lambda v: v['size'])
+    """The file to download. A reel: the smallest with 1920 rows (4K landscape, or a vertical 1080x1920)
+    within SHARP_DOWNLOAD_LIMIT, else the tallest one within it (1440 rows are enlarged 1.33x, 1080 rows
+    1.8x). A 16:9 video: the one nearest 1920 pixels wide (4K adds nothing)."""
+    if not landscape:
+        fitting = [v for v in choices if 0 < v.get('size', 0) <= SHARP_DOWNLOAD_LIMIT]
+        sharp = [v for v in fitting if v.get('height', 0) >= 1920]
+        if sharp:
+            return min(sharp, key=lambda v: v['size'])
+        taller = [v for v in fitting if v.get('height', 0) > 1080]
+        if taller:
+            return max(taller, key=lambda v: v['height'])
     return min(choices, key=lambda v: abs(max(v.get('width', 0), v.get('height', 0)) - 1920))
 
 
-# Pixabay allows 100 requests a minute; a long YouTube video searches hundreds of phrases.
-MIN_INTERVAL = {'pixabay': 0.7, 'pexels': 0.4}
-_last_request = {}
+# Requests allowed per window, a little under the providers' limits (Pixabay 100 a minute, Pexels 200 an
+# hour). Requests go out at once until the window is full, so a reel's few dozen searches take seconds
+# (spacing every request 0.7 s apart made them take half a minute); a long YouTube video then waits for
+# the oldest request to leave the window.
+WINDOWS = {'pixabay': (90, 60.0), 'pexels': (180, 3600.0)}
+LONGEST_WAIT = 65  # seconds; a longer wait (Pexels' hourly window is full) is reported instead
+_sent = {}
 _pace = threading.Lock()
+_queries, _queries_lock = {}, threading.Lock()  # one lock per search
+
+
+def _wait(provider, now):
+    """Seconds until the provider's window has room for one more request."""
+    count, window = WINDOWS[provider]
+    sent = _sent.setdefault(provider, collections.deque())
+    while sent and now - sent[0] >= window:
+        sent.popleft()
+    return 0.0 if len(sent) < count else sent[0] + window - now
+
+
+def room(provider):
+    """True when a request to the provider could go out now without waiting."""
+    with _pace:
+        return _wait(provider, time.monotonic()) == 0
 
 
 def paced(provider, call):
-    """Run one provider request no sooner than MIN_INTERVAL after the previous one, waiting out
-    a rate-limit answer (HTTP 429) twice before giving up."""
+    """Run one provider request within its rate-limit window (WINDOWS), waiting out a rate-limit
+    answer (HTTP 429) twice before giving up."""
     for attempt in range(3):
         with _pace:
-            wait = _last_request.get(provider, 0) + MIN_INTERVAL[provider] - time.monotonic()
+            wait = _wait(provider, time.monotonic())
+            if wait > LONGEST_WAIT:
+                raise ValueError(f'{provider.title()} request limit reached for this hour. Try again later or use the other source.')
             if wait > 0:
                 time.sleep(wait)
-            _last_request[provider] = time.monotonic()
+            _sent[provider].append(time.monotonic())
         try:
             return call()
         except ValueError as exc:
@@ -74,8 +103,21 @@ def paced(provider, call):
             time.sleep(20 * (attempt + 1))
 
 
+def second_source(provider='auto'):
+    """'pexels' when a scene that searches Pixabay first (provider 'auto') can also ask Pexels now: both
+    keys are set and Pexels' hourly window has room. Otherwise None."""
+    if provider != 'auto':
+        return None
+    from .providers import online
+    try:
+        cfg = online()
+    except ValueError:
+        return None
+    return 'pexels' if cfg.get('pixabay_key') and cfg.get('pexels_key') and room('pexels') else None
+
+
 def search(query='', video_id=None, provider='auto'):
-    from .providers import online, request
+    from .providers import online
     cfg = online()
     if provider not in ('auto', 'pixabay', 'pexels'):
         raise ValueError('Choose Pixabay, Pexels, or Pixabay first.')
@@ -100,8 +142,23 @@ def search(query='', video_id=None, provider='auto'):
 
     key = store.digest({'provider': provider + '-v4', 'query': query, 'id': video_id})
     path = DATA / 'cache' / (key + '.stock.json')
-    if path.exists() and time.time() - path.stat().st_mtime < 86400:
-        return json.loads(path.read_text('utf-8'))
+    # Shots of one video often share a phrase: the first search asks the provider, the others wait for its answer.
+    with _queries_lock:
+        lock = _queries.setdefault(key, threading.Lock())
+    with lock:
+        try:
+            if time.time() - path.stat().st_mtime < 86400:
+                return json.loads(path.read_text('utf-8'))
+        except (OSError, ValueError):  # not cached yet (or being replaced by another worker)
+            pass
+        results = _fetch(cfg, provider, query, video_id)
+        store.write_cache(path, json.dumps(results))
+        return results
+
+
+def _fetch(cfg, provider, query, video_id):
+    """The provider's search (or one clip's details) as the studio's hit records."""
+    from .providers import request
     if provider == 'pixabay':
         params = {'key': cfg['pixabay_key'], 'safesearch': 'true', 'per_page': 20}
         params.update({'id': video_id} if video_id else {'q': query})
@@ -138,7 +195,4 @@ def search(query='', video_id=None, provider='auto'):
                         'duration': h.get('duration'), 'video': best_file(choices), 'files': choices, 'license_url': license_url,
                         'preview': preview, 'animation': h.get('type') == 'animation',
                         'low_quality': bool(h.get('isLowQuality')), 'downloads': h.get('downloads') or 0})
-    temp = path.with_suffix(f'.{uuid.uuid4().hex}.tmp')
-    temp.write_text(json.dumps(results), 'utf-8')
-    temp.replace(path)
     return results

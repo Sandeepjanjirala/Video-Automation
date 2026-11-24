@@ -11,10 +11,12 @@ its words begin in the recording; a scene ends where the next one starts, the la
 recording's end (narration_track.end, 0 = the file's end).
 """
 import array
+import functools
 import json
 import math
 import re
 import sys
+import threading
 from pathlib import Path
 
 from . import store
@@ -130,9 +132,7 @@ def analyze_file(path, cache_key=None):
         'loudness': integrated, 'peak': peak, 'noise_level': round(noise, 1), 'speech_level': round(speech, 1),
         'clipped_windows': sum(1 for p, _ in windows if p >= 0.999),
     }
-    temp = cached.with_suffix('.part')
-    temp.write_text(json.dumps(result), 'utf-8')
-    temp.replace(cached)
+    store.write_cache(cached, json.dumps(result))  # two scenes with the same narration may be measured at once
     return result
 
 
@@ -201,27 +201,113 @@ def user_gain(result, user_db):
     return round(min(user_db, max(0.0, PEAK_CEILING_DB - result['peak'])), 2) if user_db > 0 else user_db
 
 
-def cut(aid, start=0.0, end=None, gain_db=0.0):
-    """Path of a cached 48 kHz stereo WAV of the recording from `start` to `end` seconds (None: its end)
-    with the recording's volume control applied. Cuts are on exact sample positions of the decoded
-    audio, so neighbouring slices meet without a gap or an overlap."""
+def cut(aid, start=0.0, end=None, gain_db=0.0, clean=False):
+    """Path of a cached 48 kHz stereo WAV of the recording (its cleaned copy with `clean`) from `start` to
+    `end` seconds (None: its end) with the recording's volume control applied. Cuts are on exact sample
+    positions of the decoded audio, so neighbouring slices meet without a gap or an overlap."""
     meta = store.asset(aid)
-    path = store.asset_path(aid, meta['kind'])
+    path = cleaned(aid) if clean else store.asset_path(aid, meta['kind'])
     first = max(0, round(float(start) * RATE))
     last = None if end is None else round(float(end) * RATE)
     if last is not None and last - first < round(0.05 * RATE):
         raise ValueError('A narration part must be at least 0.05 seconds long')
-    key = store.digest(['cut', VERSION, meta.get('sha256') or _file_key(path), first, last, round(float(gain_db), 2)])
+    source = path.name if clean else meta.get('sha256') or _file_key(path)  # a cleaned copy is named by its contents
+    key = store.digest(['cut', VERSION, source, first, last, round(float(gain_db), 2)])
     target = _cache(f'narr-{key[:40]}.wav')
     if target.is_file() and target.stat().st_size > 44:
         return target
     chain = f'aresample={RATE},asetpts=N/SR/TB,atrim=start_sample={first}' + (f':end_sample={last}' if last is not None else '')
     chain += ',asetpts=PTS-STARTPTS' + (f',volume={float(gain_db):.2f}dB' if gain_db else '')
-    temp = target.with_name(target.stem + '.part.wav')
-    run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-i', path, '-map', '0:a:0', '-af', chain,
-         '-ac', '2', '-ar', str(RATE), '-c:a', 'pcm_s16le', temp], timeout=600)
-    temp.replace(target)
+    temp = store.temp_beside(target)
+    try:
+        run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-i', path, '-map', '0:a:0', '-af', chain,
+             '-ac', '2', '-ar', str(RATE), '-c:a', 'pcm_s16le', temp], timeout=600)
+        store.publish_file(temp, target)
+    finally:
+        temp.unlink(missing_ok=True)
     return target
+
+
+# Recording clean-up for the video (project recording_cleanup, on by default) --------------------------
+# Phone and laptop recordings carry rumble, room hiss and uneven levels that the voice engines do not.
+# A copy of the whole recording is cleaned once (cached): brought to the narration level, low rumble
+# removed below 80 Hz, background noise reduced when there is some, and loud and soft words evened out
+# by gentle compression. The whole file is cleaned at once, so its scene slices still join seamlessly,
+# and it keeps the original's exact length and timing (the noise reduction's delay is taken out), so
+# pauses, scene boundaries and caption times found in the original stay right.
+CLEAN_VERSION = 1
+NOISY_DB = -65  # background level above which noise is reduced (a quiet studio recording is left alone)
+COMPRESS = 'acompressor=threshold=-20dB:ratio=2:attack=8:release=160:knee=6'
+_cleaning, _cleaning_lock = {}, threading.Lock()
+
+
+@functools.lru_cache(maxsize=1)
+def denoise_delay():
+    """Samples (48 kHz) by which FFmpeg's FFT noise reduction delays the sound (1200 in FFmpeg 7 to 9),
+    measured once on a test signal, or None when it cannot be (the clean-up then skips noise reduction)."""
+    signal = "aevalsrc=exprs='0.4*sin(2*PI*(300+900*sin(3*t))*t)*(0.6+0.4*sin(7*t))':s=48000:d=3"
+
+    def pcm(chain):
+        raw = run([executable('ffmpeg'), '-v', 'error', '-f', 'lavfi', '-i', signal, '-af', chain, '-ac', '1',
+                   '-f', 's16le', '-'], binary=True, timeout=60)
+        out = array.array('h')
+        out.frombytes(raw[:len(raw) // 2 * 2])
+        return out
+    try:
+        before, after = pcm('anull'), pcm('afftdn=nr=12:nf=-50:tn=1')
+    except ValueError:
+        return None
+    start = RATE
+
+    def match(d):
+        return sum(before[start + k] * after[start + d + k] for k in range(0, 24000, 3))
+    coarse = max(range(0, 4000, 8), key=match)
+    best = max(range(max(0, coarse - 8), coarse + 9), key=match)
+    return best if match(best) > 0 else None
+
+
+def cleanup_chain(result):
+    """(FFmpeg filters, delay in samples to take out) cleaning a recording with this analysis."""
+    pre = normal_gain(result['loudness'], result['peak'], ceiling=PEAK_CEILING_DB)
+    chain = f'aformat=sample_fmts=fltp,volume={pre:.2f}dB,highpass=f=80:poles=2'
+    delay = 0
+    if result['noise_level'] > NOISY_DB and denoise_delay() is not None:
+        floor = min(-20, max(-80, round(result['noise_level'] + pre)))
+        chain += f',afftdn=nr=12:nf={floor}:tn=1'
+        delay = denoise_delay()
+    return chain + ',' + COMPRESS, delay
+
+
+def cleaned(aid):
+    """Path of the cached cleaned copy of a recording: 48 kHz mono 24-bit WAV, exactly as long as the
+    recording decoded at 48 kHz."""
+    meta = store.asset(aid)
+    path = store.asset_path(aid, meta['kind'])
+    chain, delay = cleanup_chain(analyze(aid))
+    key = store.digest(['clean', CLEAN_VERSION, meta.get('sha256') or _file_key(path), chain, delay])
+    target = _cache(f'clean-{key[:40]}.wav')
+    with _cleaning_lock:
+        lock = _cleaning.setdefault(key, threading.Lock())
+    with lock:  # the render's parallel sound steps ask for it at once
+        if target.is_file() and target.stat().st_size > 44:
+            return target
+        full = f'aresample={RATE},asetpts=N/SR/TB,{chain}'
+        if delay:
+            full += f',atrim=start_sample={delay},asetpts=N/SR/TB,apad=pad_len={delay}'
+        temp = store.temp_beside(target)
+        try:
+            run([executable('ffmpeg'), '-hide_banner', '-loglevel', 'error', '-y', '-i', path, '-map', '0:a:0', '-af', full,
+                 '-ac', '1', '-ar', str(RATE), '-c:a', 'pcm_s24le', temp], timeout=1800)
+            store.publish_file(temp, target)
+        finally:
+            temp.unlink(missing_ok=True)
+    return target
+
+
+def cleans(project, aid):
+    """True when this narration asset is cleaned for the video: a file the user uploaded, in a project that
+    keeps the clean-up on (the default). A voice engine take accepted in Voice Lab is already clean."""
+    return (project or {}).get('recording_cleanup', True) is not False and store.asset(aid).get('provider') in (None, '', 'upload')
 
 
 def cut_key(path):
@@ -278,9 +364,12 @@ def scene_range(project, scene_id):
 
 
 def track_cut(project, scene_id):
-    """This scene's slice of the whole-video recording, with the recording's volume control."""
+    """This scene's slice of the whole-video recording (cleaned, unless the project turned that off), with
+    the recording's volume control."""
     (start, end), result = scene_range(project, scene_id)
     tr = track(project)
+    if cleans(project, tr['asset']):
+        return cut(tr['asset'], start, end, user_gain(analyze_file(cleaned(tr['asset'])), tr.get('gain_db', 0)), clean=True)
     return cut(tr['asset'], start, end, user_gain(result, tr.get('gain_db', 0)))
 
 
