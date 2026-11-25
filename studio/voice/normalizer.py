@@ -1,4 +1,4 @@
-"""Telugu Speech Normalization and Pronunciation Dictionary for Telugu Reel Studio (Phase 4).
+"""Telugu Speech Normalization and Pronunciation Dictionary for Telugu Reel Studio.
 Normalizes dates, numbers, abbreviations, and loanwords into natural spoken Telugu Unicode,
 with strict separation between source text, spoken text, and Roman display captions.
 """

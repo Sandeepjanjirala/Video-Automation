@@ -35,7 +35,7 @@ class AccessMiddleware(MiddlewareMixin):
 
 
 class LocalSecurityMiddleware(MiddlewareMixin):
-    """Enforces security headers, loopback restrictions, and M4 controlled write guards."""
+    """Enforces security headers, loopback restrictions and an allowlist of write endpoints."""
 
     def process_request(self, request):
         if request.method not in ('GET', 'HEAD', 'OPTIONS'):
@@ -52,8 +52,8 @@ class LocalSecurityMiddleware(MiddlewareMixin):
             if request.path in SIGN_IN_PATHS:
                 return None
 
-            # Stage M6 Mutation Allowlist:
-            # - POST /api/assets (media upload from M4)
+            # Allowed writes:
+            # - POST /api/assets (media upload)
             # - POST /api/projects (project create)
             # - PUT /api/projects/<pid> (project update with optimistic lock)
             # - POST /api/projects/<pid>/approve (project revision approval)
@@ -67,9 +67,9 @@ class LocalSecurityMiddleware(MiddlewareMixin):
             # - POST /api/projects/<pid>/assign-media (scene media assignment)
             # - POST /api/projects/<pid>/voice_lock (voice lock toggle)
             # - POST /api/projects/<pid>/pronunciation_dict (pronunciation dict update)
-            # - POST /api/projects/<pid>/jobs (job creation from M5)
-            # - POST /api/jobs/<jid>/retry (job retry from M5)
-            # - POST /api/jobs/<jid>/cancel (job cancel from M5)
+            # - POST /api/projects/<pid>/jobs (job creation)
+            # - POST /api/jobs/<jid>/retry (job retry)
+            # - POST /api/jobs/<jid>/cancel (job cancel)
             # All other mutating endpoints remain strictly rejected with 405.
             import re
             normalized_path = request.path.rstrip('/')

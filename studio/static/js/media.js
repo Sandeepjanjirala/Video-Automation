@@ -1,5 +1,5 @@
 /**
- * Telugu Reel Studio - Media Library & Asset Uploads (Stage M8)
+ * Telugu Reel Studio - Media Library & Asset Uploads
  */
 
 (function($) {

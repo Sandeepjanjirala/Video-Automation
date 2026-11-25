@@ -1,4 +1,4 @@
-"""Celery configuration for Telugu Reel Studio (Phase 3)."""
+"""Celery configuration for Telugu Reel Studio."""
 import os
 import sys
 from pathlib import Path

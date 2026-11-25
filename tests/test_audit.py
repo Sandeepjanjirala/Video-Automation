@@ -709,7 +709,7 @@ def test_shared_timeline_rejects_invalid_inputs(fault):
     with pytest.raises(ValueError): compute_timeline(p, v)
 
 
-# Stage 2: caption editor ---------------------------------------------------------------
+# Caption editor ---------------------------------------------------------------
 
 TELUGU_LINE = 'ఇది ఒక చిన్న పరీక్ష'
 
@@ -772,7 +772,8 @@ def test_caption_timing_uses_measured_prepared_narration_and_detects_stale_speec
 
     first = caption_timing(row['id'])['scene1']
     assert first['status'] == 'measured'
-    assert first['duration'] == pytest.approx(media.duration(Path(voice['audio_path'])))
+    # The decoded length the voice job measured (an MP3 header can include encoder padding: FFmpeg 7.1 says 2.04 s).
+    assert first['duration'] == pytest.approx(voice['duration'])
     assert first['duration'] == pytest.approx(2.0, abs=0.1)
     assert first['audio_url'] == f"/api/jobs/{job['id']}/audio/scene1"
     roman = first['automatic']['roman']
@@ -895,7 +896,7 @@ def test_caption_editor_dom_behaviour():
     subprocess.run(['node', 'tests/audit_captions_ui.cjs', str(page)], check=True, timeout=45)
 
 
-# Stage 3: framing previews -------------------------------------------------------------
+# Framing previews -------------------------------------------------------------
 
 from studio import framing
 
@@ -1091,7 +1092,7 @@ def test_trimmed_clips_loop_and_hold_inside_the_trim(tmp_path):
     reel = directory / 'reel.mp4'
     offsets = {s['scene_id']: s['start_offset'] for s in manifest['scenes']}
     seen = {sid: [centre_colour(reel, offsets[sid] + at) for at in (0.3, 1.3, 2.3)] for sid in offsets}
-    # Before Stage 3, -stream_loop restarted at 0 s, so trimmed loops showed red after one pass.
+    # Previously -stream_loop restarted at 0 s, so trimmed loops showed red after one pass.
     assert seen == {'loopgreen': ['g', 'g', 'g'], 'holdgreen': ['g', 'g', 'g'],
                     'loopblue': ['b', 'b', 'b'], 'whole': ['r', 'g', 'b']}, seen
 
@@ -1151,7 +1152,7 @@ def test_framing_fields_validate_and_old_scenes_keep_defaults(tmp_path):
     assert res.status_code == 422
 
 
-# Stage 4: caption style presets ---------------------------------------------------------
+# Caption style presets ---------------------------------------------------------
 
 STYLES = ('classic', 'black_box', 'yellow_accent', 'translucent')
 # The ASS styles every render used before presets existed; 'classic' must reproduce them.
@@ -1275,7 +1276,7 @@ def test_caption_style_preview_matches_draft_and_final_exports(tmp_path, quality
     assert scores['wrong_style'] < 25
     (DATA.parent / f'caption-style-psnr-{quality}.json').write_text(json.dumps(scores), 'utf-8')
     graphic = c.post(f'/api/projects/{pid}/framing-preview', {'scene': body['scenes'][1]}, content_type='application/json')
-    assert graphic.status_code == 422                                          # Stage 3 behaviour unchanged
+    assert graphic.status_code == 422                                          # behaviour unchanged
 
 
 def test_caption_style_picker_dom_behaviour():
@@ -2597,7 +2598,8 @@ def recorded_project(aid, starts, visuals, **changes):
 
 
 def test_whole_recording_plays_continuously_with_each_cut_in_sync(tmp_path):
-    track = tone_track(tmp_path, [(300, 2.0), (0, 0.4), (600, 2.0), (0, 0.4), (900, 2.0)])
+    # WAV, exactly 6.8 s long on every FFmpeg (FFmpeg 7.1 decodes an AAC file with its end padding, a frame longer).
+    track = tone_track(tmp_path, [(300, 2.0), (0, 0.4), (600, 2.0), (0, 0.4), (900, 2.0)], 'voice.wav', ('-c:a', 'pcm_s16le'))
     aid = upload_narration(track).json()['id']
     red, green, blue = (colour_clip(tmp_path, c) for c in ('red', 'green', 'blue'))
     res = client().post('/api/projects', recorded_project(aid, [0, 2.2, 4.6], [red, green, blue]), content_type='application/json')

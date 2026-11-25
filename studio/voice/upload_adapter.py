@@ -1,4 +1,4 @@
-"""Uploaded narration adapter for Telugu Reel Studio (Phase 4).
+"""Uploaded narration adapter for Telugu Reel Studio.
 Supports human vocal recordings uploaded by users, preserving authentic speech.
 """
 import json

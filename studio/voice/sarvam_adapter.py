@@ -1,4 +1,4 @@
-"""Sarvam AI TTS adapter for Telugu Reel Studio (Phase 4).
+"""Sarvam AI TTS adapter for Telugu Reel Studio.
 Connects to the documented Bulbul v3 Telugu REST contract.
 """
 import base64

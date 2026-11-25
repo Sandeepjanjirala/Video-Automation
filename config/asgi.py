@@ -1,4 +1,4 @@
-"""ASGI config for Telugu Reel Studio (Phase M1)."""
+"""ASGI config for Telugu Reel Studio."""
 import os
 from django.core.asgi import get_asgi_application
 

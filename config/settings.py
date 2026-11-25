@@ -54,7 +54,7 @@ if os.environ.get('STUDIO_BEHIND_PROXY') == '1':
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
     USE_X_FORWARDED_HOST = True
 
-# Minimal application definition for M1 (No migration-backed auth/session apps)
+# Minimal application definition (No migration-backed auth/session apps)
 INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'rest_framework',
@@ -104,7 +104,7 @@ if db_url.startswith('postgresql+psycopg2://'):
 
 parsed = urlparse(db_url)
 
-# Stage M4: Narrowly scoped media writer database identity
+# Narrowly scoped media writer database identity
 # Used exclusively for controlled asset creation (POST /api/assets)
 media_writer_url = os.environ.get('STUDIO_MEDIA_WRITER_DATABASE_URL')
 if not media_writer_url:
@@ -122,7 +122,7 @@ if media_writer_url.startswith('postgresql+psycopg2://'):
 
 parsed_writer = urlparse(media_writer_url)
 
-# Stage M5: Narrowly scoped job writer database identity
+# Narrowly scoped job writer database identity
 # Used exclusively for job creation, retry, and cancellation (POST /api/projects/{pid}/jobs, etc.)
 job_writer_url = os.environ.get('STUDIO_JOB_WRITER_DATABASE_URL')
 if not job_writer_url:
@@ -140,7 +140,7 @@ if job_writer_url.startswith('postgresql+psycopg2://'):
 
 parsed_job_writer = urlparse(job_writer_url)
 
-# Stage M6: Narrowly scoped project writer database identity
+# Narrowly scoped project writer database identity
 # Used for project creation, updates, approvals, drafts, and job result application.
 project_writer_url = os.environ.get('STUDIO_PROJECT_WRITER_DATABASE_URL')
 if not project_writer_url:
@@ -158,7 +158,7 @@ if project_writer_url.startswith('postgresql+psycopg2://'):
 
 parsed_project_writer = urlparse(project_writer_url)
 
-# Stage M7: Narrowly scoped voice writer database identity
+# Narrowly scoped voice writer database identity
 # Used for Voice Lab take creation and take acceptance.
 voice_writer_url = os.environ.get('STUDIO_VOICE_WRITER_DATABASE_URL')
 if not voice_writer_url:
@@ -266,7 +266,7 @@ TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 
-# Django Templates Configuration (Stage M8)
+# Django Templates Configuration
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',

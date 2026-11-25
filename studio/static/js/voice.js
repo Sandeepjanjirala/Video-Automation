@@ -1,5 +1,5 @@
 /**
- * Telugu Reel Studio - Phase 4 Telugu Voice Lab & Delivery Presets (Stage M8)
+ * Telugu Reel Studio - Telugu Voice Lab & Delivery Presets
  */
 
 (function($) {

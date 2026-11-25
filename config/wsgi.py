@@ -1,4 +1,4 @@
-"""WSGI config for Telugu Reel Studio (Phase M1)."""
+"""WSGI config for Telugu Reel Studio."""
 import os
 from django.core.wsgi import get_wsgi_application
 

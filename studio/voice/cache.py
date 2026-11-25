@@ -1,4 +1,4 @@
-"""Synthesis Contract Caching for Telugu Reel Studio (Phase 4).
+"""Synthesis Contract Caching for Telugu Reel Studio.
 Caches synthesis artifacts by the complete contract:
 provider + model + voice + normalized spoken text + delivery preset + rate + pitch + dict_hash + format.
 """

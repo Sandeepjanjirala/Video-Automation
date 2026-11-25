@@ -1,4 +1,4 @@
-"""PostgreSQL primary store implementation using Django ORM (Phase M9).
+"""PostgreSQL primary store implementation using Django ORM.
 Active transactional persistence layer for projects, revisions, jobs, and outbox.
 """
 import copy

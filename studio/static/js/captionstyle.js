@@ -1,5 +1,5 @@
 /**
- * Telugu Reel Studio - Caption style presets (Stage 4)
+ * Telugu Reel Studio - Caption style presets
  *
  * Live CSS previews of the ASS presets in studio/media.py (CAPTION_STYLES), used by
  * the style picker on the Captions tab and by every scene's framing preview.

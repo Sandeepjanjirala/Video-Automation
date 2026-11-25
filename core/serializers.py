@@ -1,4 +1,4 @@
-"""DRF serializers for Telugu Reel Studio read-only API contracts (Stage M3).
+"""DRF serializers for Telugu Reel Studio read-only API contracts.
 
 Faithfully replicates FastAPI response payload structures for:
 - Projects (list and detail)

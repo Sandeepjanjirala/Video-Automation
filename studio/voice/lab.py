@@ -1,4 +1,4 @@
-"""Voice Lab engine for Telugu Reel Studio (Phase 4).
+"""Voice Lab engine for Telugu Reel Studio.
 Manages baseline comparisons, candidate previews, identical-script A/B playback,
 pronunciation dictionaries, take histories, and conversational rewrites.
 """

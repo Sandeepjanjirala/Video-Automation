@@ -1,4 +1,4 @@
-"""Celery tasks for Telugu Reel Studio (Phase 3).
+"""Celery tasks for Telugu Reel Studio.
 Splits meaningful stages: research, draft, footage acquisition, narration,
 alignment, scene rendering, assembly, mixing, and validation.
 Enforces execution leases, periodic heartbeats, fencing, and subprocess cancellation.

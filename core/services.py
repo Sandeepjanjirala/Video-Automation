@@ -1,4 +1,4 @@
-"""Domain mutation services for Telugu Reel Studio (Stage M6).
+"""Domain mutation services for Telugu Reel Studio.
 
 All mutating operations run inside an atomic transaction on the dedicated
 `project_writer` database alias, backed by the least-privilege

@@ -1,4 +1,4 @@
-"""Restrained Delivery Presets for Telugu Reel Studio (Phase 4).
+"""Restrained Delivery Presets for Telugu Reel Studio.
 Implements delivery styles strictly through verified provider controls (rate, pitch, pauses)
 without inserting phantom style tags or fake vocal sounds.
 """

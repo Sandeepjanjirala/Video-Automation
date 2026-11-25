@@ -2,7 +2,7 @@
 
 Input cues are relative to the original narration audio. Output scene cues are
 speed-adjusted; global cues additionally include the scene's frame-aligned offset.
-Caption generation/alignment remains in media.captions during Stage 1.
+Caption generation and alignment live in media.captions.
 """
 import math
 from dataclasses import asdict, dataclass

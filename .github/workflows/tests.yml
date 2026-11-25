@@ -1,0 +1,35 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Audit suite (Docker, PostgreSQL, FFmpeg 7.1)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the test image
+        run: docker build --target test -t studio-test .
+
+      - name: Start PostgreSQL
+        run: |
+          docker network create ci
+          docker run -d --name postgres --network ci -e POSTGRES_PASSWORD=postgres postgres:18-alpine
+          for i in $(seq 1 30); do docker exec postgres pg_isready -U postgres && break; sleep 1; done
+
+      - name: Run the tests
+        # The runner creates and drops its own database; no API keys are used.
+        run: >
+          docker run --rm --network ci
+          -e STUDIO_DATABASE_URL=postgresql://postgres:postgres@postgres:5432/postgres
+          studio-test python scripts/run_audit_tests.py -q -p no:cacheprovider

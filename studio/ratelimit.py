@@ -1,4 +1,4 @@
-"""Distributed rate limiting and provider budget controls for Telugu Reel Studio (Phase 3/M9)."""
+"""Distributed rate limiting and provider budget controls for Telugu Reel Studio."""
 import os
 import time
 import uuid

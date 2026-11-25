@@ -1,4 +1,4 @@
-"""Narration Blocks and Continuous Timeline Assembly for Telugu Reel Studio (Phase 4).
+"""Narration Blocks and Continuous Timeline Assembly for Telugu Reel Studio.
 Synthesizes coherent sentences/paragraphs spanning multiple visual shots to prevent
 arbitrary scene audio chopping, clipping syllables, or deleting meaningful pauses.
 """

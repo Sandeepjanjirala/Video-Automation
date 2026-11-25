@@ -1,5 +1,5 @@
 /**
- * Telugu Reel Studio - Framing preview (Stage 3)
+ * Telugu Reel Studio - Framing preview
  *
  * Shows how each scene's video or image sits in the frame: 1080x1920 for a reel, 1920x1080 for a
  * YouTube video (StudioState.FORMATS). `geometry`

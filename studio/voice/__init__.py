@@ -1,4 +1,4 @@
-"""Voice package for Telugu Reel Studio (Phase 4)."""
+"""Voice package for Telugu Reel Studio."""
 from .registry import (
     VoiceCapability, TELUGU_VOICE_CATALOG, list_voices,
     get_voice_capability, validate_voice_controls

@@ -1,4 +1,4 @@
-"""Unmanaged Django ORM models for Telugu Reel Studio (Stage M2).
+"""Unmanaged Django ORM models for Telugu Reel Studio.
 
 CRITICAL CONSTRAINTS:
 - All models have `managed = True`.
@@ -301,7 +301,7 @@ class OutboxEvent(models.Model):
 
 
 class VoiceTake(models.Model):
-    """Phase 4 Voice Lab versioned speech synthesis take."""
+    """Voice Lab versioned speech synthesis take."""
     id = models.CharField(max_length=64, primary_key=True)
     project = models.ForeignKey(
         Project,

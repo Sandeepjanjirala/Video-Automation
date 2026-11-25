@@ -89,7 +89,7 @@ def scene_timing(project, scene, voice_jobs):
         old = next((s for s in snapshot.get('scenes', []) if s.get('id') == scene['id']), None)
         voice = next((v for v in (job['result'] or {}).get('voices', []) if v.get('scene_id') == scene['id']), None)
         if old and voice and speech_key(snapshot, old) == key and servable_audio(voice.get('audio_path')):
-            # Jobs from before Stage 2 lack word timings; reset then estimates over the measured length.
+            # Older voice jobs lack word timings; reset then estimates over the measured length.
             boundaries = voice.get('boundaries') or []
             return _measured(scene, float(voice['duration']), boundaries,
                              f"Prepared narration (job {job['id'][:8]})",

@@ -1,4 +1,4 @@
-"""Telugu Voice Evaluation Runner (Phase 4).
+"""Telugu voice evaluation runner.
 Evaluates baseline (Edge Neural) and candidate voices (Sarvam Bulbul, Azure)
 across 5 standardized Telugu categories at comparable playback levels.
 Generates evaluation audio samples and logs metrics without fabricating human scores.
@@ -187,7 +187,7 @@ def run_evaluation(live_approved: bool = False, output_dir: Path = None):
     # Save Markdown report
     md_file = output_dir / "EVALUATION_REPORT.md"
     with md_file.open("w", encoding="utf-8") as f:
-        f.write("# Telugu Voice Evaluation Benchmark Report (Phase 4)\n\n")
+        f.write("# Telugu Voice Evaluation Benchmark Report\n\n")
         f.write(f"- **Benchmark Version**: {dataset['benchmark_version']}\n")
         f.write(f"- **Date**: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}\n")
         f.write(f"- **Live Provider Synthesis Approved**: {'Yes' if live_approved else 'No (Edge baseline synthesized; paid candidates pending approval)'}\n\n")
@@ -209,7 +209,7 @@ def run_evaluation(live_approved: bool = False, output_dir: Path = None):
         f.write("|---|---|---|---|---|---|\n")
         for c in candidates:
             f.write(f"| {c['name']} | [ ] | [ ] | [ ] | [ ] | Pending user review |\n")
-        f.write("\n> [!NOTE]\n> Per Phase 4 upgrade rules, listening scores are not fabricated. The user chooses the winning voice.\n")
+        f.write("\n> [!NOTE]\n> Listening scores are not invented here: The user chooses the winning voice.\n")
 
     print(f"\nEvaluation completed. Reports saved to:\n  - {report_file}\n  - {md_file}\n")
     return all_results

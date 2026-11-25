@@ -1,5 +1,5 @@
 /**
- * Telugu Reel Studio - Scenes & Script Editor Management (Stage M8)
+ * Telugu Reel Studio - Scenes & Script Editor Management
  */
 
 (function($) {

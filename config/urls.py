@@ -1,4 +1,4 @@
-"""URL configuration for Telugu Reel Studio (Stage M9)."""
+"""URL configuration for Telugu Reel Studio."""
 from django.urls import path, re_path, include
 from core.views import login_view, logout_view, serve_m8_ui, serve_static_asset, serve_static_path
 

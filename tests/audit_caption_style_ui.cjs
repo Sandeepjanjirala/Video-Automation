@@ -35,7 +35,7 @@ const path = require('node:path');
   w.Projects.init(); w.Scenes.init(); w.StudioJobs.init(); w.StudioCaptions.init(); w.StudioFraming.init(); S.init();
 
   assert.equal(w.StudioState.createEmptyProject().caption_style, 'classic');
-  // A project saved before Stage 4 has no caption_style: it shows and stays classic.
+  // A project saved before caption styles has no caption_style: it shows and stays classic.
   const p = w.StudioState.createEmptyProject();
   delete p.caption_style;
   p.caption_size = 64;

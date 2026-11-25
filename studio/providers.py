@@ -454,7 +454,7 @@ def measured_timings(provider, boundaries):
 
 
 def synthesize(text, voice, rate, provider, pitch=0, delivery_preset='conversational', pronunciation_dict=None):
-    """Phase 4 synthesis engine supporting Edge, Sarvam, Azure, and Uploaded voices
+    """synthesis engine supporting Edge, Sarvam, Azure, and Uploaded voices
     with normalization, delivery presets, and contract caching.
     """
     from .voice.registry import get_voice_capability

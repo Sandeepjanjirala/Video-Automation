@@ -1,4 +1,4 @@
-"""Outbox dispatcher for Telugu Reel Studio (Phase 3/M9).
+"""Outbox dispatcher for Telugu Reel Studio.
 Reliably bridges PostgreSQL transactional outbox to Celery/Redis.
 Ensures broker outages or crashes never lose accepted jobs.
 """

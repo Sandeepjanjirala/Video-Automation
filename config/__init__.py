@@ -1,1 +1,1 @@
-"""Django configuration package for Telugu Reel Studio (Phase M1)."""
+"""Django configuration package for Telugu Reel Studio."""

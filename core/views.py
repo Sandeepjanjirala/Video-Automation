@@ -1,8 +1,5 @@
-"""Core views for Telugu Reel Studio (Stages M1, M2, M3, M4).
-
-Stages M1-M3: Strictly read-only views matching FastAPI API contracts.
-Stage M4: Media delivery, thumbnail caching/generation, controlled asset uploads,
-and Pixabay search proxy.
+"""HTTP API and page views for Telugu Reel Studio: projects and revisions, production jobs, media
+uploads and delivery, stock search, settings, Voice Lab, and the editor page.
 """
 import os
 import uuid
@@ -237,7 +234,7 @@ class HealthCheckView(APIView):
 
 
 class SchemaStatusView(APIView):
-    """Internal M2 diagnostic endpoint reporting unmanaged model status and counts."""
+    """Internal diagnostic endpoint reporting unmanaged model status and counts."""
 
     def get(self, request, *args, **kwargs):
         model_counts = {
@@ -664,7 +661,7 @@ class ProjectCaptionPreviewView(APIView):
 
 
 # ==============================================================================
-# 4. Jobs & Background Operations (Stage M5)
+# 4. Jobs & Background Operations
 # ==============================================================================
 
 class ProjectJobsView(APIView):
@@ -1028,7 +1025,7 @@ class VoiceCapabilitiesView(APIView):
 
 
 # ==============================================================================
-# 6. Assets & Media Delivery (Stage M4)
+# 6. Assets & Media Delivery
 # ==============================================================================
 
 class AssetListCreateView(APIView):
@@ -1335,7 +1332,7 @@ class AssetThumbnailView(APIView):
 
 
 # ==============================================================================
-# 7. Stock Provider Proxy (Stage M4)
+# 7. Stock Provider Proxy
 # ==============================================================================
 
 class StockSearchView(APIView):
@@ -1359,7 +1356,7 @@ class StockSearchView(APIView):
 
 
 # ==============================================================================
-# 8. Settings & Voice Lab Mutations (Stage M7)
+# 8. Settings & Voice Lab Mutations
 # ==============================================================================
 
 class SettingsView(APIView):
@@ -1519,7 +1516,7 @@ class ProjectTakeAcceptView(APIView):
 # ==============================================================================
 
 def serve_m8_ui(request):
-    """Serve the Django Templates + jQuery frontend (Stage M8/M9)."""
+    """Serve the Django Templates + jQuery frontend."""
     return render(request, 'studio/index.html')
 
 

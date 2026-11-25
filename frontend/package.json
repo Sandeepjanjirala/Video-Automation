@@ -4,15 +4,10 @@
   "engines": {
     "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
   },
-  "description": "Headless browser testing harnesses for Django Templates + jQuery UI",
+  "description": "Browser-DOM test dependencies (jsdom) for the editor tests in tests/audit_*.cjs",
   "dependencies": {
     "@testing-library/dom": "10.4.2",
     "jquery": "^3.7.1",
     "jsdom": "30.1.2"
-  },
-  "scripts": {
-    "test:smoke": "node ../tests/jquery_ui_smoke.cjs",
-    "test:workflow_a": "node ../tests/m8_e2e_workflow_a.cjs",
-    "test:workflow_b": "node ../tests/m8_e2e_workflow_b.cjs"
   }
 }

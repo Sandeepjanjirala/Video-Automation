@@ -1,5 +1,5 @@
 /**
- * Telugu Reel Studio - Caption Editor (Stage 2)
+ * Telugu Reel Studio - Caption Editor
  *
  * Edits are per-scene drafts of the raw input strings until "Save captions", so an
  * incomplete timestamp never reaches the project. Times are seconds from the start

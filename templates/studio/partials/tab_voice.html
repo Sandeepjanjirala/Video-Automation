@@ -17,9 +17,11 @@
         <span><b>My recordings, one per scene</b><small class="muted">Upload a file for each scene you recorded</small></span></label>
     </div>
     <p class="muted" id="narration-mode-note" role="status"></p>
-    <label class="check" id="recording-cleanup-row" hidden><input type="checkbox" id="check-recording-cleanup" checked>
-      <span><b>Clean up my recording for the video</b><small class="muted">Removes low rumble, reduces background
-        noise and evens out loud and soft words. Your file is never changed; untick to use it exactly as recorded.</small></span></label>
+    <div class="cleanupoption" id="recording-cleanup-row" hidden>
+      <label class="check"><input type="checkbox" id="check-recording-cleanup" checked>
+        <span><b>Clean up my recording for the video</b><small class="muted">Removes low rumble, reduces background
+          noise and evens out loud and soft words. Your file is never changed; untick to use it exactly as recorded.</small></span></label>
+    </div>
 
     <div id="narration-track-box" hidden>
       <div class="track-no-recording">
@@ -147,7 +149,7 @@
     </details>
   </section>
 
-  <!-- Phase 4 Voice Lab (A/B Testing, Polish, Dictionary) -->
+  <!-- Voice Lab (A/B Testing, Polish, Dictionary) -->
   <details class="panel voicelab fold" data-fold="voice-lab">
     <summary class="foldhead">
       <span><b>&#129302; Voice Lab: fix pronunciation, compare takes</b>

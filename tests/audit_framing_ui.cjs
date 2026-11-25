@@ -81,7 +81,7 @@ const path = require('node:path');
     {...empty, id: 'pic', roman: 'Rendava', visual: 'image', video_asset: image},
     {...empty, id: 'title', roman: 'Title', visual: 'graphic', graphic_title: 'Heading'},
   ];
-  // An older saved scene without the Stage 3 fields still previews with defaults.
+  // An older saved scene without the framing fields still previews with defaults.
   delete p.scenes[1].zoom; delete p.scenes[1].crop_y; delete p.scenes[1].frame_aspect;
   w.Projects.sync({id: 'fixture', revision: 1, approved: true, project: p});
   await tick(); await tick();

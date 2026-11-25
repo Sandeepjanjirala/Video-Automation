@@ -2,7 +2,6 @@
 setlocal
 cd /d "%~dp0"
 echo Telugu Reel Studio - local setup
-echo Your existing ShortsGenius folder is not modified.
 if exist ".venv\Scripts\python.exe" (
   ".venv\Scripts\python.exe" -c "import sys" >nul 2>&1
   if not errorlevel 1 goto install

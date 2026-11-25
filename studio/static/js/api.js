@@ -1,5 +1,5 @@
 /**
- * Telugu Reel Studio - Centralized API Service (Stage M8)
+ * Telugu Reel Studio - Centralized API Service
  * 
  * Provides unified, secure AJAX communication with the Django backend:
  * - Session token management (x-studio-token)

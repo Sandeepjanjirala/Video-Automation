@@ -1,5 +1,5 @@
 /**
- * Telugu Reel Studio - Global Application State (Stage M8)
+ * Telugu Reel Studio - Global Application State
  */
 
 (function($) {

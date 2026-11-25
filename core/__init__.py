@@ -1,1 +1,1 @@
-"""Core application package for Telugu Reel Studio (Phase M1)."""
+"""Core application package for Telugu Reel Studio."""

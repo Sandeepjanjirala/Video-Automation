@@ -1,4 +1,4 @@
-"""Edge TTS adapter for Telugu Reel Studio (Phase 4).
+"""Edge TTS adapter for Telugu Reel Studio.
 Reliable, zero-cost conversational Telugu synthesis with verified WordBoundary timing.
 """
 import asyncio

@@ -1,4 +1,4 @@
-"""Azure Speech TTS adapter for Telugu Reel Studio (Phase 4).
+"""Azure Speech TTS adapter for Telugu Reel Studio.
 Supports Microsoft Cognitive Services Neural Telugu voices with Speech SDK event timing
 when available, with graceful fallback to REST SSML endpoint.
 """

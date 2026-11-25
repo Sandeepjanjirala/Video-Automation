@@ -1,4 +1,4 @@
-"""TTS Provider and Voice Capability Registry for Telugu Reel Studio (Phase 4).
+"""TTS Provider and Voice Capability Registry for Telugu Reel Studio.
 Defines verified capabilities, supported controls, voice catalog, and provider contracts.
 """
 from dataclasses import dataclass, field

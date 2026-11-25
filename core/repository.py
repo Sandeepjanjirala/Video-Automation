@@ -1,4 +1,4 @@
-"""Read-only repository service layer for Telugu Reel Studio (Stage M2).
+"""Read-only repository service layer for Telugu Reel Studio.
 
 Provides encapsulated read-only query access to unmanaged domain entities.
 No write/mutating operations are implemented here.
@@ -157,7 +157,7 @@ def list_outbox_events(processed: Optional[bool] = None) -> List[OutboxEvent]:
 
 
 # ==============================================================================
-# Voice Takes (Phase 4)
+# Voice Takes
 # ==============================================================================
 
 def list_voice_takes(project_id: Optional[str] = None, scene_id: Optional[str] = None) -> List[VoiceTake]:
