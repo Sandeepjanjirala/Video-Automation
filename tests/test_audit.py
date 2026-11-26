@@ -2248,6 +2248,20 @@ def test_server_password_from_the_environment(no_access_password, monkeypatch):
     assert client().get('/api/bootstrap').json()['settings']['access_password_from_server'] is True
 
 
+def test_the_server_password_is_never_shown(no_access_password, monkeypatch):
+    # The sign-in page is public: it must not print, pre-fill or otherwise send the password.
+    monkeypatch.setenv('STUDIO_PASSWORD', 'server-secret-99')
+    device = phone('10.0.0.6')
+    page = device.get('/login')
+    assert page.status_code == 200 and b'server-secret-99' not in page.content
+    assert b'type="password" name="password"' in page.content
+    wrong = device.post('/login', {'password': 'nope-nope'})
+    assert wrong.status_code == 401 and b'server-secret-99' not in wrong.content
+    device.post('/login', {'password': 'server-secret-99'})
+    assert b'server-secret-99' not in device.get('/api/bootstrap').content
+    assert b'server-secret-99' not in client().get('/api/bootstrap').content
+
+
 def test_secret_key_is_not_the_old_public_default():
     assert settings.SECRET_KEY != 'django-insecure-studio-dev-key-7f2d37c50ff9429f0970aacf8f4aa068' and len(settings.SECRET_KEY) >= 40
 

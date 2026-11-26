@@ -151,8 +151,7 @@ def public_settings():
             **{k + '_from_env': sources[k] == 'env' for k in ENV_KEYS},
             **{k + '_env_default': bool(os.environ.get(name) or k in default_keys) for k, name in ENV_KEYS.items()},
             'access_password_set': bool(cfg.get('access_password_hash')) or bool(os.environ.get('STUDIO_PASSWORD')),
-            'access_password_from_server': bool(os.environ.get('STUDIO_PASSWORD')),
-            'server_password': os.environ.get('STUDIO_PASSWORD', '')}
+            'access_password_from_server': bool(os.environ.get('STUDIO_PASSWORD'))}
 
 
 def executable(name):

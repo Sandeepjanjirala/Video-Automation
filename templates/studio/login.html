@@ -22,32 +22,16 @@
       <p class="muted">For your safety, this studio only opens on the computer it runs on until a password is set.
         On that computer, open <b>Settings &amp; providers</b>, set <b>Password for phone and other devices</b>, then
         reload this page.</p>
-      {% if server_password %}
-        <div style="background: rgba(32, 77, 61, 0.08); border: 1.5px solid #204d3d; border-radius: 8px; padding: 12px 14px; margin: 16px 0;">
-          <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #204d3d; font-weight: 700;">Studio Password</div>
-          <div style="font-size: 18px; font-weight: 700; color: #204d3d; margin-top: 2px;"><code>{{ server_password }}</code></div>
-        </div>
-      {% endif %}
     {% else %}
       <h2>Sign in</h2>
       <p class="muted">Enter the studio password to sign in. This device stays signed in for 30 days.</p>
-
-      {% if server_password %}
-        <div style="background: rgba(32, 77, 61, 0.08); border: 1.5px solid #204d3d; border-radius: 8px; padding: 12px 14px; margin: 16px 0; display: flex; align-items: center; justify-content: space-between; gap: 10px;">
-          <div>
-            <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #204d3d; font-weight: 700;">Studio Password</div>
-            <div style="font-size: 18px; font-weight: 700; color: #204d3d; margin-top: 2px;"><code>{{ server_password }}</code></div>
-          </div>
-          <button type="button" onclick="navigator.clipboard.writeText('{{ server_password }}'); this.textContent='Copied!'; setTimeout(() => this.textContent='Copy', 2000)" style="padding: 5px 12px; font-size: 12px; border-radius: 5px; border: 1px solid #204d3d; background: #fff; color: #204d3d; cursor: pointer; font-weight: 600;">Copy</button>
-        </div>
-      {% endif %}
 
       <form method="post" action="/login">
         <input type="hidden" name="next" value="{{ next }}">
         <label class="field"><span>Password</span>
           <div style="position: relative; display: flex; align-items: center;">
-            <input type="text" name="password" id="login-password" value="{{ server_password }}" autocomplete="current-password" autofocus required style="padding-right: 50px;">
-            <button type="button" onclick="var p = document.getElementById('login-password'); if (p.type === 'password') { p.type = 'text'; this.textContent = 'Hide'; } else { p.type = 'password'; this.textContent = 'Show'; }" style="position: absolute; right: 8px; background: none; border: none; cursor: pointer; font-size: 12px; color: #204d3d; font-weight: 600; padding: 4px;" title="Toggle password visibility">Hide</button>
+            <input type="password" name="password" id="login-password" autocomplete="current-password" autofocus required style="padding-right: 50px;">
+            <button type="button" onclick="var p = document.getElementById('login-password'); if (p.type === 'password') { p.type = 'text'; this.textContent = 'Hide'; } else { p.type = 'password'; this.textContent = 'Show'; }" style="position: absolute; right: 8px; background: none; border: none; cursor: pointer; font-size: 12px; color: #204d3d; font-weight: 600; padding: 4px;" title="Toggle password visibility">Show</button>
           </div>
         </label>
         {% if message %}<p class="cueissue error" role="alert">{{ message }}</p>{% endif %}
