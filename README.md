@@ -26,6 +26,10 @@ YouTube yourself.
 
 The full walkthrough of every screen is in the [user guide](docs/USER_GUIDE.md).
 
+| Story: paste a script, make a draft | Captions: Telugu caption styles | On a phone |
+|---|---|---|
+| ![The Story step of a sample project](docs/screenshots/story.png) | ![The Captions step with caption styles](docs/screenshots/captions.png) | ![The studio on a phone](docs/screenshots/phone.png) |
+
 ## Current architecture
 
 - Django + Django REST Framework; Django templates and local jQuery.
@@ -36,6 +40,18 @@ The full walkthrough of every screen is in the [user guide](docs/USER_GUIDE.md).
   Both modes execute the same leased job pipeline.
 - Optional providers: Gemini for research/script preparation, Pixabay for footage,
   Edge community TTS, Azure Speech, and Sarvam speech. Provider credentials are separate.
+
+```mermaid
+flowchart LR
+    browser["Browser (computer or phone)<br/>Django templates + jQuery"] --> django["Django + DRF<br/>projects, revisions, assets, settings"]
+    django --> db[("PostgreSQL<br/>projects · immutable revisions<br/>assets · jobs · outbox")]
+    db --> local["Local mode: one worker<br/>started by run.py"]
+    db --> outbox["Distributed mode: outbox dispatcher"] --> redis[("Redis")] --> celery["Celery workers"]
+    local --> pipeline["Leased job pipeline<br/>footage · narration · captions · render"]
+    celery --> pipeline
+    pipeline --> ffmpeg["FFmpeg / FFprobe"] --> mp4["MP4: 9:16 Reel or 16:9 video"]
+    pipeline -. "optional online services" .-> providers["Gemini · Pixabay<br/>Edge TTS · Azure · Sarvam"]
+```
 
 The records of the migration from FastAPI, React, SQLite and Alembic to Django and PostgreSQL
 are in [`docs/history/`](docs/history/); they are not current setup instructions.

@@ -772,7 +772,8 @@ def test_caption_timing_uses_measured_prepared_narration_and_detects_stale_speec
 
     first = caption_timing(row['id'])['scene1']
     assert first['status'] == 'measured'
-    assert first['duration'] == pytest.approx(media.duration(Path(voice['audio_path'])))
+    # The decoded audio, as studio/captions.py measures it; the container's duration can include encoder padding.
+    assert first['duration'] == pytest.approx(media.audio_seconds(Path(voice['audio_path'])))
     assert first['duration'] == pytest.approx(2.0, abs=0.1)
     assert first['audio_url'] == f"/api/jobs/{job['id']}/audio/scene1"
     roman = first['automatic']['roman']
@@ -2622,10 +2623,14 @@ def test_whole_recording_plays_continuously_with_each_cut_in_sync(tmp_path):
     assert any('estimated from the recording' in w['message'] for w in report['warnings'])   # no Telugu text needed
     directory, manifest = render_over_http(pid, 'draft')
     reel = directory / 'reel.mp4'
-    assert manifest['total_frames'] == 204                              # ceil(6.8 s x 30): nothing cut off
+    # ceil(6.8 s x 30) = 204: nothing cut off. FFmpeg 7.1 decodes this AAC file 152 samples longer (encoder
+    # padding it does not trim), which rounds up to one more frame.
+    assert manifest['total_frames'] in (204, 205)
     assert [s['audio_offset'] for s in manifest['scenes']] == [0, pytest.approx(2.2, abs=1e-4), pytest.approx(4.6, abs=1e-4)]
     assert [s['start_frame'] for s in manifest['scenes']] == [0, 66, 138]
-    assert [s['raw_voice_duration'] for s in manifest['scenes']] == [pytest.approx(d, abs=1e-4) for d in (2.2, 2.4, 2.2)]
+    # The last scene runs to the end of the decoded recording, so it carries that padding too (under 5 ms).
+    assert [s['raw_voice_duration'] for s in manifest['scenes']] == [pytest.approx(2.2, abs=1e-4), pytest.approx(2.4, abs=1e-4),
+                                                                      pytest.approx(2.2, abs=5e-3)]
     # Picture and sound change together at each cut, and the sound is the recording itself, uninterrupted.
     assert [centre_colour(reel, t) for t in (1.0, 2.15, 2.3, 3.4, 4.55, 4.7, 6.5)] == ['r', 'r', 'g', 'g', 'g', 'b', 'b']
     assert [round(pitch(reel, t), -2) for t in (0.8, 1.7, 2.5, 4.0, 5.0, 6.3)] == [300, 300, 600, 600, 900, 900]
