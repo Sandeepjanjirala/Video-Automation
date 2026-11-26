@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  audit:
+    name: Audit suite (PostgreSQL, FFmpeg, browser-DOM tests)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: ci-local-only
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 15
+    steps:
+      - uses: actions/checkout@v7
+      # The Dockerfile's test target has the same FFmpeg, fonts and Node.js as the app image.
+      - name: Build the test image
+        run: docker build --target test --tag studio-test .
+      # The runner creates, uses and drops its own uniquely named database; no API keys are needed.
+      - name: Run the audit suite
+        run: >-
+          docker run --rm --network host
+          -e STUDIO_DATABASE_URL=postgresql://postgres:ci-local-only@127.0.0.1:5432/postgres
+          studio-test
