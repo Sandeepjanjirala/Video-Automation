@@ -1,4 +1,8 @@
-# API keys: .env defaults that Settings can change — 12 November 2026
+# Changelog
+
+Notable changes, newest first. Each entry says what changed and how it was checked.
+
+## API keys: .env defaults that Settings can change — 12 November 2026
 
 Same branch. Requested change: the keys in `.env` should be the defaults, changeable from Settings (before, a key
 in `.env` locked its Settings field with "Set in the .env file").
@@ -15,7 +19,7 @@ browser-DOM test covers the Settings fields and what a save sends. Real Chrome a
 test `.env` with fake keys: defaults shown and editable, the fake keys absent from the page, a typed Gemini key
 stored and shown as "saved here" (the untouched Pixabay default not copied), "use the default" cleared it again.
 
-# Uploaded narration, one continuous soundtrack, and a release audit — 12 November 2026
+## Uploaded narration, one continuous soundtrack, and a release audit — 12 November 2026
 
 Branch `feature/narration-upload-and-release-audit`. No new dependencies, no database migration (new project and
 scene fields have defaults, so saved projects load unchanged). Scene renders are cached under a new key (renderer 7),
@@ -98,7 +102,7 @@ so the first render of an existing project re-encodes its scenes once.
   detected and warned about, not tone-mapped). Cancellation was proven by a unit test (two concurrent FFmpeg runs
   of one job stop within seconds); in the browser run the cancel landed between encodes.
 
-# Footage that follows the script — 12 November 2026
+## Footage that follows the script — 12 November 2026
 
 Branch `feature/better-footage-match`. No new dependencies. New optional scene field `shot_weights` (defaults to
 empty; no database migration, older projects and their cached renders are unchanged).
@@ -135,7 +139,7 @@ Verification: **124 passed** (121 previous + 3 new: a second search keeps the be
 long line in spoken order with its share, render timing of planned parts; the AI-pick, extra-shot apply and real
 render tests now also cover the second search, stored/cleared shares and per-part cut times).
 
-# API keys from .env and the first Sarvam video — 12 November 2026
+## API keys from .env and the first Sarvam video — 12 November 2026
 
 Same branch. No database changes.
 
@@ -155,7 +159,7 @@ by the test runner; plus the paid-voice prefetch case in the footage test). Real
 **Upgrade to Sarvam voice**, then **Create draft video automatically** → 16.8 s 540×960 draft in 84 s (AI 7 s,
 footage 69 s, voice 1 s recorded during footage, render 4 s); all six narrations are Sarvam WAV (24 kHz).
 
-# Faster video creation — 12 November 2026
+## Faster video creation — 12 November 2026
 
 Same branch. No new dependencies, no database changes.
 
@@ -185,7 +189,7 @@ narration with errors left to the scene loop, scene order of a parallel real ren
 with one clip per scene and a failed download reported, free voice recorded during footage but not a paid one).
 Real Chrome: fresh volcano script 91 s (before fast footage AI), fresh space script 65 s; clips on topic.
 
-# Simpler screens and a "How to use" guide — 12 November 2026
+## Simpler screens and a "How to use" guide — 12 November 2026
 
 Same branch. No server changes.
 
@@ -209,7 +213,7 @@ open or folded, folds remembered across redraws, caption scene opening, review-n
 not remembered, guide first-visit/once/buttons/Esc). Real Chrome at 1440×900 and 390×844: every tab renders without
 horizontal overflow or page errors (`test-outputs/folds/`).
 
-# Automatic Telugu after splitting and highlighted caption key words — 12 November 2026
+## Automatic Telugu after splitting and highlighted caption key words — 12 November 2026
 
 Branch `feature/auto-telugu-and-caption-highlights` (from `main`). No database migrations.
 
@@ -240,7 +244,7 @@ one-click draft shows them in yellow in the video (`test-outputs/emphasis/`). A 
 with English words, default script format: each line in the Telugu narration box at once, Roman captions
 ("Oka lake daggaraku vellina animals...") for 7 of 7 scenes 16 s later, project saved (`telugu_split.py`).
 
-# Phone, PC and deployment — 10 November 2026
+## Phone, PC and deployment — 10 November 2026
 
 Same branch, `feature/one-click-draft`. No database migrations.
 
@@ -273,7 +277,7 @@ refused without a password → password set in Settings on the PC → sign-in pa
 message, signed in with 31 projects, Sign out shown only on the phone, signed out → 401; test password
 removed afterwards (`test-outputs/mobile/access`).
 
-# YouTube video format (16:9, long-form) — 10 November 2026
+## YouTube video format (16:9, long-form) — 10 November 2026
 
 Same branch, `feature/one-click-draft`. No database migrations (`format` is a field in the project JSON).
 
@@ -302,7 +306,7 @@ with **Create draft video automatically** → 39 scenes, 35 AI-checked landscape
 **Render 1920×1080 YouTube video** → 1920×1080, 173 s, 118 MB, in about a minute
 (`test-outputs/autopilot/youtube-*.png`, `youtube_e2e.py`, `youtube_final.py`).
 
-# Captions on/off and a new shot every ~4 seconds — 10 November 2026
+## Captions on/off and a new shot every ~4 seconds — 10 November 2026
 
 Same branch, `feature/one-click-draft`. No database migrations (both are fields in the project JSON).
 
@@ -326,7 +330,7 @@ on screen 1.9–3.9 s (before: up to 6.9 s), detected cuts within 0.02 s of the 
 (`test-outputs/autopilot/C-pacing-clips.png`). Captions turned off with the switch, approved and rendered:
 same frames without captions, SRT still exported (`captions-on-vs-off.png`).
 
-# Gemini backup models and project delete — 10 November 2026
+## Gemini backup models and project delete — 10 November 2026
 
 Same branch, `feature/one-click-draft`. No database migrations.
 
@@ -349,7 +353,7 @@ gemini-3-flash-preview ("తేనె"). Real Chrome: two throwaway projects del
 the header, both confirmations shown, API returns not-found for both, all other projects unchanged,
 no page errors (`test-outputs/autopilot/delete_e2e.py`).
 
-# Footage matched to the script — 10 November 2026
+## Footage matched to the script — 10 November 2026
 
 Same branch, `feature/one-click-draft`. No database migrations.
 
@@ -377,7 +381,7 @@ scenes AI-checked at 6–10/10 (two vertical octopus clips, honey dripping into 
 reaction shots for hooks, a phone for "Comment cheyyandi"); 41.8 s draft, no page errors.
 Contact sheet: `test-outputs/autopilot/C-final-clips.png`.
 
-# One-click draft video — 10 November 2026
+## One-click draft video — 10 November 2026
 
 Branch `feature/one-click-draft` (from `main`). No database migrations.
 
@@ -401,7 +405,7 @@ search phrases such as "octopus three hearts" → 28.2 s 540×960 draft in one c
 locally first → 3 scenes → 8.3 s draft. Both MP4s decode; no page errors. Artifacts:
 `test-outputs/autopilot/`.
 
-# Stage 5: final verification and PR preparation — 9 November 2026
+## Stage 5: final verification and PR preparation — 9 November 2026
 
 Verification of the complete Django + jQuery application, plus the fixes it led to.
 No existing projects, data, settings or branches were changed or deleted; the local
@@ -453,7 +457,7 @@ Results:
   actionable message; "Re-run with current" recovered it after switching back to Edge;
   a cancelled render left no export; the next render succeeded. No page errors.
 
-# Stage 4: caption style presets — 9 November 2026
+## Stage 4: caption style presets — 9 November 2026
 
 Implemented in Django + jQuery on `improve/free-preview-editor`, on top of the
 uncommitted Stage 1–3 work. No commits, pushes, merges or deletions. No database
@@ -493,7 +497,7 @@ bounding boxes equal the exact preview's in every style; live browser captions a
 errors; no horizontal overflow at 390 px. The Stage 3 Chrome workflow was re-run after
 these changes with identical results.
 
-# Stage 3: accurate video and image framing previews — 6 November 2026
+## Stage 3: accurate video and image framing previews — 6 November 2026
 
 Implemented in Django + jQuery on `improve/free-preview-editor`, on top of the
 uncommitted Stage 1 and Stage 2 work. No commits, pushes, merges or deletions.
@@ -538,7 +542,7 @@ within 1.50–4.00 s. Export vs exact preview (caption band excluded): draft 38.
 frame 27–35 dB (screenshot scaling and browser colour conversion). Side-by-side images
 `compare-scene1..4.png` show identical framing. No page errors; no overflow at 390 px.
 
-# Stage 2: Telugu caption editor — 6 November 2026
+## Stage 2: Telugu caption editor — 6 November 2026
 
 Implemented in Django + jQuery on `improve/free-preview-editor`, on top of the
 uncommitted Stage 1 work. No commits, pushes, merges or deletions were performed.
@@ -607,7 +611,7 @@ forced alignment.
 
 ---
 
-# Stage 1: shared timeline and timing manifest — 6 November 2026
+## Stage 1: shared timeline and timing manifest — 6 November 2026
 
 Implemented in Django + jQuery without merging or copying the old architecture.
 The earlier Windows fixes below remain in the working tree. No commits, pushes,
@@ -658,13 +662,13 @@ alignment or eliminate small audio-encoding duration differences.
 
 ---
 
-# Windows verification — 6 November 2026
+## Windows verification — 6 November 2026
 
 Verified on the user's Windows computer, on `improve/free-preview-editor`, based
 on commit `182bcc1`. Changes below are local and uncommitted. No branch was merged
 or deleted and no GitHub push or PR merge was performed.
 
-## Setup and simple explanations
+### Setup and simple explanations
 
 - Reused the existing Python 3.12.10 `.venv`; installed the missing Django/DRF
   dependencies and Playwright for browser verification.
@@ -693,7 +697,7 @@ hidden background process. For a future start, open Docker Desktop, run
 copy while port 8788 is occupied. Current run logs are in
 `test-outputs/local-verification/server.log` and `server-errors.log`.
 
-## Comparison with branch-local-work
+### Comparison with branch-local-work
 
 That branch's unique commit, `0a5692c`, extends the older FastAPI/React architecture.
 Its important additions absent from this Django branch are:
@@ -707,7 +711,7 @@ The current branch already has manual cue JSON, framing/trim controls, library
 reuse, voice caching, uploads, drafts and final renders. The additions above were
 not merged or ported. `branch-local-work` remains intact.
 
-## Repairs and verification
+### Repairs and verification
 
 - Fixed draft export headings that incorrectly claimed 1080x1920.
 - Fixed background polling replacing video/audio players every eight seconds.
@@ -745,11 +749,11 @@ The app still requires manual publishing of exported MP4s.
 
 ---
 
-# Historical verification — Telugu Reel Studio 0.1
+## Historical verification — Telugu Reel Studio 0.1
 
 Date: 8 October 2026. Tests executed in this delivery environment, not on the user's PC.
 
-## Passed
+### Passed
 
 - **10 Python integration/workflow tests**, run with Python 3.12 and real FFmpeg.
 - Immutable job snapshots, approval tied to revision, no-op saves, and stale-save rejection.
@@ -778,7 +782,7 @@ The stock provider test used mock metadata, not a live Pixabay download.
 Python test result: `10 passed, 1 warning in 3.88s`. The warning concerns the test
 client's deprecated httpx integration; it did not affect the passing checks.
 
-## Not verified
+### Not verified
 
 - Live Gemini, Google Search grounding, Pixabay, Azure, or Edge speech requests.
 - Actual account access, API models, current quotas, charges, or provider entitlement.
@@ -792,7 +796,7 @@ client's deprecated httpx integration; it did not affect the passing checks.
   be reviewed; manual scene-relative cues are supported.
 - Cross-platform publishing or monetization; those actions are outside the app.
 
-## Reproduce
+### Reproduce
 
 ```powershell
 .venv\Scripts\python.exe -m pip install -r requirements-dev.txt
