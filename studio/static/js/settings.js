@@ -74,8 +74,7 @@ const StudioSettings = (() => {
     $('#setting-access-password-clear').prop('checked', false);
     $('#row-access-password-clear').prop('hidden', !cfg.access_password_set || !!cfg.access_password_from_server);
     if (cfg.access_password_from_server) {
-      const pwdInfo = cfg.server_password ? ` (Studio password: "${cfg.server_password}")` : '';
-      $('#hint-access-password').text('Set on the server (STUDIO_PASSWORD)' + pwdInfo + '; change it there.');
+      $('#hint-access-password').text('Set on the server (STUDIO_PASSWORD); change it there.');
     }
 
     $('#setting-azure-region').val(cfg.azure_region || 'centralindia');

@@ -310,9 +310,8 @@ def login_view(request):
     from studio import access
     target = request.POST.get('next') if request.method == 'POST' else request.GET.get('next')
     target = target if isinstance(target, str) and target.startswith('/') and not target.startswith(('//', '/\\')) else '/'
-    server_password = access.get_password_for_display()
     if not access.password_set() and not access.is_local(request):
-        return render(request, 'studio/login.html', {'disabled': True, 'server_password': server_password}, status=403)
+        return render(request, 'studio/login.html', {'disabled': True}, status=403)
     message, code = '', 200
     if request.method == 'POST':
         if access.locked_out(request):
@@ -325,7 +324,7 @@ def login_view(request):
             message, code = 'That password is not right.', 401
     elif access.allowed(request):
         return redirect(target)
-    return render(request, 'studio/login.html', {'next': target, 'message': message, 'server_password': server_password}, status=code)
+    return render(request, 'studio/login.html', {'next': target, 'message': message}, status=code)
 
 
 def logout_view(request):
