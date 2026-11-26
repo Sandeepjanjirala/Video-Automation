@@ -203,7 +203,7 @@ else:
         report_lines.append(f"- {d}")
 
 report_content = "\n".join(report_lines)
-out_file = Path('docs/M9_SCHEMA_DIFF.md')
+out_file = Path('docs/history/M9_SCHEMA_DIFF.md')
 out_file.write_text(report_content, encoding='utf-8')
-print("Wrote docs/M9_SCHEMA_DIFF.md successfully!")
+print("Wrote docs/history/M9_SCHEMA_DIFF.md successfully!")
 print(f"Differences found: {len(differences_found)}")
