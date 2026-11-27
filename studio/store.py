@@ -880,6 +880,10 @@ def unregister_subprocess(jid: str, pid: Optional[int] = None) -> None:
 
 def terminate_subprocess_tree(pid: int) -> None:
     """Terminate only the specific job's subprocess tree."""
+    if os.environ.get('STUDIO_DISTRIBUTED') == '1':
+        # PID values from another container are not valid in this namespace.
+        # The owning worker checks persisted cancellation every 0.5 seconds.
+        return
     if not pid:
         return
     try:

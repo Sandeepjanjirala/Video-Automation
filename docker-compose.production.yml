@@ -1,0 +1,79 @@
+# Opt-in overlay. Existing project identity, volume names and ./data are retained.
+x-runtime: &runtime
+  image: studio-local:${STUDIO_RELEASE:-current}
+  init: true
+  stop_grace_period: 3m
+  logging: &logging
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+  environment: &environment
+    STUDIO_PRODUCTION: "1"
+    STUDIO_DOCKER: "1"
+    STUDIO_DISTRIBUTED: "1"
+    STUDIO_BEHIND_PROXY: "1"
+    DJANGO_DEBUG: "0"
+    DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set the existing signing key or a fresh secret}
+    STUDIO_PASSWORD: ${STUDIO_PASSWORD:?Set a strong studio password}
+    STUDIO_ALLOWED_HOSTS: ${STUDIO_DOMAIN:-studio.sandeepwebsolutions.in}
+    STUDIO_DOMAIN: ${STUDIO_DOMAIN:-studio.sandeepwebsolutions.in}
+    REEL_DATA_DIR: /app/data
+    STUDIO_RENDER_SCENES: "1"
+    STUDIO_FFMPEG_THREADS: "1"
+    OMP_NUM_THREADS: "1"
+  cpu_shares: 256
+  volumes:
+    - ./scripts/production_check.py:/app/scripts/production_check.py:ro
+
+services:
+  postgres:
+    logging: *logging
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Keep the existing database password}
+  redis:
+    logging: *logging
+    # Leave room for allocator, AOF and replication buffers outside maxmemory.
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+  migrate:
+    <<: *runtime
+    env_file: [.env]
+    volumes:
+      - ./data:/app/data
+    restart: "no"
+  api:
+    <<: *runtime
+    cpu_shares: 1024
+    healthcheck:
+      test: ["CMD", "python", "scripts/production_check.py", "api"]
+      interval: 30s
+      timeout: 15s
+      start_period: 30s
+      retries: 3
+  worker_network:
+    <<: *runtime
+    healthcheck:
+      test: ["CMD", "python", "scripts/production_check.py", "worker_network"]
+      interval: 60s
+      timeout: 15s
+      start_period: 30s
+      retries: 3
+  worker_render:
+    <<: *runtime
+    healthcheck:
+      test: ["CMD", "python", "scripts/production_check.py", "worker_render"]
+      interval: 60s
+      timeout: 15s
+      start_period: 30s
+      retries: 3
+  dispatcher:
+    <<: *runtime
+    healthcheck:
+      test: ["CMD", "python", "scripts/production_check.py", "dispatcher"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3

@@ -65,7 +65,7 @@ services:
       - path: .env
         required: false
     ports:
-      - "127.0.0.1:8788:8788"
+      - "127.0.0.1:${STUDIO_HOST_PORT:-8788}:8788"
     environment:
       - PYTHONPATH=/app
       - DJANGO_SETTINGS_MODULE=config.settings

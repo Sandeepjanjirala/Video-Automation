@@ -26,9 +26,9 @@ SECRETS = {'gemini_key', 'pixabay_key', 'pexels_key', 'azure_key', 'sarvam_key'}
 # defaults; a key typed in Settings replaces one, and "use the default" goes back. .env.example lists the names.
 ENV_KEYS = {'gemini_key': 'STUDIO_GEMINI_KEY', 'pixabay_key': 'STUDIO_PIXABAY_KEY', 'pexels_key': 'STUDIO_PEXELS_KEY',
             'azure_key': 'STUDIO_AZURE_KEY', 'sarvam_key': 'STUDIO_SARVAM_KEY'}
-# The Gemini key is not kept in the repository (GitHub blocks it): put it in .env as STUDIO_GEMINI_KEY.
+# Provider credentials are supplied through .env or Settings, never source code.
 DEFAULT_APP_KEYS = {
-    'pixabay_key': '57902083-76d185fe528adc15819bfc86c',
+    'pixabay_key': '',
 }
 
 

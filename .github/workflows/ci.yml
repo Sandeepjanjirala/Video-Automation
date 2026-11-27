@@ -26,6 +26,11 @@ jobs:
           --health-interval 5s --health-timeout 5s --health-retries 15
     steps:
       - uses: actions/checkout@v7
+      - name: Validate deployment scripts and safety guards
+        run: |
+          for script in scripts/*.sh; do bash -n "$script"; done
+          shellcheck -S warning scripts/deployment-common.sh scripts/deploy.sh scripts/update.sh scripts/update-finish.sh scripts/preflight.sh scripts/healthcheck.sh scripts/backup.sh scripts/restore.sh scripts/rollback.sh scripts/cleanup.sh scripts/setup-proxy.sh
+          python3 -m unittest discover -s tests -p test_deployment.py -v
       # The Dockerfile's test target has the same FFmpeg, fonts and Node.js as the app image.
       - name: Build the test image
         run: docker build --target test --tag studio-test .
@@ -35,3 +40,5 @@ jobs:
           docker run --rm --network host
           -e STUDIO_DATABASE_URL=postgresql://postgres:ci-local-only@127.0.0.1:5432/postgres
           studio-test
+      - name: Isolated production deployment and persistence
+        run: python3 scripts/test_deployment.py --image studio-test

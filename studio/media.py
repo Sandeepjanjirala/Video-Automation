@@ -17,6 +17,46 @@ def short_paths(text):
 
 
 def run(args, cwd=None, timeout=1800, job_id=None, binary=False, log=False):
+    """Bound all production FFmpeg work, including previews and audio conversions."""
+    args = [str(a) for a in args]
+    bounded = os.environ.get('STUDIO_FFMPEG_THREADS')
+    is_ffmpeg = Path(args[0]).stem.lower() == 'ffmpeg'
+    if not bounded or not is_ffmpeg:
+        return _run(args, cwd, timeout, job_id, binary, log)
+    threads = str(max(1, int(bounded)))
+    # Last option wins for the encoder; each decoder receives its own option before -i.
+    for index in range(1, len(args) - 1):
+        if args[index] in ('-threads', '-filter_threads', '-filter_complex_threads'):
+            args[index + 1] = threads
+    normalized = [args[0], '-filter_threads', threads, '-filter_complex_threads', threads]
+    for value in args[1:]:
+        if value == '-i':
+            normalized.extend(['-threads', threads])
+        normalized.append(value)
+    normalized[-1:-1] = ['-threads', threads]
+    if os.name != 'posix':
+        return _run(normalized, cwd, timeout, job_id, binary, log)
+    import fcntl
+    DATA.mkdir(parents=True, exist_ok=True)
+    # flock spans API, render worker and network worker through the shared media mount.
+    with (DATA / 'ffmpeg.lock').open('a') as gate:
+        deadline = time.monotonic() + min(timeout, 30 if not job_id else timeout)
+        while True:
+            try:
+                fcntl.flock(gate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if job_id and store.job_cancelled(job_id):
+                    raise ValueError('The job was cancelled') from None
+                if time.monotonic() >= deadline:
+                    raise ValueError('Media processing is busy. Wait for the active render and retry.') from None
+                time.sleep(0.2)
+        if job_id and store.job_cancelled(job_id):
+            raise ValueError('The job was cancelled')
+        return _run(normalized, cwd, timeout, job_id, binary, log)
+
+
+def _run(args, cwd=None, timeout=1800, job_id=None, binary=False, log=False):
     """Run FFmpeg/FFprobe and return its output: text, raw bytes with `binary` (decoded audio), or
     with `log` the messages FFmpeg writes to stderr (loudness and silence measurements)."""
     proc = None
@@ -30,7 +70,12 @@ def run(args, cwd=None, timeout=1800, job_id=None, binary=False, log=False):
             start_new_session=os.name != 'nt',
         )
         if job_id:
-            store.register_subprocess(job_id, proc.pid)
+            try:
+                store.register_subprocess(job_id, proc.pid)
+            except store.FencingError:
+                if store.job_cancelled(job_id):
+                    raise ValueError('The job was cancelled') from None
+                raise
         # A job's FFmpeg runs check every half second whether the job was cancelled and stop themselves:
         # a render encodes several scenes at once, and the job records only one process to kill.
         deadline = time.monotonic() + timeout

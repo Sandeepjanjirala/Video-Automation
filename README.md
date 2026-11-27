@@ -7,6 +7,20 @@ draft review → MP4 export.
 **Publishing is not implemented.** Download the final MP4 and upload it to Instagram or
 YouTube yourself.
 
+## Production deployment
+
+For the shared Ubuntu VPS, use the [deployment and recovery guide](docs/VPS_DEPLOYMENT.md).
+It covers safe adoption of the existing installation, environment preservation,
+Nginx/SSL, backups and resource limits. GitHub CI does not deploy to the VPS.
+
+```bash
+bash scripts/deploy.sh       # First adoption or deployment after configuration review
+bash scripts/update.sh      # Subsequent updates from main
+bash scripts/healthcheck.sh
+bash scripts/backup.sh
+bash scripts/cleanup.sh --dry-run
+```
+
 ## What it does
 
 - **Two formats:** a vertical 9:16 Reel or a 16:9 YouTube video from the same script.

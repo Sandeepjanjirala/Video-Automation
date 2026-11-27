@@ -21,21 +21,25 @@ ENV DJANGO_SETTINGS_MODULE=config.settings
 
 # Copy dependency requirements and install
 COPY requirements.txt requirements-tested.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt -c requirements-tested.txt
 
 # Copy application source code
 COPY studio/ studio/
 COPY config/ config/
 COPY core/ core/
 COPY templates/ templates/
+COPY scripts/ scripts/
 COPY run.py manage.py doctor.py ./
+
+# Contract 1 includes dispatcher heartbeat support required by the production overlay.
+LABEL io.video-studio.deployment-contract="1"
 
 # Shared development media storage mount point
 VOLUME ["/app/data"]
 
 EXPOSE 8788
 
-CMD ["python", "run.py"]
+CMD ["gunicorn", "--config", "config/gunicorn.conf.py", "config.wsgi:application"]
 
 # Test image (docker build --target test): Node.js for the DOM tests plus the dev dependencies.
 FROM node:24-trixie-slim AS node
@@ -45,7 +49,7 @@ COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules /usr/local/lib/node_modules
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm
 COPY requirements-dev.txt ./
-RUN pip install --no-cache-dir -r requirements-dev.txt
+RUN pip install --no-cache-dir -r requirements-dev.txt -c requirements-tested.txt
 COPY frontend/package.json frontend/package-lock.json frontend/
 RUN cd frontend && npm ci --no-audit --no-fund
 COPY tests/ tests/

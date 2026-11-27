@@ -24,6 +24,8 @@ from django.db import connections
 # PC busy; a smaller PC renders one scene at a time on all its cores (a fixed 4 left a 6-core PC partly idle).
 RENDER_WORKERS = max(1, min(3, (os.cpu_count() or 4) // 4))
 RENDER_THREADS = max(1, (os.cpu_count() or 4) // RENDER_WORKERS)
+RENDER_WORKERS = max(1, min(3, int(os.environ.get('STUDIO_RENDER_SCENES', RENDER_WORKERS))))
+RENDER_THREADS = max(1, int(os.environ.get('STUDIO_FFMPEG_THREADS', RENDER_THREADS)))
 
 
 FencingError = store.FencingError

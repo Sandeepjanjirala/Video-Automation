@@ -39,7 +39,9 @@ DEBUG = os.environ.get('DJANGO_DEBUG', 'False').lower() in ('true', '1')
 # This computer only, unless phone/LAN access (STUDIO_LAN=1), Docker, or STUDIO_ALLOWED_HOSTS opens it.
 # Other devices must then sign in with the studio password (core.middleware.AccessMiddleware).
 ALLOWED_HOSTS = ['127.0.0.1', 'localhost', 'testserver']
-if os.environ.get('STUDIO_DOCKER') == '1':
+if os.environ.get('STUDIO_PRODUCTION') == '1':
+    ALLOWED_HOSTS += [h.strip() for h in os.environ.get('STUDIO_ALLOWED_HOSTS', '').split(',') if h.strip()]
+elif os.environ.get('STUDIO_DOCKER') == '1':
     ALLOWED_HOSTS = ['*']
 elif os.environ.get('STUDIO_LAN') == '1':
     # Phone access: this computer's own network addresses and name, never any host name. With '*' a web

@@ -25,6 +25,50 @@ from studio.models import Project, Scene
 from studio.tasks import ExecutionLeaseContext, task_research, task_render_pipeline
 
 
+def test_source_contains_no_default_provider_credentials():
+    from studio.config import DEFAULT_APP_KEYS
+    assert not any(DEFAULT_APP_KEYS.values())
+
+
+def test_distributed_cancel_does_not_signal_foreign_container_pid(monkeypatch):
+    import psutil
+    monkeypatch.setenv('STUDIO_DISTRIBUTED', '1')
+    def forbidden(*args, **kwargs):
+        pytest.fail('A PID from another container must not be signalled locally')
+    monkeypatch.setattr(psutil, 'Process', forbidden)
+    monkeypatch.setattr(subprocess, 'run', forbidden)
+    store.terminate_subprocess_tree(123456)
+
+
+def test_production_ffmpeg_gate_serializes_previews_and_bounds_threads(monkeypatch, tmp_path):
+    import os
+    import threading
+    if os.name != 'posix':
+        pytest.skip('Production flock runs on Linux')
+    monkeypatch.setenv('STUDIO_FFMPEG_THREADS', '1')
+    monkeypatch.setattr(media, 'DATA', tmp_path)
+    active = 0
+    peak = 0
+    mutex = threading.Lock()
+    def fake_run(args, *rest):
+        nonlocal active, peak
+        for index, value in enumerate(args[:-1]):
+            if value in ('-threads', '-filter_threads', '-filter_complex_threads'):
+                assert args[index + 1] == '1'
+        with mutex:
+            active += 1
+            peak = max(peak, active)
+        time.sleep(0.1)
+        with mutex:
+            active -= 1
+        return 'ok'
+    monkeypatch.setattr(media, '_run', fake_run)
+    with concurrent.futures.ThreadPoolExecutor(3) as pool:
+        results = list(pool.map(lambda _: media.run(['ffmpeg', '-i', 'input.mp4', '-threads', '8', 'out.mp4']), range(3)))
+    assert results == ['ok'] * 3
+    assert peak == 1
+
+
 @pytest.fixture(autouse=True)
 def isolated():
     assert settings.DATABASES['default']['NAME'].startswith('studio_audit_'), 'Use scripts/run_audit_tests.py'
@@ -464,7 +508,9 @@ def test_cancelled_job_rejects_late_progress():
     assert store.job(j['id'])['state'] == 'cancelled'
 
 
-def test_cancellation_stops_registered_subprocess():
+@pytest.mark.parametrize('distributed', ['0', '1'])
+def test_cancellation_stops_registered_subprocess(monkeypatch, distributed):
+    monkeypatch.setenv('STUDIO_DISTRIBUTED', distributed)
     j = saved_job()
     def run_child():
         try:
@@ -482,7 +528,8 @@ def test_cancellation_stops_registered_subprocess():
         else:
             pytest.fail('Child process did not register')
         store.cancel(j['id'])
-        with pytest.raises(ValueError, match='Media processing failed'):
+        message = 'The job was cancelled' if distributed == '1' else 'Media processing failed|The job was cancelled'
+        with pytest.raises(ValueError, match=message):
             future.result(timeout=5)
     assert store.job(j['id'])['state'] == 'cancelled'
 

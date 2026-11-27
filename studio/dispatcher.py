@@ -9,6 +9,7 @@ import random
 import signal
 import sys
 import time
+from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
@@ -170,6 +171,16 @@ def run_loop(poll_interval: float = 0.5, reconcile_interval: float = 30.0):
     """Main dispatcher daemon loop."""
     logger.info("Telugu Reel Studio Outbox Dispatcher starting...")
     store.init()
+    # Shared media mount prevents accidental second daemons on this installation.
+    dispatcher_lock = None
+    if os.name == 'posix':
+        import fcntl
+        from .config import DATA
+        dispatcher_lock = (DATA / 'dispatcher.lock').open('a')
+        try:
+            fcntl.flock(dispatcher_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SystemExit('Another dispatcher owns this data directory') from None
     last_reconcile = time.time()
 
     while _running:
@@ -179,6 +190,9 @@ def run_loop(poll_interval: float = 0.5, reconcile_interval: float = 30.0):
             if now - last_reconcile >= reconcile_interval:
                 reconcile_orphaned_jobs()
                 last_reconcile = now
+
+            # Only a completed database/broker pass refreshes liveness.
+            Path('/tmp/studio-dispatcher-heartbeat').touch()
 
             if dispatched == 0:
                 time.sleep(poll_interval)

@@ -6,3 +6,7 @@ test-outputs
 **/__pycache__
 **/node_modules
 .env
+.env.*
+.deployment
+.local-tools
+.pytest_cache

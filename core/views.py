@@ -18,6 +18,7 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import Optional
 
+from django import get_version
 from django.conf import settings
 from django.db import connection, transaction
 from django.http import StreamingHttpResponse, HttpResponse, FileResponse
@@ -228,7 +229,7 @@ class HealthCheckView(APIView):
         response_payload = {
             "status": overall_status,
             "service": "django",
-            "version": "5.1.15",
+            "version": get_version(),
             "database": db_info,
             "redis": redis_info,
             "media_tools": media_tools,

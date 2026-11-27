@@ -11,3 +11,6 @@ backups/
 *.sql
 test-outputs/
 scratch/
+.deployment/
+.env.production
+*.backup.tar.gz
